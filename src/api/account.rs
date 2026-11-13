@@ -1,5 +1,6 @@
 //! Account REST calls (FEATURES_NOTES §3.1, §3.2): the settings proto (status, custom status,
-//! server bar folders), my profile, and picked images as data URIs. Called
+//! server bar folders), my profile, password and 2FA (authenticator app, SMS, security keys,
+//! backup codes, the `/mfa/finish` re-check), and picked images as data URIs. Called
 //! from `backend::handle_account`, which turns results into `AccountEvent`s. Every call goes
 //! through `ApiClient::send` / `send_with` / `send_coded` (token only to the API host, rate
 //! limiter, 401 handling, 401/60003 -> `ApiError::MfaRequired` without logout, captcha -> "do it
@@ -9,7 +10,7 @@
 //! OWNERSHIP: settings engineer (docs/ACCOUNT_SERVER_DESIGN.md).
 
 use super::{ApiClient, ApiError, settings_proto};
-use crate::auth::Secret;
+use crate::auth::{Secret, Token};
 use crate::model::{AuthSession, AuthorizedApp, Consents, CustomStatus, Emoji, GuildFolder, Id, UserStatus};
 use base64::Engine as _;
 use reqwest::Method;
@@ -17,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::Read as _;
 use std::path::PathBuf;
+use zeroize::Zeroizing;
 
 /// Largest picked image file read at all (it is downscaled before upload).
 pub const MAX_IMAGE_FILE: u64 = 10 * 1024 * 1024;
@@ -305,8 +307,7 @@ impl ApiClient {
 
     /// `PATCH /users/@me {"username","password"}` (2-32 chars). The password is only exposed
     /// into the request body; 50035 field errors via `discord_message`, 60003 ->
-    /// `MfaRequired`. The answer's `token` is ignored (only a password change rotates it, which
-    /// Rustcord does not offer).
+    /// `MfaRequired`. The answer's `token` is ignored (only a password change rotates it).
     pub async fn set_username(&self, username: &str, password: &Secret) -> Result<(), ApiError> {
         let username = checked(username, 32, "A username")?.unwrap_or_default();
         if username.chars().count() < 2 {
@@ -319,6 +320,291 @@ impl ApiClient {
         let body = json!({ "username": username, "password": password.expose() });
         self.patch_me(false, body).await.map_err(|(e, _)| e)
     }
+
+    // ----- Password and Authentication (SETTINGS_NOTES §1 Account, FEATURES_NOTES §0.2, §3.2).
+    // The token-returning calls only hand the new token back; `backend` puts it in place.
+
+    /// `POST /mfa/finish {"ticket","mfa_type","data"}` -> `{"token"}`: the ~5 min JWT for
+    /// `X-Discord-MFA-Authorization` (`api::with_mfa`). Codes lose spaces and dashes.
+    pub async fn mfa_finish(&self, ticket: &Secret, kind: MfaKind, data: &Secret) -> Result<Secret, (ApiError, Option<u64>)> {
+        let resp = self.send_coded(Method::POST, Self::url(&["mfa", "finish"]), Some(finish_body(ticket, kind, data)), &[]).await?;
+        let a: TokenAnswer = read_json(resp).await.map_err(|e| (e, None))?;
+        a.token.filter(|t| !t.is_empty()).map(Secret::new).ok_or((ApiError::Decode("no token".into()), None))
+    }
+
+    /// `POST /auth/mfa/sms/send {"ticket"}` -> `{"phone"}` (masked) for the re-check prompt.
+    pub async fn mfa_send_sms(&self, ticket: &Secret) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            phone: String,
+        }
+        let body = json!({ "ticket": ticket.expose() });
+        let a: Answer = self.send_json(Method::POST, Self::url(&["auth", "mfa", "sms", "send"]), Some(body)).await?;
+        Ok(a.phone)
+    }
+
+    /// `PATCH /users/@me {"password","new_password"}` -> the user + its new `token` (every other
+    /// login ends). New passwords are checked for 8-72 characters before sending.
+    pub async fn change_password(&self, password: &Secret, new_password: &Secret) -> Result<Token, ApiError> {
+        if password.expose().is_empty() {
+            return Err(local("Enter your current password."));
+        }
+        if !(8..=72).contains(&new_password.expose().chars().count()) {
+            return Err(local("A new password needs 8 to 72 characters."));
+        }
+        let a: TokenAnswer = self.send_json(Method::PATCH, Self::url(&["users", "@me"]), Some(password_body(password, new_password))).await?;
+        a.into_token()
+    }
+
+    /// Authenticator step 1: `POST /users/@me/mfa/totp/enable {"password"}`; Discord answers
+    /// 60005 ("send a secret and code too") when the password is right.
+    pub async fn totp_check_password(&self, password: &Secret) -> Result<(), ApiError> {
+        let body = json!({ "password": password.expose() });
+        match self.send_coded(Method::POST, Self::url(&["users", "@me", "mfa", "totp", "enable"]), Some(body), &[]).await {
+            Ok(_) | Err((_, Some(TOTP_NEEDS_CODE))) => Ok(()),
+            Err((e, _)) => Err(e),
+        }
+    }
+
+    /// Authenticator step 2: `POST /users/@me/mfa/totp/enable {"password","secret","code"}` ->
+    /// `{"token","backup_codes"}`.
+    pub async fn enable_totp(&self, password: &Secret, secret: &Secret, code: &Secret) -> Result<(Token, Vec<BackupCode>), ApiError> {
+        #[derive(Deserialize)]
+        struct Answer {
+            token: Option<String>,
+            #[serde(default)]
+            backup_codes: Vec<BackupCode>,
+        }
+        let url = Self::url(&["users", "@me", "mfa", "totp", "enable"]);
+        let a: Answer = self.send_json(Method::POST, url, Some(totp_body(password, secret, code))).await?;
+        Ok((TokenAnswer { token: a.token }.into_token()?, a.backup_codes))
+    }
+
+    /// `POST /users/@me/mfa/totp/disable` (2FA-gated) -> `{"token"}`.
+    pub async fn disable_totp(&self) -> Result<Token, ApiError> {
+        let a: TokenAnswer = self.send_json(Method::POST, Self::url(&["users", "@me", "mfa", "totp", "disable"]), None).await?;
+        a.into_token()
+    }
+
+    /// `POST /users/@me/mfa/sms/enable|disable {"password"}` (needs the authenticator app and a
+    /// verified phone).
+    pub async fn set_sms_mfa(&self, enable: bool, password: &Secret) -> Result<(), ApiError> {
+        let body = json!({ "password": password.expose() });
+        let url = Self::url(&["users", "@me", "mfa", "sms", if enable { "enable" } else { "disable" }]);
+        self.send(Method::POST, url, Some(body)).await.map(drop)
+    }
+
+    /// `GET /users/@me/mfa/webauthn/credentials`.
+    pub async fn security_keys(&self) -> Result<Vec<SecurityKey>, ApiError> {
+        self.send_json(Method::GET, Self::url(&["users", "@me", "mfa", "webauthn", "credentials"]), None).await
+    }
+
+    /// `PATCH /users/@me/mfa/webauthn/credentials/{id} {"name"}` (1-32 characters).
+    pub async fn rename_security_key(&self, id: Id, name: &str) -> Result<(), ApiError> {
+        let name = checked(name, 32, "A key name")?.ok_or_else(|| local("Give the key a name."))?;
+        let url = Self::url(&["users", "@me", "mfa", "webauthn", "credentials", &id.to_string()]);
+        self.send(Method::PATCH, url, Some(json!({ "name": name }))).await.map(drop)
+    }
+
+    /// `DELETE /users/@me/mfa/webauthn/credentials/{id}` (2FA-gated).
+    pub async fn delete_security_key(&self, id: Id) -> Result<(), ApiError> {
+        let url = Self::url(&["users", "@me", "mfa", "webauthn", "credentials", &id.to_string()]);
+        self.send(Method::DELETE, url, None).await.map(drop)
+    }
+
+    /// View Backup Codes step 1: `POST /auth/verify/view-backup-codes-challenge {"password"}` ->
+    /// `{"nonce","regenerate_nonce"}`; Discord emails a key.
+    pub async fn backup_codes_challenge(&self, password: &Secret) -> Result<CodesNonce, ApiError> {
+        let body = json!({ "password": password.expose() });
+        self.send_json(Method::POST, Self::url(&["auth", "verify", "view-backup-codes-challenge"]), Some(body)).await
+    }
+
+    /// Step 2: `POST /users/@me/mfa/codes-verification {"key","nonce","regenerate"}` ->
+    /// `{"backup_codes"}` (`nonce` = `regenerate_nonce` when regenerating).
+    pub async fn backup_codes(&self, key: &Secret, nonce: &Secret, regenerate: bool) -> Result<Vec<BackupCode>, ApiError> {
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            backup_codes: Vec<BackupCode>,
+        }
+        let url = Self::url(&["users", "@me", "mfa", "codes-verification"]);
+        let a: Answer = self.send_json(Method::POST, url, Some(codes_body(key, nonce, regenerate))).await?;
+        Ok(a.backup_codes)
+    }
+}
+
+// ----- 2FA types and bodies
+
+/// `/users/@me/mfa/totp/enable` with only the password: "now send the secret and code".
+const TOTP_NEEDS_CODE: u64 = 60005;
+/// `/mfa/finish` with a wrong code / wrong password: the ticket stays good.
+pub const WRONG_MFA_CODE: [u64; 2] = [60008, 50018];
+
+/// A way to pass the 2FA re-check of a 60003 ticket (`/mfa/finish` `mfa_type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MfaKind {
+    /// Authenticator app code.
+    Totp,
+    /// One of the account's backup codes.
+    Backup,
+    Sms,
+    /// Accounts without 2FA confirm with their password.
+    Password,
+}
+
+impl MfaKind {
+    pub fn wire(self) -> &'static str {
+        match self {
+            MfaKind::Totp => "totp",
+            MfaKind::Backup => "backup",
+            MfaKind::Sms => "sms",
+            MfaKind::Password => "password",
+        }
+    }
+}
+
+/// A 401/60003 answer: the ticket for `/mfa/finish` and the ways it can be passed (security
+/// keys are skipped: Rustcord can't do WebAuthn). Debug never shows the ticket.
+#[derive(Debug, Clone)]
+pub struct MfaChallenge {
+    pub ticket: Secret,
+    pub methods: Vec<MfaKind>,
+}
+
+/// `{"mfa":{"ticket","methods":[{"type","backup_codes_allowed"?}]}}` of a 60003 body (FEATURES_NOTES §0.2).
+pub(super) fn mfa_challenge(body: &Value) -> MfaChallenge {
+    let mfa = body.get("mfa");
+    let ticket = mfa.and_then(|m| m.get("ticket")?.as_str()).unwrap_or_default();
+    let mut methods = Vec::new();
+    for m in mfa.and_then(|m| m.get("methods")?.as_array()).into_iter().flatten() {
+        let kind = match m.get("type").and_then(Value::as_str) {
+            Some("totp") => MfaKind::Totp,
+            Some("backup") => MfaKind::Backup,
+            Some("sms") => MfaKind::Sms,
+            Some("password") => MfaKind::Password,
+            _ => continue,
+        };
+        let backup = kind == MfaKind::Totp && m.get("backup_codes_allowed").and_then(Value::as_bool) == Some(true);
+        for k in std::iter::once(kind).chain(backup.then_some(MfaKind::Backup)) {
+            if !methods.contains(&k) {
+                methods.push(k);
+            }
+        }
+    }
+    if ticket.is_empty() {
+        methods.clear();
+    }
+    MfaChallenge { ticket: Secret::new(ticket.to_owned()), methods }
+}
+
+/// One backup code (8 characters), shown once; Debug never shows it.
+#[derive(Debug, Clone)]
+pub struct BackupCode {
+    pub code: Secret,
+    pub consumed: bool,
+}
+
+impl<'de> Deserialize<'de> for BackupCode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            code: String,
+            #[serde(default)]
+            consumed: bool,
+        }
+        let r = Raw::deserialize(d)?;
+        // Moved, not copied, into the zeroizing Secret.
+        Ok(BackupCode { code: Secret::new(r.code), consumed: r.consumed })
+    }
+}
+
+/// View Backup Codes step 1 answer; Debug never shows the nonces.
+#[derive(Debug, Clone)]
+pub struct CodesNonce {
+    pub nonce: Secret,
+    pub regenerate_nonce: Secret,
+}
+
+impl<'de> Deserialize<'de> for CodesNonce {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            nonce: String,
+            regenerate_nonce: String,
+        }
+        let r = Raw::deserialize(d)?;
+        Ok(CodesNonce { nonce: Secret::new(r.nonce), regenerate_nonce: Secret::new(r.regenerate_nonce) })
+    }
+}
+
+/// A registered security key / passkey (list, rename, delete; adding needs WebAuthn).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SecurityKey {
+    pub id: Id,
+    #[serde(default, deserialize_with = "crate::model::null_default")]
+    pub name: String,
+}
+
+/// `{"token"}` of a token-rotating answer (the rest of it is ignored).
+#[derive(Deserialize)]
+struct TokenAnswer {
+    token: Option<String>,
+}
+
+impl TokenAnswer {
+    fn into_token(self) -> Result<Token, ApiError> {
+        self.token.as_deref().and_then(Token::parse).ok_or_else(|| ApiError::Decode("no new login token".into()))
+    }
+}
+
+async fn read_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, ApiError> {
+    let bytes = resp.bytes().await.map_err(super::net_err)?;
+    serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()))
+}
+
+/// A typed code without spaces and dashes ("123 456", "abcd-efgh").
+fn clean_code(code: &Secret) -> Zeroizing<String> {
+    Zeroizing::new(code.expose().chars().filter(|c| !c.is_whitespace() && *c != '-').collect())
+}
+
+fn finish_body(ticket: &Secret, kind: MfaKind, data: &Secret) -> Value {
+    let data = if kind == MfaKind::Password { Zeroizing::new(data.expose().to_owned()) } else { clean_code(data) };
+    json!({ "ticket": ticket.expose(), "mfa_type": kind.wire(), "data": data.as_str() })
+}
+
+fn password_body(password: &Secret, new_password: &Secret) -> Value {
+    json!({ "password": password.expose(), "new_password": new_password.expose() })
+}
+
+fn totp_body(password: &Secret, secret: &Secret, code: &Secret) -> Value {
+    json!({ "password": password.expose(), "secret": secret.expose(), "code": clean_code(code).as_str() })
+}
+
+fn codes_body(key: &Secret, nonce: &Secret, regenerate: bool) -> Value {
+    json!({ "key": clean_code(key).as_str(), "nonce": nonce.expose(), "regenerate": regenerate })
+}
+
+/// A new authenticator secret: 20 bytes from the OS RNG as 32 base32 characters (RFC 4648,
+/// no padding). None if the OS RNG fails.
+pub fn totp_secret() -> Option<Secret> {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut bytes = Zeroizing::new([0u8; 20]);
+    getrandom::fill(&mut *bytes).ok()?;
+    let mut out = String::with_capacity(32);
+    // 20 bytes = 160 bits = 4 groups of 5 bytes -> 8 characters each.
+    for group in bytes.chunks(5) {
+        let n = group.iter().fold(0u64, |n, b| n << 8 | u64::from(*b));
+        out.extend((0..8).rev().map(|i| char::from(ALPHABET[(n >> (i * 5)) as usize & 31])));
+    }
+    Some(Secret::new(out))
+}
+
+/// `otpauth://totp/Discord:<username>?secret=<secret>&issuer=Discord` for the QR code.
+pub fn otpauth_uri(username: &str, secret: &Secret) -> Secret {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    const NAME: &percent_encoding::AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'_').remove(b'-');
+    Secret::new(format!("otpauth://totp/Discord:{}?secret={}&issuer=Discord", utf8_percent_encode(username, NAME), secret.expose()))
 }
 
 #[cfg(test)]
@@ -380,5 +666,59 @@ mod tests {
         let a: ProtoAnswer = serde_json::from_str(r#"{"settings":null}"#).unwrap();
         assert!(!a.out_of_date && a.settings.is_empty());
         assert!(serde_json::from_str::<ProtoAnswer>(r#"{"out_of_date":false}"#).is_err(), "no settings: nothing to edit");
+    }
+
+    fn s(v: &str) -> Secret {
+        Secret::new(v.into())
+    }
+
+    #[test]
+    fn totp_secrets_are_32_base32_characters_and_differ() {
+        let a = totp_secret().unwrap();
+        let b = totp_secret().unwrap();
+        for k in [&a, &b] {
+            assert_eq!(k.expose().len(), 32);
+            assert!(k.expose().bytes().all(|c| c.is_ascii_uppercase() || (b'2'..=b'7').contains(&c)), "RFC 4648 alphabet");
+        }
+        assert_ne!(a.expose(), b.expose());
+        assert_eq!(format!("{a:?}"), "Secret(<redacted>)");
+    }
+
+    #[test]
+    fn otpauth_uri_names_discord_and_the_user() {
+        let key = s("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
+        assert_eq!(otpauth_uri("ferris_the.crab", &key).expose(), "otpauth://totp/Discord:ferris_the.crab?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Discord");
+        assert!(otpauth_uri("old name#1234", &key).expose().starts_with("otpauth://totp/Discord:old%20name%231234?secret="));
+    }
+
+    #[test]
+    fn security_request_bodies() {
+        assert_eq!(password_body(&s("old pw"), &s("new password")), json!({"password":"old pw","new_password":"new password"}));
+        assert_eq!(totp_body(&s("pw"), &s("KEY"), &s(" 123 456 ")), json!({"password":"pw","secret":"KEY","code":"123456"}));
+        assert_eq!(finish_body(&s("T"), MfaKind::Totp, &s("123 456")), json!({"ticket":"T","mfa_type":"totp","data":"123456"}));
+        assert_eq!(finish_body(&s("T"), MfaKind::Backup, &s("abcd-1234")), json!({"ticket":"T","mfa_type":"backup","data":"abcd1234"}));
+        assert_eq!(finish_body(&s("T"), MfaKind::Password, &s(" my pass-word ")), json!({"ticket":"T","mfa_type":"password","data":" my pass-word "}));
+        assert_eq!(codes_body(&s("ab12-cd34"), &s("N"), true), json!({"key":"ab12cd34","nonce":"N","regenerate":true}));
+    }
+
+    #[test]
+    fn mfa_challenges_and_answers_parse_without_leaking() {
+        let body = json!({"code":60003,"mfa":{"ticket":"TKT","methods":[{"type":"totp","backup_codes_allowed":true},{"type":"webauthn"},{"type":"sms"},{"type":"password"}]}});
+        let c = mfa_challenge(&body);
+        assert_eq!(c.ticket.expose(), "TKT");
+        assert_eq!(c.methods, [MfaKind::Totp, MfaKind::Backup, MfaKind::Sms, MfaKind::Password]);
+        assert!(!format!("{c:?}").contains("TKT"));
+        assert!(mfa_challenge(&json!({"code":60003})).methods.is_empty(), "no ticket: nothing to pass");
+
+        let codes: Vec<BackupCode> = serde_json::from_str(r#"[{"user_id":"1","code":"abcd1234","consumed":false},{"code":"used5678","consumed":true}]"#).unwrap();
+        assert_eq!((codes[0].code.expose(), codes[0].consumed, codes[1].consumed), ("abcd1234", false, true));
+        let n: CodesNonce = serde_json::from_str(r#"{"nonce":"N1","regenerate_nonce":"N2"}"#).unwrap();
+        assert_eq!((n.nonce.expose(), n.regenerate_nonce.expose()), ("N1", "N2"));
+        let debug = format!("{codes:?} {n:?}");
+        assert!(!debug.contains("abcd1234") && !debug.contains("N1"), "{debug}");
+        let k: Vec<SecurityKey> = serde_json::from_str(r#"[{"id":"42","name":"YubiKey","type":1}]"#).unwrap();
+        assert_eq!(k, [SecurityKey { id: Id(42), name: "YubiKey".into() }]);
+        assert!(TokenAnswer { token: None }.into_token().is_err());
+        assert!(TokenAnswer { token: Some("x".repeat(40)) }.into_token().is_ok());
     }
 }

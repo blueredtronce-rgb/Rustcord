@@ -26,7 +26,7 @@ use reqwest::{Method, Url};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub const API_BASE: &str = "https://discord.com/api/v9";
@@ -37,10 +37,9 @@ const MFA_REQUIRED: u64 = 60003;
 pub enum ApiError {
     /// 401: token invalid/expired (the only error that logs the user out).
     Unauthorized,
-    /// 401 code 60003: the action needs a fresh 2FA check; the login itself is fine.
-    // shortcut: the MFA ticket is dropped because the re-prompt flow (POST /mfa/finish,
-    // FEATURES_NOTES §0.2) isn't built; keep `ticket: Secret` here once it is.
-    MfaRequired,
+    /// 401 code 60003: the action needs a fresh 2FA check (`/mfa/finish` with this ticket,
+    /// then `with_mfa`); the login itself is fine.
+    MfaRequired(account::MfaChallenge),
     /// 403 with Discord's message.
     Forbidden(String),
     NotFound,
@@ -55,7 +54,7 @@ impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ApiError::Unauthorized => f.write_str("Your login is no longer valid. Please log in again."),
-            ApiError::MfaRequired => {
+            ApiError::MfaRequired(_) => {
                 f.write_str("This action needs a two-factor check. Do it in the official app for now.")
             }
             ApiError::Forbidden(m) if m.is_empty() => f.write_str("You don't have permission to do that."),
@@ -94,7 +93,7 @@ fn error_from(status: u16, body: &[u8]) -> ApiError {
     let message = json.as_ref().map(discord_message).unwrap_or_default();
     let code = json.as_ref().and_then(|v| v.get("code")?.as_u64());
     match status {
-        401 if code == Some(MFA_REQUIRED) => ApiError::MfaRequired,
+        401 if code == Some(MFA_REQUIRED) => ApiError::MfaRequired(account::mfa_challenge(json.as_ref().unwrap_or(&Value::Null))),
         // An invalid token is `{"message":"401: Unauthorized","code":0}`; 401s with another
         // code are about the action, not the login, and must not log the user out.
         401 if matches!(code, None | Some(0) | Some(40001)) => ApiError::Unauthorized,
@@ -174,15 +173,52 @@ fn default_headers(props: &props::ClientProps) -> HeaderMap {
 
 pub struct ApiClient {
     http: reqwest::Client,
-    /// Pre-built, marked sensitive (never printed by Debug impls).
-    auth: Option<HeaderValue>,
+    /// Pre-built, marked sensitive (never printed by Debug impls). Replaced by `set_token` when a
+    /// password / 2FA change rotates the token.
+    auth: std::sync::RwLock<Option<HeaderValue>>,
     limiter: ratelimit::RateLimiter,
     /// Set after the first 401: every later request fails fast instead of hitting the API
     /// again (invalid requests count towards Cloudflare's IP ban).
     unauthorized: AtomicBool,
+    /// Token-rotating requests on their way (`rotation`): a 401 meanwhile is the old token
+    /// ending, not a logout.
+    rotating: AtomicUsize,
     /// Held across a settings-proto GET, edit and PATCH: concurrent edits would PATCH stale
     /// copies of the same top-level field (e.g. status flipping back after a custom status).
     settings_edit: tokio::sync::Mutex<()>,
+}
+
+/// The Authorization value for `token`, marked sensitive; None if it can't be a header.
+fn auth_header(token: &Token) -> Option<HeaderValue> {
+    HeaderValue::from_str(token.expose()).ok().map(|mut v| {
+        v.set_sensitive(true);
+        v
+    })
+}
+
+tokio::task_local! {
+    /// `X-Discord-MFA-Authorization` for the first request of an action retried after a 2FA
+    /// re-check (`with_mfa`); taken by that request.
+    static MFA_AUTH: std::cell::RefCell<Option<HeaderValue>>;
+}
+
+/// Runs `fut` (one user action) with the `/mfa/finish` JWT on its first request
+/// (FEATURES_NOTES §0.2: `X-Discord-MFA-Authorization`).
+pub async fn with_mfa<F: std::future::Future>(jwt: &crate::auth::Secret, fut: F) -> F::Output {
+    let value = HeaderValue::from_str(jwt.expose()).ok().map(|mut v| {
+        v.set_sensitive(true);
+        v
+    });
+    MFA_AUTH.scope(std::cell::RefCell::new(value), fut).await
+}
+
+/// Held while a token-rotating request is on its way (`ApiClient::rotation`).
+pub struct Rotation<'a>(&'a ApiClient);
+
+impl Drop for Rotation<'_> {
+    fn drop(&mut self) {
+        self.0.rotating.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl ApiClient {
@@ -197,12 +233,35 @@ impl ApiClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("HTTP client (TLS backend) failed to initialise");
-        let auth = HeaderValue::from_str(token.expose()).ok().map(|mut v| {
-            v.set_sensitive(true);
-            v
-        });
+        let auth = auth_header(&token);
         let unauthorized = AtomicBool::new(auth.is_none());
-        Self { http, auth, limiter: ratelimit::RateLimiter::new(), unauthorized, settings_edit: Default::default() }
+        let auth = std::sync::RwLock::new(auth);
+        Self { http, auth, limiter: ratelimit::RateLimiter::new(), unauthorized, rotating: AtomicUsize::new(0), settings_edit: Default::default() }
+    }
+
+    fn current_auth(&self) -> Option<HeaderValue> {
+        self.auth.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// The rotated login token (password / 2FA change): later requests use it, and a 401 of the
+    /// old one no longer counts. Only `backend`'s token swap calls this.
+    pub fn set_token(&self, token: &Token) {
+        let auth = auth_header(token);
+        self.unauthorized.store(auth.is_none(), Ordering::Relaxed);
+        *self.auth.write().unwrap_or_else(std::sync::PoisonError::into_inner) = auth;
+    }
+
+    /// Tests: requests carry `token` and are not blocked by an earlier 401.
+    #[cfg(test)]
+    pub fn sends(&self, token: &Token) -> bool {
+        self.current_auth() == auth_header(token) && !self.unauthorized.load(Ordering::Relaxed)
+    }
+
+    /// Hold while sending a request that rotates the token: Discord may end the old token before
+    /// the answer arrives, and those 401s must not log the user out.
+    pub fn rotation(&self) -> Rotation<'_> {
+        self.rotating.fetch_add(1, Ordering::Relaxed);
+        Rotation(self)
     }
 
     fn url(segments: &[&str]) -> Url {
@@ -244,15 +303,19 @@ impl ApiClient {
         }
         let extra = extra_headers(extra).map_err(fail)?;
         // The token is only ever sent to the API host.
-        let auth = match &self.auth {
+        let auth = match self.current_auth() {
             Some(a) if url.as_str().starts_with(API_BASE) && url.as_str()[API_BASE.len()..].starts_with('/') => a,
             _ => return Err(fail(ApiError::Http { status: 0, message: "Internal error: refused a non-API URL.".into() })),
         };
+        let mfa = MFA_AUTH.try_with(|m| m.borrow_mut().take()).ok().flatten();
         let key = ratelimit::route_key(method.as_str(), url.path());
         let resp = self
             .limiter
             .execute(&key, || {
                 let mut req = self.http.request(method.clone(), url.clone()).header(header::AUTHORIZATION, auth.clone());
+                if let Some(m) = &mfa {
+                    req = req.header("x-discord-mfa-authorization", m.clone());
+                }
                 for (name, value) in &extra {
                     req = req.header(name, value);
                 }
@@ -272,9 +335,14 @@ impl ApiClient {
             return Ok(resp);
         }
         let bytes = resp.bytes().await.unwrap_or_default();
-        let err = error_from(status.as_u16(), &bytes);
+        let mut err = error_from(status.as_u16(), &bytes);
         if matches!(err, ApiError::Unauthorized) {
-            self.unauthorized.store(true, Ordering::Relaxed);
+            // The token was just rotated (or is being): this was the old one, not a logout.
+            if self.rotating.load(Ordering::Relaxed) > 0 || self.current_auth().as_ref() != Some(&auth) {
+                err = ApiError::Http { status: 401, message: "Your login changed while this was on its way. Try again.".into() };
+            } else {
+                self.unauthorized.store(true, Ordering::Relaxed);
+            }
         }
         let code = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.get("code")?.as_u64());
         Err((err, code))
@@ -462,12 +530,44 @@ mod tests {
         assert!(matches!(error_from(401, b"<html>nope</html>"), ApiError::Unauthorized));
         let mfa = br#"{"message":"Two factor is required for this operation","code":60003,"mfa":{"ticket":"SECRET_TICKET","methods":[{"type":"totp"}]}}"#;
         let e = error_from(401, mfa);
-        assert!(matches!(e, ApiError::MfaRequired));
+        match &e {
+            ApiError::MfaRequired(c) => assert_eq!((c.ticket.expose(), c.methods.as_slice()), ("SECRET_TICKET", &[account::MfaKind::Totp][..])),
+            e => panic!("{e:?}"),
+        }
         assert!(!format!("{e} {e:?}").contains("SECRET_TICKET"));
         match error_from(401, br#"{"message":"Password does not match","code":50018}"#) {
             ApiError::Http { status: 401, message } => assert_eq!(message, "Password does not match"),
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn set_token_replaces_the_header_and_lifts_a_401() {
+        let props = Arc::new(props::ClientProps::new(&crate::config::Settings::default()));
+        let (old, new) = (Token::parse(&"o".repeat(30)).unwrap(), Token::parse(&"n".repeat(30)).unwrap());
+        let api = ApiClient::new(old.clone(), props);
+        assert!(api.sends(&old));
+        api.unauthorized.store(true, Ordering::Relaxed);
+        {
+            let _r = api.rotation();
+            assert_eq!(api.rotating.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(api.rotating.load(Ordering::Relaxed), 0, "the guard ends the rotation");
+        api.set_token(&new);
+        assert!(api.sends(&new) && !api.sends(&old));
+    }
+
+    #[tokio::test]
+    async fn mfa_header_goes_to_the_first_request_only() {
+        let jwt = crate::auth::Secret::new("JWT".into());
+        let taken = with_mfa(&jwt, async {
+            let first = MFA_AUTH.try_with(|m| m.borrow_mut().take()).ok().flatten();
+            let second = MFA_AUTH.try_with(|m| m.borrow_mut().take()).ok().flatten();
+            (first, second)
+        })
+        .await;
+        assert!(matches!(taken, (Some(v), None) if v == "JWT" && v.is_sensitive()));
+        assert!(MFA_AUTH.try_with(|_| ()).is_err(), "outside a retry there is none");
     }
 
     #[test]
