@@ -2,7 +2,7 @@
 //! - `server_header`: the channel list's 49 px header: the server-name pill (its dropdown is
 //!   `header_menu`) and the 32 px Invite button right of it.
 //! - `guild_menu`: the server icon's right-click menu (§4.11 order); the header dropdown has
-//!   the same items in the §4.2 order. Mark As Read, Invite People, Mute Server ▸ /
+//!   the same items but Mark As Read in the §4.2 order. Mark As Read, Invite People, Mute Server ▸ /
 //!   Notification Settings ▸ (`UpdateGuildNotifications`), Hide Muted Channels, Server Settings,
 //!   Create Channel / Category, Privacy Settings (dialog: one `SetSetting` per switch),
 //!   Edit Per-server Profile (Settings > Profiles, its server tab), Leave Server (confirm),
@@ -229,9 +229,9 @@ pub(super) fn more_button(ui: &mut egui::Ui, pal: &Pal) -> egui::Response {
     resp
 }
 
-/// The header dropdown (§4.2 order): Invite People, Server Settings, Create Channel / Category,
-/// Notification Settings ▸ (with Mute Server ▸), Mark As Read, Hide Muted Channels, Leave
-/// Server, Copy Server ID.
+/// The header dropdown (§4.2 order): Invite People, Server Settings, Create Channel / Category |
+/// Notification Settings ▸ (with Mute Server ▸), Privacy Settings | Edit Per-server Profile,
+/// Hide Muted Channels | Leave Server | Copy Server ID. Mark As Read is the server icon's.
 fn header_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     menu_setup(ui);
     let (accent, text) = (cx.theme.colors.accent.to_color32(), cx.theme.colors.text.to_color32());
@@ -240,8 +240,9 @@ fn header_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     create_items(ui, cx, guild_id, text);
     ui.separator();
     notification_menu(ui, cx, guild_id, None, true);
-    privacy_items(ui, cx, guild_id, text);
-    mark_read_item(ui, cx, guild_id, text);
+    privacy_item(ui, cx, guild_id, text);
+    ui.separator();
+    server_profile_item(ui, cx, guild_id, text);
     hide_muted_item(ui, cx, guild_id, text);
     crate::plugins::menus::guild_items(ui, cx, guild_id, &mut |ui, label, glyph| menu_item(ui, label, MenuIcon::Glyph(glyph), text));
     leave_item(ui, cx, guild_id);
@@ -267,7 +268,8 @@ pub fn guild_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     mute_items(ui, cx, guild_id, None, "Server");
     notification_menu(ui, cx, guild_id, None, false);
     hide_muted_item(ui, cx, guild_id, text);
-    privacy_items(ui, cx, guild_id, text);
+    privacy_item(ui, cx, guild_id, text);
+    server_profile_item(ui, cx, guild_id, text);
     ui.separator();
     settings_item(ui, cx, guild_id, text);
     create_items(ui, cx, guild_id, text);
@@ -329,11 +331,15 @@ fn create_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color3
     }
 }
 
-/// Privacy Settings (the dialog) and Edit Per-server Profile (Settings > Profiles on this server).
-fn privacy_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+/// Privacy Settings (the dialog).
+fn privacy_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
     if menu_item(ui, "Privacy Settings", MenuIcon::Glyph("🛡"), text) {
         open(cx, Modal::PrivacySettings { guild_id });
     }
+}
+
+/// Edit Per-server Profile (Settings > Profiles on this server).
+fn server_profile_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
     if menu_item(ui, "Edit Per-server Profile", MenuIcon::Glyph("✏"), text) {
         super::user_settings::open_server_profile(cx.view, guild_id);
     }
@@ -357,30 +363,39 @@ fn privacy_list(mut ids: Vec<u64>, guild: u64, on: bool) -> Vec<u64> {
     ids
 }
 
-/// `Modal::PrivacySettings`: a switch per `PRIVACY` row; a click sends that field's whole list
-/// (one `SetSetting` of field 8; the switches wait while it is on its way).
+/// `Modal::PrivacySettings`: a switch per `PRIVACY` row, then Leaderboards (3.1[guild].11
+/// `leaderboards_disabled`); a click sends one `SetSetting` (field 8: that field's whole list;
+/// field 3: that server's entry); the switches of that field wait while it is on its way.
 pub fn privacy_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id) {
+    use crate::api::settings_proto::SettingValue;
     let name = cx.state.guilds.iter().find(|g| g.id == guild_id).map_or_else(String::new, |g| g.name.clone());
     let theme = &*cx.theme;
     let pal = Pal::new(theme);
     let settings = &cx.state.account.settings;
-    let busy = cx.state.account.ops.get(&AccountOp { kind: crate::backend::OpKind::SetSetting, target: Some(Id(8)) }) == Some(&OpState::Pending);
+    let busy = |top| cx.state.account.ops.get(&AccountOp { kind: crate::backend::OpKind::SetSetting, target: Some(Id(top)) }) == Some(&OpState::Pending);
     let mut write = None;
     let resp = dialog(ctx, theme, "rc_privacy", 440.0, "Privacy Settings", |ui| {
         dialog_text(ui, theme, &name);
-        for (label, hint, field) in PRIVACY {
-            let ids = settings.proto_ids(8, &[field]);
-            let mut on = !ids.contains(&guild_id.0);
+        // One switch row; Some(new state) when clicked.
+        let row = |ui: &mut egui::Ui, label: &str, hint: &str, mut on: bool, busy: bool| {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            let changed = ui.horizontal(|ui| {
                 ui.label(RichText::new(label).color(pal.text));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled_ui(!busy, |ui| switch(ui, &pal, &mut on)).inner.changed() {
-                        write = Some((field, privacy_list(ids, guild_id.0, on)));
-                    }
-                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.add_enabled_ui(!busy, |ui| switch(ui, &pal, &mut on)).inner.changed()).inner
             });
             super::hint(ui, theme, hint);
+            changed.inner.then_some(on)
+        };
+        for (label, hint, field) in PRIVACY {
+            let ids = settings.proto_ids(8, &[field]);
+            if let Some(on) = row(ui, label, hint, !ids.contains(&guild_id.0), busy(8)) {
+                write = Some((8, vec![field], SettingValue::Ids(privacy_list(ids, guild_id.0, on))));
+            }
+        }
+        let shown = settings.proto_entry_varint(3, 1, guild_id.0, &[11]).is_none_or(|v| v == 0);
+        if let Some(on) = row(ui, "Leaderboards", "Show me on this server's leaderboards.", shown, busy(3)) {
+            let value = Box::new(SettingValue::Plain(u64::from(!on)));
+            write = Some((3, vec![1], SettingValue::Entry { key: guild_id.0, path: vec![11], value }));
         }
         // Each switch is saved on its click: Done only closes (no Cancel that could not undo).
         ui.add_space(8.0);
@@ -390,11 +405,11 @@ pub fn privacy_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id) {
         })
         .inner
     });
-    if let Some((field, ids)) = write {
-        let values = vec![(vec![field], crate::api::settings_proto::SettingValue::Ids(ids))];
-        let cmd = AccountCommand::SetSetting { top: 8, values: values.clone() };
+    if let Some((top, path, value)) = write {
+        let values = vec![(path, value)];
+        let cmd = AccountCommand::SetSetting { top, values: values.clone() };
         if cx.state.account.begin(cmd.op()) {
-            cx.state.account.settings.set_local(8, &values);
+            cx.state.account.settings.set_local(top, &values);
             cx.cmd.send(Command::Account(cmd));
         }
     }

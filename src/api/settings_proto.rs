@@ -62,6 +62,17 @@ pub enum SettingValue {
     /// `repeated fixed64` (guild ids, e.g. 8.3 `restricted_guilds`): the whole list, written
     /// packed; empty = omitted.
     Ids(Vec<u64>),
+    /// One entry of a `map<fixed64, message>` (e.g. 3.1 per-server settings, SETTINGS_NOTES §0
+    /// #8): `value` at `path` inside the value of the entry keyed `key`; the other entries are
+    /// kept byte for byte, a missing entry is added.
+    Entry { key: u64, path: Vec<u32>, value: Box<SettingValue> },
+}
+
+/// The value message of the `map<fixed64, message>` entry `key` in field `num` of `msg`.
+pub fn read_entry(msg: &[u8], num: u32, key: u64) -> Option<Vec<u8>> {
+    let fields = parse(msg).ok()?;
+    let entries = fields.iter().filter(|f| f.num == num).filter_map(Field::bytes).filter_map(|b| parse(b).ok());
+    entries.rev().find(|e| fixed64(e, 1) == Some(key)).map(|e| merged(&e, 2).unwrap_or_default())
 }
 
 /// The varint at `path` inside the bytes of one top-level field (`UserSettingsProto::raw`);
@@ -120,6 +131,19 @@ pub fn set_in(msg: &[u8], path: &[u32], value: &SettingValue) -> Result<Vec<u8>,
         SettingValue::Str(s) => put_wrapped_str(&mut out, num, s),
         SettingValue::Ids(ids) if ids.is_empty() => {}
         SettingValue::Ids(ids) => put_bytes(&mut out, num, &ids.iter().flat_map(|id| id.to_le_bytes()).collect::<Vec<_>>()),
+        SettingValue::Entry { key: k, path: inner, value: v } => {
+            let mut old = Vec::new();
+            for f in fields.iter().filter(|f| f.num == num) {
+                match f.bytes().map(parse).transpose()?.filter(|e| fixed64(e, 1) == Some(*k)) {
+                    Some(e) => old.extend(merged(&e, 2).unwrap_or_default()),
+                    None => out.extend_from_slice(f.raw),
+                }
+            }
+            let mut entry = Vec::new();
+            put_fixed64(&mut entry, 1, *k);
+            put_bytes(&mut entry, 2, &set_in(&old, inner, v)?);
+            put_bytes(&mut out, num, &entry);
+        }
     }
     Ok(out)
 }
@@ -557,6 +581,18 @@ mod tests {
         let f = &decode(&out).unwrap().raw[&8];
         assert!(read_ids(f, &[3]).is_empty());
         assert_eq!(read_varint(f, &[4], false), Some(1));
+    }
+
+    #[test]
+    fn map_entry_edits_keep_other_entries() {
+        let lb = |g: u64, v: u64| (vec![1], SettingValue::Entry { key: g, path: vec![11], value: Box::new(SettingValue::Plain(v)) });
+        // {3:{1:[{1:7, 2:{6:…, 11:1}}, {1:2^40, 2:{11:1}}]}}, then 3.1[7].11 = 0.
+        let cur = with_values("", 3, &[(vec![1], SettingValue::Entry { key: 7, path: vec![6, 1], value: Box::new(SettingValue::Plain(5)) }), lb(7, 1), lb(1 << 40, 1)]).unwrap();
+        let out = with_values(&cur, 3, &[lb(7, 0)]).unwrap();
+        let f = &decode(&out).unwrap().raw[&3];
+        let at = |g, p: &[u32]| read_varint(&read_entry(f, 1, g)?, p, false);
+        assert_eq!((at(7, &[11]), at(7, &[6, 1]), at(1 << 40, &[11]), at(9, &[11])), (None, Some(5), Some(1), None));
+        assert!(read_entry(f, 1, 7).is_some() && read_entry(f, 1, 9).is_none());
     }
 
     #[test]
