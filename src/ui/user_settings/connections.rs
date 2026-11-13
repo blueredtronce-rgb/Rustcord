@@ -23,18 +23,25 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         cx.cmd.send(Command::Social(SocialCommand::FetchConnections));
     }
     hint(ui, cx.theme, "Accounts linked to your profile. Link new ones on the platform's site.");
-    ui.add_space(12.0);
     let list = match &cx.state.social.connections {
         None => {
             ui.spinner();
             return;
         }
         Some(Err(e)) => {
-            ui.label(RichText::new(e).color(pal.danger));
+            // Devices' and Authorized Apps' empty state (lists.rs `loaded`); Retry sends the fetch again.
+            let reason = e.split_once(": ").map_or(e.as_str(), |(_, r)| r);
+            super::empty_state(ui, cx, "🔌", "Couldn't load connections", reason, None);
+            if ui.vertical_centered(|ui| ui.button("Retry").clicked()).inner {
+                cx.state.social.connections = None;
+                cx.cmd.send(Command::Social(SocialCommand::FetchConnections));
+            }
             return;
         }
         Some(Ok(list)) => list.iter().filter(|a| cosmetics::shown_connection(&a.kind)).cloned().collect::<Vec<_>>(),
     };
+    // Only above the cards: the spinner and the empty state start where Devices' do.
+    ui.add_space(12.0);
     if list.is_empty() {
         hint(ui, cx.theme, "No connected accounts.");
     }
