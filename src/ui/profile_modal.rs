@@ -88,14 +88,15 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
     let (width, screen_h) = (WIDTH.min(ctx.content_rect().width() - 48.0), ctx.content_rect().height());
     // The whole modal fits under the title bar with a margin, and so do a frame's top staples
     // (pushed down by their height): the tab body scrolls in what the rest (measured last frame)
-    // leaves.
+    // leaves, or, when that is under 80 px, the whole card scrolls.
     let ot = look.overflow_top(width);
     let room = screen_h - super::TITLE_BAR_H - 2.0 * MARGIN - ot;
     let banner_h = if room < 480.0 { 72.0 } else if screen_h < 600.0 { 96.0 } else { BANNER };
     let side = if room < 480.0 { 88.0 } else { AVATAR };
     let rest_id = egui::Id::unique(("rc_profile_modal_rest", banner_h.to_bits()));
     let rest = ctx.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(banner_h + 250.0);
-    let body_h = (room - rest).clamp(40.0, 320.0);
+    let short = room - rest < 80.0;
+    let body_h = (room - rest).clamp(80.0, 320.0);
     let mut frame = Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(Margin::ZERO);
     if look.theme.is_some() {
         // The theme's gradient outline instead (`cosmetics::theme_outline`).
@@ -121,67 +122,77 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
         let fx_anim = cosmetics::animates(cx, ui.ui_contains_pointer());
         ui.set_width(width);
         ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
-        let top = CornerRadius { nw: pal.card_radius(), ne: pal.card_radius(), sw: 0, se: 0 };
-        let (rect, _) = ui.allocate_exact_size(vec2(width, banner_h), Sense::hover());
-        let animated = super::profile::banner_animates(cx, banner_url.as_deref(), is_me, ui.rect_contains_pointer(rect));
-        match banner_url.as_deref().and_then(|u| cx.images.get(ui.ctx(), u, 600, animated)) {
-            Some(tex) => super::profile::paint_banner(ui.painter(), rect, top, tex, look.theme.map(|_| cosmetics::theme_veil(pal.dark))),
-            None => {
-                ui.painter().rect_filled(rect, top, fill);
-            }
-        }
-        let center = pos2(rect.left() + 24.0 + side / 2.0, rect.bottom());
-        let ring = look.theme.map_or(pal.surface, |(primary, _)| cosmetics::theme_ring(primary, pal.dark));
-        ui.painter().circle_filled(center, side / 2.0 + 7.0, ring);
-        let avatar = Rect::from_center_size(center, Vec2::splat(side));
-        let name = cx.state.member_display_name(guild_id, &user, None);
-        // My local avatar like on my card (profile.rs).
-        let url = crate::overrides::my_avatar_url(user_id).map_or_else(|| super::images::user_avatar_url(None, &user, None, 256, false), |u| crate::overrides::large(&u));
-        let hovered = ui.rect_contains_pointer(avatar);
-        let animate = crate::overrides::my_avatar_animates(user_id, hovered).unwrap_or(hovered);
-        user_avatar_at(ui, cx.images, &url, avatar, animate, 1.0, (user_id, &name));
-        super::images::decoration_at(ui, cx.images, avatar, fx.decoration.as_ref(), fx_anim, 1.0);
-        user_dot(ui.painter(), avatar, cx.state, user_id, &cx.theme.colors, ring);
-
-        // Actions right of the avatar, under the banner.
-        let bar = Rect::from_min_max(pos2(avatar.right() + 16.0, rect.bottom() + 12.0), pos2(rect.right() - 16.0, rect.bottom() + 48.0));
-        let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
-        actions(&mut bar, cx, &pal, user_id, is_me);
-        ui.add_space(side / 2.0 + 12.0);
-
-        let mut body_shown = body_h;
-        Frame::new().inner_margin(Margin { left: 24, right: 24, top: 0, bottom: 20 }).show(ui, |ui| {
-            ui.set_width(width - 48.0);
-            let style = fx.name_style.as_ref();
-            let name_g = cosmetics::name_galley(ui, &name, bold(24.0), style, pal.text, width - 48.0);
-            let (r, _) = ui.allocate_exact_size(name_g.size(), Sense::hover());
-            cosmetics::paint_name(ui.painter(), r.min, name_g, style, pal.text, pal.dark);
-            let profile = loaded(cx, user_id, guild_id);
-            let pronouns = profile.and_then(|p| p.pronouns()).map(str::to_owned);
-            let badges = cosmetics::badges(&user, profile);
-            let handle = [Some(user.username.clone()), pronouns].into_iter().flatten().collect::<Vec<_>>().join(" • ");
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(handle).color(pal.muted));
-                if let Some(pg) = cosmetics::guild_tag(&user, member.as_ref()) {
-                    let (r, resp) = ui.allocate_exact_size(vec2(cosmetics::tag_chip_width(ui, pg, pal.size), ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
-                    cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
-                    resp.on_hover_text(cosmetics::tag_tooltip(cx.state, pg));
+        // The card's own scroll area only scrolls when `short`; else the tab body fits under it.
+        ui.set_max_height(room);
+        let card_scroll = egui::ScrollArea::vertical().id_salt(("rc_profile_modal_card", user_id)).max_height(room).auto_shrink([false, true]);
+        let banner_bottom = card_scroll
+            .show(ui, |ui| {
+                let top = CornerRadius { nw: pal.card_radius(), ne: pal.card_radius(), sw: 0, se: 0 };
+                let (rect, _) = ui.allocate_exact_size(vec2(width, banner_h), Sense::hover());
+                let animated = super::profile::banner_animates(cx, banner_url.as_deref(), is_me, ui.rect_contains_pointer(rect));
+                match banner_url.as_deref().and_then(|u| cx.images.get(ui.ctx(), u, 600, animated)) {
+                    Some(tex) => super::profile::paint_banner(ui.painter(), rect, top, tex, look.theme.map(|_| cosmetics::theme_veil(pal.dark))),
+                    None => {
+                        ui.painter().rect_filled(rect, top, fill);
+                    }
                 }
-            });
-            cosmetics::badge_row(ui, cx.images, &pal, &badges);
-            ui.add_space(8.0);
-            tabs(ui, cx, &pal, user_id, guild_id);
-            let area = egui::ScrollArea::vertical().max_height(body_h).min_scrolled_height(body_h).auto_shrink([false, true]);
-            let shown = area.show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                body(ui, cx, &pal, &user, guild_id);
-            });
-            body_shown = shown.inner_rect.height();
-        });
+                let center = pos2(rect.left() + 24.0 + side / 2.0, rect.bottom());
+                let ring = look.theme.map_or(pal.surface, |(primary, _)| cosmetics::theme_ring(primary, pal.dark));
+                ui.painter().circle_filled(center, side / 2.0 + 7.0, ring);
+                let avatar = Rect::from_center_size(center, Vec2::splat(side));
+                let name = cx.state.member_display_name(guild_id, &user, None);
+                // My local avatar like on my card (profile.rs).
+                let url = crate::overrides::my_avatar_url(user_id).map_or_else(|| super::images::user_avatar_url(None, &user, None, 256, false), |u| crate::overrides::large(&u));
+                let hovered = ui.rect_contains_pointer(avatar);
+                let animate = crate::overrides::my_avatar_animates(user_id, hovered).unwrap_or(hovered);
+                user_avatar_at(ui, cx.images, &url, avatar, animate, 1.0, (user_id, &name));
+                super::images::decoration_at(ui, cx.images, avatar, fx.decoration.as_ref(), fx_anim, 1.0);
+                user_dot(ui.painter(), avatar, cx.state, user_id, &cx.theme.colors, ring);
+
+                // Actions right of the avatar, under the banner.
+                let bar = Rect::from_min_max(pos2(avatar.right() + 16.0, rect.bottom() + 12.0), pos2(rect.right() - 16.0, rect.bottom() + 48.0));
+                let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                actions(&mut bar, cx, &pal, user_id, is_me);
+                ui.add_space(side / 2.0 + 12.0);
+
+                Frame::new().inner_margin(Margin { left: 24, right: 24, top: 0, bottom: 20 }).show(ui, |ui| {
+                    ui.set_width(width - 48.0);
+                    let style = fx.name_style.as_ref();
+                    let name_g = cosmetics::name_galley(ui, &name, bold(24.0), style, pal.text, width - 48.0);
+                    let (r, _) = ui.allocate_exact_size(name_g.size(), Sense::hover());
+                    cosmetics::paint_name(ui.painter(), r.min, name_g, style, pal.text, pal.dark);
+                    let profile = loaded(cx, user_id, guild_id);
+                    let pronouns = profile.and_then(|p| p.pronouns()).map(str::to_owned);
+                    let badges = cosmetics::badges(&user, profile);
+                    let handle = [Some(user.username.clone()), pronouns].into_iter().flatten().collect::<Vec<_>>().join(" • ");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(handle).color(pal.muted));
+                        if let Some(pg) = cosmetics::guild_tag(&user, member.as_ref()) {
+                            let (r, resp) = ui.allocate_exact_size(vec2(cosmetics::tag_chip_width(ui, pg, pal.size), ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
+                            cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
+                            resp.on_hover_text(cosmetics::tag_tooltip(cx.state, pg));
+                        }
+                    });
+                    cosmetics::badge_row(ui, cx.images, &pal, &badges);
+                    ui.add_space(8.0);
+                    tabs(ui, cx, &pal, user_id, guild_id);
+                    // The rest: everything but the tab body (its 20 px bottom margin included).
+                    ui.ctx().data_mut(|d| d.insert_temp(rest_id, ui.cursor().top() - rect.top() + 20.0));
+                    if short {
+                        body(ui, cx, &pal, &user, guild_id);
+                    } else {
+                        egui::ScrollArea::vertical().max_height(body_h).min_scrolled_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            body(ui, cx, &pal, &user, guild_id);
+                        });
+                    }
+                });
+                rect.bottom()
+            })
+            .inner;
         let card = ui.min_rect();
-        ui.ctx().data_mut(|d| d.insert_temp(rest_id, card.height() - body_shown));
         if let Some(colors) = look.theme {
-            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "modal", card, pal.card_radius(), colors, rect.bottom(), pal.dark));
+            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "modal", card, pal.card_radius(), colors, banner_bottom, pal.dark));
             ui.painter().add(cosmetics::theme_outline(card, pal.card_radius(), colors));
         }
         look.finish(ui, cx.images, card, pal.card_radius(), behind, cosmetics::shown_for(ui.ctx(), ("modal", user_id)), fx_anim);
