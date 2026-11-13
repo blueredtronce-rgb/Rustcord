@@ -68,6 +68,15 @@ pub struct AccountState {
     pub consents: Option<Result<Consents, String>>,
     /// My Account > Account Standing (`StandingLoaded`), like the lists above.
     pub standing: Option<Result<u16, String>>,
+    /// My Account > Security Keys (`SecurityKeysLoaded`), like the lists above.
+    pub security_keys: Option<Result<Vec<crate::api::account::SecurityKey>, String>>,
+    /// The 2FA re-check an action waits for (`AccountEvent::Mfa`); the UI shows it as a dialog.
+    pub mfa: Option<crate::backend::MfaPrompt>,
+    /// Backup codes just received, until the UI takes them into its dialog (shown once, wiped
+    /// with it).
+    pub backup_codes: Option<Vec<crate::api::account::BackupCode>>,
+    /// View Backup Codes step 1's nonces, until the UI takes them.
+    pub codes_nonce: Option<crate::api::account::CodesNonce>,
 }
 
 /// What the settings proto says; defaults until READY's arrives.
@@ -95,6 +104,11 @@ impl SettingsView {
 
     pub fn proto_str(&self, top: u32, path: &[u32]) -> Option<String> {
         settings_proto::read_str(self.proto.get(&top)?, path)
+    }
+
+    /// A plain varint inside entry `key` of the map field `map`, e.g. 3.1[guild].11.
+    pub fn proto_entry_varint(&self, top: u32, map: u32, key: u64, path: &[u32]) -> Option<u64> {
+        settings_proto::read_varint(&settings_proto::read_entry(self.proto.get(&top)?, map, key)?, path, false)
     }
 
     /// A `repeated fixed64` id list (8.3 restricted guilds …); empty when unset.
@@ -241,6 +255,17 @@ impl AccountState {
         self.ops.insert(op, OpState::Pending);
         true
     }
+
+    /// An answer's progress entry; the error text when nobody waits on it (worth a toast).
+    fn finish(&mut self, op: AccountOp, result: Result<(), String>) -> Option<String> {
+        match self.ops.get_mut(&op) {
+            Some(s) => {
+                *s = result.map_or_else(OpState::Failed, |()| OpState::Done(None));
+                None
+            }
+            None => result.err(),
+        }
+    }
 }
 
 impl AppState {
@@ -271,6 +296,16 @@ impl AppState {
             E::AuthorizedAppsLoaded(r) => self.account.authorized_apps = Some(r),
             E::ConsentsLoaded(r) => self.account.consents = Some(r),
             E::StandingLoaded(r) => self.account.standing = Some(r),
+            E::SecurityKeysLoaded(r) => self.account.security_keys = Some(r),
+            E::Mfa(p) => self.account.mfa = p,
+            E::BackupCodes { op, result } => {
+                let result = result.map(|codes| self.account.backup_codes = Some(codes));
+                return self.account.finish(op, result);
+            }
+            E::CodesNonce { op, result } => {
+                let result = result.map(|n| self.account.codes_nonce = Some(n));
+                return self.account.finish(op, result);
+            }
             E::Done { op, result } => {
                 if let Ok(Some(id)) = result
                     && matches!(op.kind, OpKind::CreateGuild | OpKind::AcceptInvite | OpKind::CreateChannel)

@@ -114,7 +114,8 @@ pub enum ChatCommand {
     Typing { channel_id: Id },
     /// Op 3 for this session (§1.3), keeping the current custom status. Not persisted: the
     /// settings write (`PATCH /users/@me/settings` / proto) belongs to the settings block.
-    SetStatus { status: UserStatus },
+    /// `afk`: an automatic idle (CustomIdle), like the official auto-idle.
+    SetStatus { status: UserStatus, afk: bool },
     /// `GET /channels/{c}/messages/pins?before=<pinned_at>&limit=50` -> `PinsLoaded`.
     FetchPins { channel_id: Id, before: Option<String> },
     /// `PUT /channels/{c}/messages/pins/{m}` (PIN_MESSAGES in guilds). Failures: `ActionFailed`.
@@ -133,8 +134,9 @@ pub enum ChatCommand {
     /// "Mark unread" (§1.9): `POST …/messages/{message_id}/ack {"manual":true,"mention_count"}`.
     /// Get both values from `AppState::mark_unread`. Failures: `ActionFailed`.
     MarkUnread { channel_id: Id, message_id: Id, mention_count: u32 },
-    /// Jump to a message (§1.10): `GET …/messages?around={m}&limit=50` -> `AroundLoaded`.
-    FetchAround { channel_id: Id, message_id: Id },
+    /// Jump to a message (§1.10): `GET …/messages?around={m}&limit={limit}` -> `AroundLoaded`
+    /// (the jump window asks 50; MessageLinkEmbeds 1, the message itself).
+    FetchAround { channel_id: Id, message_id: Id, limit: u8 },
     /// Remove embeds (§1.9): `PATCH …/messages/{m} {"flags": flags | 4}`; `flags` = the
     /// message's current flags. Failures: `ActionFailed`.
     SuppressEmbeds { channel_id: Id, message_id: Id, flags: u64 },
@@ -534,9 +536,42 @@ pub enum AccountCommand {
     UpdatePronouns { pronouns: String },
     /// `PATCH /users/@me/profile {"accent_color"}` (0xRRGGBB, None = clear).
     UpdateAccentColor { color: Option<u32> },
-    /// `PATCH /users/@me {"username","password"}` (needs the current password; 2FA accounts
-    /// may get `MfaRequired` -> error text, no logout).
+    /// `PATCH /users/@me {"username","password"}` (needs the current password; may need the
+    /// 2FA re-check: `AccountEvent::Mfa`).
     UpdateUsername { username: String, password: Secret },
+    // ----- Password and Authentication (SETTINGS_NOTES §1 Account, FEATURES_NOTES §0.2, §3.2).
+    // A rotated token replaces the session's everywhere: REST, the gateway (re-identify) and
+    // the keyring only if this login is remembered; never a file. Commands marked "2FA" may
+    // first answer `AccountEvent::Mfa(Some(prompt))`: the backend keeps the command (and the
+    // ticket) until `FinishMfa` (then retries it once) or `CancelMfa`.
+    /// `PATCH /users/@me {"password","new_password"}` (new: 8-72 chars). 2FA.
+    ChangePassword { password: Secret, new_password: Secret },
+    /// Authenticator step 1: is the password right (60005)? -> `Done`.
+    CheckTotpPassword { password: Secret },
+    /// Authenticator step 2 with the secret shown as QR code and the app's code ->
+    /// `BackupCodes` (to show once).
+    EnableTotp { password: Secret, secret: Secret, code: Secret },
+    /// Remove the authenticator app (confirm first). 2FA.
+    DisableTotp,
+    /// SMS backup on / off (needs the authenticator app and a verified phone). 2FA.
+    SetSmsMfa { enable: bool, password: Secret },
+    /// `GET …/mfa/webauthn/credentials` -> `SecurityKeysLoaded`.
+    FetchSecurityKeys,
+    /// Rename a security key, then the list.
+    RenameSecurityKey { id: Id, name: String },
+    /// Delete a security key (confirm first), then the list. 2FA.
+    DeleteSecurityKey { id: Id },
+    /// View Backup Codes step 1 (password) -> `CodesNonce`; Discord emails a key.
+    BackupCodesChallenge { password: Secret },
+    /// Step 2: the emailed key and step 1's nonce (`regenerate_nonce` for new codes) ->
+    /// `BackupCodes`.
+    ViewBackupCodes { key: Secret, nonce: Secret, regenerate: bool },
+    /// Pass the open 2FA prompt with this code (or password), then retry its action once.
+    FinishMfa { kind: crate::api::account::MfaKind, code: Secret },
+    /// Text the prompt's SMS code -> `Mfa(Some)` with `sms_phone`.
+    MfaSms,
+    /// Close the prompt: its action and ticket are dropped.
+    CancelMfa,
     /// Equip / unequip a collectible, display-name style or profile theme for real
     /// (`CosmeticsPatch`; only owned items, name style / theme only with Nitro: the editor
     /// checks). Only on the editor's "Apply to account" / "Remove" click.
@@ -721,6 +756,21 @@ pub enum OpKind {
     UpdatePronouns,
     UpdateAccentColor,
     UpdateUsername,
+    ChangePassword,
+    CheckTotpPassword,
+    EnableTotp,
+    DisableTotp,
+    SetSmsMfa,
+    FetchSecurityKeys,
+    /// Target: the key.
+    RenameSecurityKey,
+    /// Target: the key.
+    DeleteSecurityKey,
+    BackupCodesChallenge,
+    ViewBackupCodes,
+    FinishMfa,
+    MfaSms,
+    CancelMfa,
     UpdateCosmetics,
     CreateGuild,
     LeaveGuild,
@@ -777,6 +827,19 @@ impl AccountCommand {
             C::UpdatePronouns { .. } => (OpKind::UpdatePronouns, None),
             C::UpdateAccentColor { .. } => (OpKind::UpdateAccentColor, None),
             C::UpdateUsername { .. } => (OpKind::UpdateUsername, None),
+            C::ChangePassword { .. } => (OpKind::ChangePassword, None),
+            C::CheckTotpPassword { .. } => (OpKind::CheckTotpPassword, None),
+            C::EnableTotp { .. } => (OpKind::EnableTotp, None),
+            C::DisableTotp => (OpKind::DisableTotp, None),
+            C::SetSmsMfa { .. } => (OpKind::SetSmsMfa, None),
+            C::FetchSecurityKeys => (OpKind::FetchSecurityKeys, None),
+            C::RenameSecurityKey { id, .. } => (OpKind::RenameSecurityKey, Some(*id)),
+            C::DeleteSecurityKey { id } => (OpKind::DeleteSecurityKey, Some(*id)),
+            C::BackupCodesChallenge { .. } => (OpKind::BackupCodesChallenge, None),
+            C::ViewBackupCodes { .. } => (OpKind::ViewBackupCodes, None),
+            C::FinishMfa { .. } => (OpKind::FinishMfa, None),
+            C::MfaSms => (OpKind::MfaSms, None),
+            C::CancelMfa => (OpKind::CancelMfa, None),
             C::UpdateCosmetics { .. } => (OpKind::UpdateCosmetics, None),
             C::CreateGuild { .. } => (OpKind::CreateGuild, None),
             C::LeaveGuild { guild_id } => (OpKind::LeaveGuild, Some(*guild_id)),
@@ -811,6 +874,37 @@ impl AccountCommand {
         };
         AccountOp { kind, target }
     }
+
+    /// A copy to retry after the 2FA re-check, for the actions Discord may gate (FEATURES_NOTES
+    /// §0.2); None = a 60003 answer stays an error.
+    fn mfa_retry(&self) -> Option<AccountCommand> {
+        use AccountCommand as C;
+        Some(match self {
+            C::LogoutSessions { id_hashes } => C::LogoutSessions { id_hashes: id_hashes.clone() },
+            C::RevokeAuthorizedApp { token_id } => C::RevokeAuthorizedApp { token_id: *token_id },
+            C::UpdateUsername { username, password } => C::UpdateUsername { username: username.clone(), password: password.clone() },
+            C::ChangePassword { password, new_password } => C::ChangePassword { password: password.clone(), new_password: new_password.clone() },
+            C::DisableTotp => C::DisableTotp,
+            C::SetSmsMfa { enable, password } => C::SetSmsMfa { enable: *enable, password: password.clone() },
+            C::DeleteSecurityKey { id } => C::DeleteSecurityKey { id: *id },
+            _ => return None,
+        })
+    }
+}
+
+/// The 2FA re-check a gated action waits for (`AccountEvent::Mfa`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MfaPrompt {
+    /// The waiting action (its progress entry stays `Pending`).
+    pub op: AccountOp,
+    /// Ways the ticket can be passed, in Discord's order.
+    pub methods: Vec<crate::api::account::MfaKind>,
+    /// Masked phone the SMS code went to (after `MfaSms`).
+    pub sms_phone: Option<String>,
+    /// The last code was wrong, or the SMS could not be sent.
+    pub error: Option<String>,
+    /// UI: `FinishMfa` / `MfaSms` sent, waiting (a new prompt from the backend clears it).
+    pub busy: bool,
 }
 
 /// Answers to `AccountCommand`s (inside `BackendEvent::Account`). Errors are full user-facing
@@ -835,6 +929,14 @@ pub enum AccountEvent {
     /// Account Standing: `account_standing.state` (100 all good, 200 limited, 300 very
     /// limited, 400 at risk, 500 suspended).
     StandingLoaded(Result<u16, String>),
+    /// Security keys (after a fetch, rename or delete).
+    SecurityKeysLoaded(Result<Vec<crate::api::account::SecurityKey>, String>),
+    /// Backup codes to show once (`EnableTotp`, `ViewBackupCodes`); `op` as in `Done`.
+    BackupCodes { op: AccountOp, result: Result<Vec<crate::api::account::BackupCode>, String> },
+    /// View Backup Codes step 1: the nonces for step 2.
+    CodesNonce { op: AccountOp, result: Result<crate::api::account::CodesNonce, String> },
+    /// Some: an action waits for the 2FA re-check (show / update the prompt); None: close it.
+    Mfa(Option<MfaPrompt>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -997,14 +1099,93 @@ struct Session {
     /// Only the first 401 of a session is reported as AuthFailed.
     auth_reported: Arc<AtomicBool>,
     voice: VoiceManager,
+    /// This login is in the keyring: a rotated token replaces it there (`TokenSwap`).
+    remember: bool,
+    /// The gated action waiting for its 2FA re-check (`FinishMfa` / `CancelMfa`).
+    mfa: Arc<std::sync::Mutex<Option<PendingMfa>>>,
+    /// Set by `handle_account` for the `spawn` of the command it handles.
+    gate: Option<Gate>,
+}
+
+/// A gated action that got 60003: its ticket, the methods, and the command to retry.
+struct PendingMfa {
+    ticket: Secret,
+    methods: Vec<crate::api::account::MfaKind>,
+    op: AccountOp,
+    cmd: AccountCommand,
+    /// Tells this entry apart from a later one (the expiry only drops its own).
+    at: Instant,
+}
+
+/// The command a `spawn` runs may be gated: its op, a copy to keep for the retry, and (when it
+/// is that retry) the re-check to pass first.
+struct Gate {
+    op: AccountOp,
+    retry: AccountCommand,
+    finish: Option<MfaFinish>,
+}
+
+/// The re-check of a retry: ticket, the ticket's methods (to ask again), and the typed answer.
+/// `Instant`: the pending entry's `at`, kept through a wrong-code retry so its TTL still ends it.
+type MfaFinish = (Secret, Vec<crate::api::account::MfaKind>, crate::api::account::MfaKind, Secret, Instant);
+
+/// A 60003 ticket lives about 5 minutes: the kept command (maybe holding passwords) goes then.
+const MFA_TICKET_TTL: Duration = Duration::from_secs(300);
+
+fn mfa_slot(m: &std::sync::Mutex<Option<PendingMfa>>) -> std::sync::MutexGuard<'_, Option<PendingMfa>> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn mfa_prompt(p: Option<MfaPrompt>) -> BackendEvent {
+    BackendEvent::Account(AccountEvent::Mfa(p))
+}
+
+/// Where a rotated login token goes (FEATURES_NOTES §3.2): REST, the gateway, the keyring only
+/// for a remembered login. Never a file, a log or an error text.
+struct TokenSwap {
+    gateway: tmpsc::UnboundedSender<GatewayCommand>,
+    remember: bool,
+    sink: EventSink,
+}
+
+impl TokenSwap {
+    async fn apply(self, api: Arc<ApiClient>, token: Token) {
+        let (gateway, remember) = (self.gateway, self.remember);
+        let saved = tokio::task::spawn_blocking(move || swap_token(&api, &gateway, remember, token, crate::auth::save_token)).await;
+        if let Some(e) = match saved {
+            Ok(r) => r.err(),
+            Err(_) => Some("credential store task failed".into()),
+        } {
+            self.sink.send(BackendEvent::ActionFailed(format!("Your login changed, but the new one could not be remembered ({e}).")));
+        }
+    }
+}
+
+/// Puts `token` in place of the session's: REST client, gateway (`SetToken` re-identifies),
+/// and `save` (the keyring) only when `remember`. Returns `save`'s error.
+fn swap_token(
+    api: &ApiClient,
+    gateway: &tmpsc::UnboundedSender<GatewayCommand>,
+    remember: bool,
+    token: Token,
+    save: impl FnOnce(&Token) -> Result<(), String>,
+) -> Result<(), String> {
+    api.set_token(&token);
+    // Gateway first: it holds the old token's 4004 only so long, and the keyring may block.
+    let _ = gateway.send(GatewayCommand::SetToken(token.clone()));
+    if remember { save(&token) } else { Ok(()) }
 }
 
 impl Session {
-    fn start(api: Arc<ApiClient>, token: Token, props: &Arc<ClientProps>, sink: &EventSink, voice: &VoiceManager) -> Self {
+    fn start(api: Arc<ApiClient>, token: Token, remember: bool, props: &Arc<ClientProps>, sink: &EventSink, voice: &VoiceManager) -> Self {
         let gateway = crate::gateway::spawn(token, props.clone(), sink.clone(), voice.feed());
         voice.attach_gateway(Some(gateway.tx.clone()));
         let (tasks, auth_reported) = (tokio::task::JoinSet::new(), Arc::new(AtomicBool::new(false)));
-        Self { api, gateway, tasks, auth_reported, voice: voice.clone() }
+        Self { api, gateway, tasks, auth_reported, voice: voice.clone(), remember, mfa: Default::default(), gate: None }
+    }
+
+    fn token_swap(&self, sink: &EventSink) -> TokenSwap {
+        TokenSwap { gateway: self.gateway.tx.clone(), remember: self.remember, sink: sink.clone() }
     }
 
     /// Ask the gateway to close (ending any call); returns its task so a caller can wait for it.
@@ -1016,7 +1197,8 @@ impl Session {
 
     /// Run one REST call in its own task (the rate limiter serializes per bucket).
     /// `report` turns the outcome into an event (None = nothing to tell the UI).
-    /// 401s become AuthFailed instead.
+    /// 401s become AuthFailed instead. A gated command (`gate`) that gets 60003 is kept for
+    /// the 2FA prompt instead of being reported; its retry passes the re-check first.
     fn spawn<T: Send + 'static>(
         &mut self,
         sink: &EventSink,
@@ -1025,16 +1207,55 @@ impl Session {
     ) {
         let sink = sink.clone();
         let auth_reported = self.auth_reported.clone();
+        let (api, slot, gate) = (self.api.clone(), self.mfa.clone(), self.gate.take());
         self.tasks.spawn(async move {
-            let result = match call.await {
-                Ok(v) => Ok(v),
-                Err(ApiError::Unauthorized) => {
+            let (outcome, gate) = match gate {
+                Some(Gate { op, retry, finish: Some((ticket, methods, kind, code, at)) }) => match api.mfa_finish(&ticket, kind, &code).await {
+                    Ok(jwt) => {
+                        sink.send(mfa_prompt(None));
+                        (crate::api::with_mfa(&jwt, call).await, None)
+                    }
+                    // Wrong code: the ticket still works, ask again.
+                    Err((e, Some(c))) if crate::api::account::WRONG_MFA_CODE.contains(&c) => {
+                        let prompt = MfaPrompt { op, methods: methods.clone(), sms_phone: None, error: Some(e.to_string()), busy: false };
+                        *mfa_slot(&slot) = Some(PendingMfa { ticket, methods, op, cmd: retry, at });
+                        sink.send(mfa_prompt(Some(prompt)));
+                        return;
+                    }
+                    Err((e, _)) => {
+                        sink.send(mfa_prompt(None));
+                        (Err(e), None)
+                    }
+                },
+                gate => (call.await, gate),
+            };
+            let result = match (outcome, gate) {
+                (Ok(v), _) => Ok(v),
+                (Err(ApiError::Unauthorized), _) => {
                     if !auth_reported.swap(true, Ordering::Relaxed) {
                         sink.send(BackendEvent::AuthFailed(ApiError::Unauthorized.to_string()));
                     }
                     return;
                 }
-                Err(e) => Err(e.to_string()),
+                (Err(ApiError::MfaRequired(ch)), Some(Gate { op, retry, .. })) if !ch.methods.is_empty() => {
+                    let at = Instant::now();
+                    let prompt = MfaPrompt { op, methods: ch.methods.clone(), sms_phone: None, error: None, busy: false };
+                    *mfa_slot(&slot) = Some(PendingMfa { ticket: ch.ticket, methods: ch.methods, op, cmd: retry, at });
+                    sink.send(mfa_prompt(Some(prompt)));
+                    // Not passed in time: the ticket is dead, so drop the command (and its passwords).
+                    tokio::time::sleep(MFA_TICKET_TTL).await;
+                    let expired = {
+                        let mut s = mfa_slot(&slot);
+                        let mine = s.as_ref().is_some_and(|p| p.at == at);
+                        mine && s.take().is_some()
+                    };
+                    if !expired {
+                        return;
+                    }
+                    sink.send(mfa_prompt(None));
+                    Err("The two-factor check timed out. Try again.".to_owned())
+                }
+                (Err(e), _) => Err(e.to_string()),
             };
             if let Some(ev) = report(result) {
                 sink.send(ev);
@@ -1144,8 +1365,8 @@ fn handle_chat(cmd: ChatCommand, session: &mut Option<Session>, sink: &EventSink
                 });
             }
         }
-        C::SetStatus { status } => match session {
-            Some(s) => s.gateway.send(GatewayCommand::UpdatePresence { status }),
+        C::SetStatus { status, afk } => match session {
+            Some(s) => s.gateway.send(GatewayCommand::UpdatePresence { status, afk }),
             None => sink.send(BackendEvent::ActionFailed("Not connected".into())),
         },
         C::FetchPins { channel_id, before } => {
@@ -1188,8 +1409,8 @@ fn handle_chat(cmd: ChatCommand, session: &mut Option<Session>, sink: &EventSink
             move |api| async move { api.mark_unread(channel_id, message_id, mention_count).await },
             failed("Could not mark the message unread"),
         ),
-        C::FetchAround { channel_id, message_id } => {
-            rest(session, sink, move |api| async move { api.messages_around(channel_id, message_id, 50).await }, move |result| {
+        C::FetchAround { channel_id, message_id, limit } => {
+            rest(session, sink, move |api| async move { api.messages_around(channel_id, message_id, limit).await }, move |result| {
                 Some(chat_ev(ChatEvent::AroundLoaded { channel_id, message_id, result }))
             });
         }
@@ -1386,12 +1607,59 @@ fn created(op: AccountOp, what: &'static str) -> impl FnOnce(Result<Id, String>)
     move |r| Some(BackendEvent::Account(AccountEvent::Done { op, result: r.map(Some).map_err(|e| format!("{what}: {e}")) }))
 }
 
+/// A request that rotates the login token (password, authenticator app): the gateway holds a
+/// 4004 and REST ignores old-token 401s meanwhile, then `TokenSwap` puts the new token in place.
+fn rotate<T: Send + 'static, F>(
+    session: &mut Option<Session>,
+    sink: &EventSink,
+    call: impl FnOnce(Arc<ApiClient>) -> F + Send + 'static,
+    report: impl FnOnce(Result<T, String>) -> Option<BackendEvent> + Send + 'static,
+) where
+    F: Future<Output = Result<(Token, T), ApiError>> + Send + 'static,
+{
+    let Some(swap) = session.as_ref().map(|s| s.token_swap(sink)) else {
+        if let Some(e) = report(Err("Not connected".into())) {
+            sink.send(e);
+        }
+        return;
+    };
+    rest(
+        session,
+        sink,
+        move |api| async move {
+            let _ = swap.gateway.send(GatewayCommand::ExpectToken);
+            let (token, value) = {
+                let _rotating = api.rotation();
+                let (token, value) = call(api.clone()).await?;
+                // Before the guard goes: an old-token 401 must still not count as a logout.
+                api.set_token(&token);
+                (token, value)
+            };
+            swap.apply(api, token).await;
+            Ok(value)
+        },
+        report,
+    );
+}
+
 /// `Command::Account`: every request goes through `rest` (answers + 401 handling); the calls
-/// live in `api/account.rs` (settings proto, profile) and `api/guild_admin.rs` (guilds,
-/// channels, roles, members, emoji, invites, notification settings).
-fn handle_account(cmd: AccountCommand, session: &mut Option<Session>, sink: &EventSink) {
-    use AccountCommand as C;
+/// live in `api/account.rs` (settings proto, profile, password and 2FA) and
+/// `api/guild_admin.rs` (guilds, channels, roles, members, emoji, invites, notification
+/// settings). `finish`: this command is the retry of a gated one, after this re-check.
+fn handle_account(cmd: AccountCommand, session: &mut Option<Session>, sink: &EventSink, finish: Option<MfaFinish>) {
     let op = cmd.op();
+    if let Some(s) = session.as_mut() {
+        s.gate = cmd.mfa_retry().map(|retry| Gate { op, retry, finish });
+    }
+    handle_account_cmd(cmd, op, session, sink);
+    // Every arm spawns at most once; nothing may inherit this command's gate.
+    if let Some(s) = session.as_mut() {
+        s.gate = None;
+    }
+}
+
+fn handle_account_cmd(cmd: AccountCommand, op: AccountOp, session: &mut Option<Session>, sink: &EventSink) {
+    use AccountCommand as C;
     let ev = BackendEvent::Account;
     match cmd {
         // The UI sends the op 3 (`ChatCommand::SetStatus`) just before this.
@@ -1485,6 +1753,92 @@ fn handle_account(cmd: AccountCommand, session: &mut Option<Session>, sink: &Eve
             move |api| async move { api.set_username(&username, &password).await },
             done(op, "Could not change your username"),
         ),
+        C::ChangePassword { password, new_password } => rotate(
+            session,
+            sink,
+            move |api| async move { Ok((api.change_password(&password, &new_password).await?, ())) },
+            done(op, "Could not change your password"),
+        ),
+        C::CheckTotpPassword { password } => {
+            rest(session, sink, move |api| async move { api.totp_check_password(&password).await }, done(op, "Could not enable the authenticator app"));
+        }
+        C::EnableTotp { password, secret, code } => rotate(
+            session,
+            sink,
+            move |api| async move { api.enable_totp(&password, &secret, &code).await },
+            move |r| Some(ev(AccountEvent::BackupCodes { op, result: r.map_err(|e| format!("Could not enable the authenticator app: {e}")) })),
+        ),
+        C::DisableTotp => rotate(
+            session,
+            sink,
+            |api| async move { Ok((api.disable_totp().await?, ())) },
+            done(op, "Could not remove the authenticator app"),
+        ),
+        C::SetSmsMfa { enable, password } => rest(
+            session,
+            sink,
+            move |api| async move { api.set_sms_mfa(enable, &password).await },
+            done(op, if enable { "Could not turn on SMS authentication" } else { "Could not remove SMS authentication" }),
+        ),
+        C::FetchSecurityKeys => rest(session, sink, |api| async move { api.security_keys().await }, move |r| {
+            Some(ev(AccountEvent::SecurityKeysLoaded(r.map_err(|e| format!("Could not load your security keys: {e}")))))
+        }),
+        C::RenameSecurityKey { id, name } => rest(
+            session,
+            sink,
+            move |api| async move {
+                api.rename_security_key(id, &name).await?;
+                api.security_keys().await
+            },
+            move |r| Some(ev(AccountEvent::SecurityKeysLoaded(r.map_err(|e| format!("Could not rename the key: {e}"))))),
+        ),
+        C::DeleteSecurityKey { id } => rest(
+            session,
+            sink,
+            move |api| async move {
+                api.delete_security_key(id).await?;
+                api.security_keys().await
+            },
+            move |r| Some(ev(AccountEvent::SecurityKeysLoaded(r.map_err(|e| format!("Could not remove the key: {e}"))))),
+        ),
+        C::BackupCodesChallenge { password } => rest(
+            session,
+            sink,
+            move |api| async move { api.backup_codes_challenge(&password).await },
+            move |r| Some(ev(AccountEvent::CodesNonce { op, result: r.map_err(|e| format!("Could not send the key: {e}")) })),
+        ),
+        C::ViewBackupCodes { key, nonce, regenerate } => rest(
+            session,
+            sink,
+            move |api| async move { api.backup_codes(&key, &nonce, regenerate).await },
+            move |r| Some(ev(AccountEvent::BackupCodes { op, result: r.map_err(|e| format!("Could not load your backup codes: {e}")) })),
+        ),
+        C::FinishMfa { kind, code } => {
+            let pending = session.as_ref().and_then(|s| mfa_slot(&s.mfa).take());
+            match pending {
+                Some(p) => handle_account(p.cmd, session, sink, Some((p.ticket, p.methods, kind, code, p.at))),
+                None => {
+                    sink.send(mfa_prompt(None));
+                    sink.send(BackendEvent::ActionFailed("That two-factor check expired. Try the action again.".into()));
+                }
+            }
+        }
+        C::MfaSms => {
+            let pending = session.as_ref().and_then(|s| mfa_slot(&s.mfa).as_ref().map(|p| (p.ticket.clone(), p.methods.clone(), p.op)));
+            let Some((ticket, methods, gated)) = pending else { return sink.send(mfa_prompt(None)) };
+            rest(session, sink, move |api| async move { api.mfa_send_sms(&ticket).await }, move |r| {
+                let (sms_phone, error) = match r {
+                    Ok(phone) => (Some(phone), None),
+                    Err(e) => (None, Some(format!("Could not send the code: {e}"))),
+                };
+                Some(mfa_prompt(Some(MfaPrompt { op: gated, methods, sms_phone, error, busy: false })))
+            });
+        }
+        C::CancelMfa => {
+            if let Some(s) = session.as_ref() {
+                mfa_slot(&s.mfa).take();
+            }
+        }
         C::CreateGuild { name, icon } => {
             rest(session, sink, move |api| async move { api.create_guild(&name, icon).await }, created(op, "Could not create the server"));
         }
@@ -1711,7 +2065,7 @@ async fn run(
                         if let Some(n) = notice.take() {
                             sink.send(BackendEvent::ActionFailed(n.into()));
                         }
-                        session = Some(Session::start(api, token.clone(), &props, &sink, &voice));
+                        session = Some(Session::start(api, token.clone(), remember, &props, &sink, &voice));
                         if remember {
                             let t = token.clone();
                             let saved = tokio::task::spawn_blocking(move || crate::auth::save_token(&t)).await;
@@ -1744,7 +2098,8 @@ async fn run(
                     old.shutdown();
                 }
                 let api = Arc::new(ApiClient::new(token.clone(), props.clone()));
-                session = Some(Session::start(api, token, &props, &sink, &voice));
+                // Resume runs with the token the keyring held: a rotated one goes back there.
+                session = Some(Session::start(api, token, true, &props, &sink, &voice));
             }
             // Login calls run inline: one user action = one request, never retried.
             Command::LoginPassword { login, password, remember } => {
@@ -1934,7 +2289,7 @@ async fn run(
             Command::Video(cmd) => voice.video(cmd),
             Command::Chat(c) => handle_chat(c, &mut session, &sink, &props, &mut chat),
             Command::Social(c) => handle_social(c, &mut session, &sink),
-            Command::Account(c) => handle_account(c, &mut session, &sink),
+            Command::Account(c) => handle_account(c, &mut session, &sink, None),
         }
     }
 
@@ -1996,9 +2351,12 @@ mod tests {
         let kick = AccountCommand::KickMember { guild_id: Id(1), user_id: Id(2), reason: None };
         let op = kick.op();
         assert_eq!(op, AccountOp { kind: OpKind::KickMember, target: Some(Id(2)) });
-        handle_account(kick, &mut session, &sink);
-        handle_account(AccountCommand::ResolveInvite { code: "abc".into() }, &mut session, &sink);
-        handle_account(AccountCommand::SetPersistentStatus { status: UserStatus::Dnd }, &mut session, &sink);
+        handle_account(kick, &mut session, &sink, None);
+        handle_account(AccountCommand::ResolveInvite { code: "abc".into() }, &mut session, &sink, None);
+        handle_account(AccountCommand::SetPersistentStatus { status: UserStatus::Dnd }, &mut session, &sink, None);
+        let pw = || Secret::new("pw".into());
+        handle_account(AccountCommand::ChangePassword { password: pw(), new_password: pw() }, &mut session, &sink, None);
+        handle_account(AccountCommand::FinishMfa { kind: crate::api::account::MfaKind::Totp, code: pw() }, &mut session, &sink, None);
         let evs: Vec<BackendEvent> = rx.try_iter().collect();
         assert!(
             matches!(&evs[0], BackendEvent::Account(AccountEvent::Done { op: o, result: Err(e) }) if *o == op && e.starts_with("Could not kick")),
@@ -2006,6 +2364,56 @@ mod tests {
         );
         assert!(matches!(&evs[1], BackendEvent::Account(AccountEvent::InviteResolved { code, result: Err(_) }) if code == "abc"));
         assert!(matches!(&evs[2], BackendEvent::Account(AccountEvent::Done { op: AccountOp { kind: OpKind::SetPersistentStatus, target: None }, .. })));
-        assert_eq!(evs.len(), 3);
+        assert!(matches!(&evs[3], BackendEvent::Account(AccountEvent::Done { op: AccountOp { kind: OpKind::ChangePassword, .. }, result: Err(e) }) if e.contains("password")));
+        // No pending re-check offline: the prompt closes with a hint.
+        assert!(matches!(&evs[4], BackendEvent::Account(AccountEvent::Mfa(None))));
+        assert!(matches!(&evs[5], BackendEvent::ActionFailed(m) if m.contains("expired")));
+        assert_eq!(evs.len(), 6);
+    }
+
+    #[test]
+    fn gated_commands_keep_a_retry_copy() {
+        let pw = Secret::new("pw".into());
+        let gated = [
+            AccountCommand::LogoutSessions { id_hashes: vec!["h".into()] },
+            AccountCommand::RevokeAuthorizedApp { token_id: Id(3) },
+            AccountCommand::ChangePassword { password: pw.clone(), new_password: pw.clone() },
+            AccountCommand::DisableTotp,
+            AccountCommand::SetSmsMfa { enable: true, password: pw.clone() },
+            AccountCommand::DeleteSecurityKey { id: Id(4) },
+            AccountCommand::UpdateUsername { username: "u".into(), password: pw },
+        ];
+        for c in gated {
+            let copy = c.mfa_retry().expect("gated");
+            assert_eq!(copy.op(), c.op());
+        }
+        assert!(AccountCommand::FetchSecurityKeys.mfa_retry().is_none());
+        assert!(AccountCommand::KickMember { guild_id: Id(1), user_id: Id(2), reason: None }.mfa_retry().is_none());
+    }
+
+    #[test]
+    fn token_swap_reaches_rest_and_gateway_and_the_keyring_only_when_remembered() {
+        let props = Arc::new(ClientProps::new(&crate::config::Settings::default()));
+        let old = Token::parse(&"o".repeat(30)).unwrap();
+        let new = Token::parse(&"n".repeat(30)).unwrap();
+        for remember in [false, true] {
+            let api = ApiClient::new(old.clone(), props.clone());
+            let (gw, mut gw_rx) = tmpsc::unbounded_channel();
+            let mut saved = Vec::new();
+            // The keyring is the only store `swap_token` can write to; nothing else is passed in.
+            let r = swap_token(&api, &gw, remember, new.clone(), |t| {
+                saved.push(t.clone());
+                Ok(())
+            });
+            assert!(r.is_ok());
+            assert_eq!(saved, if remember { vec![new.clone()] } else { vec![] }, "remember={remember}");
+            assert!(matches!(gw_rx.try_recv(), Ok(GatewayCommand::SetToken(t)) if t == new));
+            assert!(api.sends(&new), "REST uses the new token");
+            assert!(!format!("{:?}", GatewayCommand::SetToken(new.clone())).contains("nnnn"), "Debug stays redacted");
+        }
+        let api = ApiClient::new(old, props);
+        let (gw, _rx) = tmpsc::unbounded_channel();
+        let err = swap_token(&api, &gw, true, new, |_| Err("store locked".into()));
+        assert_eq!(err, Err("store locked".into()), "a keyring failure is reported, the swap still happens");
     }
 }

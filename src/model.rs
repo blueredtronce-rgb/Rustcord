@@ -204,6 +204,9 @@ pub struct User {
     #[serde(skip_serializing)]
     #[allow(clippy::box_collection, reason = "8 bytes per cached user, not 24")]
     pub phone: Option<Box<String>>,
+    /// Private flags (only sent for me): 1 << 4 = SMS 2FA on (My Account > SMS Backup).
+    #[serde(deserialize_with = "null_default", skip_serializing_if = "is_zero")]
+    pub flags: u64,
     // ----- cosmetics (docs/COSMETICS_NOTES.md §0.3). Boxed: most users have none, and every
     // cached user carries these slots.
     /// Badge fallback without a loaded profile (`ui::cosmetics::flag_badges`).
