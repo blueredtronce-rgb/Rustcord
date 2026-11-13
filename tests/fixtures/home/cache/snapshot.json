@@ -1,0 +1,1325 @@
+{
+ "version": 1,
+ "me": {
+  "id": "1565443437363200001",
+  "username": "ferris_dev",
+  "global_name": "Ferris",
+  "discriminator": "0",
+  "avatar": null,
+  "bot": false
+ },
+ "users": [
+  {
+   "id": "1565443437363200002",
+   "username": "alice",
+   "global_name": "Alice",
+   "discriminator": "0",
+   "avatar": null,
+   "bot": false
+  },
+  {
+   "id": "1565443437363200003",
+   "username": "bobby",
+   "global_name": "Bob",
+   "discriminator": "0",
+   "avatar": null,
+   "bot": false
+  },
+  {
+   "id": "1565443437363200004",
+   "username": "cara.k",
+   "global_name": "Cara",
+   "discriminator": "0",
+   "avatar": null,
+   "bot": false
+  },
+  {
+   "id": "1565443437363200005",
+   "username": "dan_ops",
+   "global_name": null,
+   "discriminator": "0",
+   "avatar": null,
+   "bot": false
+  }
+ ],
+ "guilds": [
+  {
+   "id": "1565443437363200006",
+   "name": "Rust Workshop",
+   "icon": null,
+   "owner_id": "1565443437363200002",
+   "roles": [
+    {
+     "id": "1565443437363200006",
+     "name": "@everyone",
+     "color": 0,
+     "position": 0,
+     "permissions": "104324673",
+     "hoist": false
+    },
+    {
+     "id": "1565443437363200007",
+     "name": "Maintainers",
+     "color": 15234107,
+     "position": 2,
+     "permissions": "104324673",
+     "hoist": true
+    },
+    {
+     "id": "1565443437363200008",
+     "name": "Contributors",
+     "color": 5223046,
+     "position": 1,
+     "permissions": "104324673",
+     "hoist": true
+    }
+   ],
+   "emojis": [],
+   "channels": [
+    {
+     "id": "1565443437363200009",
+     "type": 4,
+     "guild_id": "1565443437363200006",
+     "name": "Text",
+     "position": 0,
+     "parent_id": null,
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200010",
+     "type": 0,
+     "guild_id": "1565443437363200006",
+     "name": "general",
+     "position": 0,
+     "parent_id": "1565443437363200009",
+     "topic": "Talk about anything Rust",
+     "last_message_id": "1569719228301312032",
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200011",
+     "type": 0,
+     "guild_id": "1565443437363200006",
+     "name": "help",
+     "position": 1,
+     "parent_id": "1565443437363200009",
+     "topic": "Ask questions",
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200012",
+     "type": 5,
+     "guild_id": "1565443437363200006",
+     "name": "showcase",
+     "position": 2,
+     "parent_id": "1565443437363200009",
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200013",
+     "type": 4,
+     "guild_id": "1565443437363200006",
+     "name": "Voice",
+     "position": 1,
+     "parent_id": null,
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200014",
+     "type": 2,
+     "guild_id": "1565443437363200006",
+     "name": "Lounge",
+     "position": 0,
+     "parent_id": "1565443437363200013",
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    }
+   ],
+   "default_message_notifications": 1,
+   "unavailable": false
+  },
+  {
+   "id": "1565443437363200015",
+   "name": "Pixel Garden",
+   "icon": null,
+   "owner_id": "1565443437363200002",
+   "roles": [
+    {
+     "id": "1565443437363200015",
+     "name": "@everyone",
+     "color": 0,
+     "position": 0,
+     "permissions": "104324673",
+     "hoist": false
+    },
+    {
+     "id": "1565443437363200016",
+     "name": "Maintainers",
+     "color": 15234107,
+     "position": 2,
+     "permissions": "104324673",
+     "hoist": true
+    },
+    {
+     "id": "1565443437363200017",
+     "name": "Contributors",
+     "color": 5223046,
+     "position": 1,
+     "permissions": "104324673",
+     "hoist": true
+    }
+   ],
+   "emojis": [],
+   "channels": [
+    {
+     "id": "1565443437363200018",
+     "type": 4,
+     "guild_id": "1565443437363200015",
+     "name": "Chat",
+     "position": 0,
+     "parent_id": null,
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200019",
+     "type": 0,
+     "guild_id": "1565443437363200015",
+     "name": "lobby",
+     "position": 0,
+     "parent_id": "1565443437363200018",
+     "topic": null,
+     "last_message_id": "1569658712883200001",
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200020",
+     "type": 0,
+     "guild_id": "1565443437363200015",
+     "name": "art-share",
+     "position": 1,
+     "parent_id": "1565443437363200018",
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    }
+   ],
+   "default_message_notifications": 1,
+   "unavailable": false
+  },
+  {
+   "id": "1565443437363200021",
+   "name": "Night Owls",
+   "icon": null,
+   "owner_id": "1565443437363200002",
+   "roles": [
+    {
+     "id": "1565443437363200021",
+     "name": "@everyone",
+     "color": 0,
+     "position": 0,
+     "permissions": "104324673",
+     "hoist": false
+    },
+    {
+     "id": "1565443437363200022",
+     "name": "Maintainers",
+     "color": 15234107,
+     "position": 2,
+     "permissions": "104324673",
+     "hoist": true
+    },
+    {
+     "id": "1565443437363200023",
+     "name": "Contributors",
+     "color": 5223046,
+     "position": 1,
+     "permissions": "104324673",
+     "hoist": true
+    }
+   ],
+   "emojis": [],
+   "channels": [
+    {
+     "id": "1565443437363200024",
+     "type": 4,
+     "guild_id": "1565443437363200021",
+     "name": "Main",
+     "position": 0,
+     "parent_id": null,
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200025",
+     "type": 0,
+     "guild_id": "1565443437363200021",
+     "name": "chatter",
+     "position": 0,
+     "parent_id": "1565443437363200024",
+     "topic": null,
+     "last_message_id": "1569658712883200001",
+     "permission_overwrites": []
+    },
+    {
+     "id": "1565443437363200026",
+     "type": 0,
+     "guild_id": "1565443437363200021",
+     "name": "music",
+     "position": 1,
+     "parent_id": "1565443437363200024",
+     "topic": null,
+     "last_message_id": null,
+     "permission_overwrites": []
+    }
+   ],
+   "default_message_notifications": 1,
+   "unavailable": false
+  }
+ ],
+ "private_channels": [
+  {
+   "id": "1565443437363200027",
+   "type": 1,
+   "name": null,
+   "position": 0,
+   "last_message_id": "1569650324275200002",
+   "permission_overwrites": [],
+   "recipient_ids": [
+    "1565443437363200002"
+   ]
+  },
+  {
+   "id": "1565443437363200028",
+   "type": 1,
+   "name": null,
+   "position": 0,
+   "last_message_id": "1569650324275200002",
+   "permission_overwrites": [],
+   "recipient_ids": [
+    "1565443437363200003"
+   ]
+  },
+  {
+   "id": "1565443437363200029",
+   "type": 1,
+   "name": null,
+   "position": 0,
+   "last_message_id": "1569650324275200002",
+   "permission_overwrites": [],
+   "recipient_ids": [
+    "1565443437363200004"
+   ]
+  },
+  {
+   "id": "1565443437363200030",
+   "type": 3,
+   "name": "weekend plans",
+   "position": 0,
+   "last_message_id": "1569637741363200003",
+   "permission_overwrites": [],
+   "recipient_ids": [
+    "1565443437363200002",
+    "1565443437363200003",
+    "1565443437363200005"
+   ]
+  }
+ ],
+ "my_members": [
+  [
+   "1565443437363200006",
+   {
+    "nick": null,
+    "roles": [
+     "1565443437363200007"
+    ]
+   }
+  ],
+  [
+   "1565443437363200015",
+   {
+    "nick": null,
+    "roles": [
+     "1565443437363200016"
+    ]
+   }
+  ],
+  [
+   "1565443437363200021",
+   {
+    "nick": null,
+    "roles": [
+     "1565443437363200022"
+    ]
+   }
+  ]
+ ],
+ "read_states": [
+  {
+   "id": "1565443437363200010",
+   "last_message_id": "1569710445428736029",
+   "mention_count": 1,
+   "read_state_type": 0
+  },
+  {
+   "id": "1565443437363200019",
+   "last_message_id": "1569637741363200001",
+   "mention_count": 0,
+   "read_state_type": 0
+  },
+  {
+   "id": "1565443437363200025",
+   "last_message_id": "1569637741363200001",
+   "mention_count": 0,
+   "read_state_type": 0
+  }
+ ],
+ "guild_settings": [
+  {
+   "guild_id": null,
+   "muted": false,
+   "message_notifications": 0,
+   "suppress_everyone": false,
+   "suppress_roles": false,
+   "channel_overrides": []
+  }
+ ],
+ "selected_guild": "1565443437363200006",
+ "selected_channel": "1565443437363200010",
+ "last_channel_per_guild": [
+  [
+   "1565443437363200006",
+   "1565443437363200010"
+  ]
+ ],
+ "recent_messages": [
+  [
+   "1565443437363200010",
+   [
+    {
+     "id": "1569645710540800000",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Morning all! Anyone tried the new **async closures** yet?",
+     "timestamp": "2026-11-10T09:31:40+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569646117388288001",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Yes! They make `tokio::spawn` code *much* nicer.",
+     "timestamp": "2026-11-10T09:33:17+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569646524235776002",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Example:\n```rust\nlet f = async |x: u32| x * 2;\nprintln!(\"{}\", f(21).await);\n```",
+     "timestamp": "2026-11-10T09:34:54+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569646931083264003",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "> They make tokio code much nicer\nAgreed, also ~~no more~~ fewer boxed futures",
+     "timestamp": "2026-11-10T09:36:31+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569654900260864004",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Nice. I'm building a tiny chat client with egui, startup is under a second so far",
+     "timestamp": "2026-11-10T10:08:11+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [
+      {
+       "emoji": {
+        "id": null,
+        "name": "🔥"
+       },
+       "count": 3,
+       "me": true
+      },
+      {
+       "emoji": {
+        "id": null,
+        "name": "🦀"
+       },
+       "count": 1,
+       "me": false
+      }
+     ],
+     "pinned": false
+    },
+    {
+     "id": "1569655307108352005",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "<@1565443437363200001> that's awesome, share it in <#1565443437363200012> when it's ready",
+     "timestamp": "2026-11-10T10:09:48+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [
+      {
+       "id": "1565443437363200001",
+       "username": "ferris_dev",
+       "global_name": "Ferris",
+       "discriminator": "0",
+       "avatar": null,
+       "bot": false
+      }
+     ],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569655713955840006",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200005",
+      "username": "dan_ops",
+      "global_name": null,
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "||spoiler: it's written in Rust|| :)",
+     "timestamp": "2026-11-10T10:11:25+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569656120803328007",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Links work too: https://www.rust-lang.org and [the book](https://doc.rust-lang.org/book/)",
+     "timestamp": "2026-11-10T10:13:02+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [
+      {
+       "type": "rich",
+       "title": "Rust Programming Language",
+       "url": "https://www.rust-lang.org",
+       "description": "A language empowering everyone to build **reliable** and efficient software.",
+       "color": 15234107,
+       "fields": [
+        {
+         "name": "Edition",
+         "value": "2024",
+         "inline": true
+        }
+       ]
+      }
+     ],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569664089980928008",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "# Release notes\n- faster builds\n- smaller binaries\n-# (subtext) beta only",
+     "timestamp": "2026-11-10T10:44:42+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569664496828416009",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "__underline__, ***bold italic***, and a timestamp <t:1793000000:R>",
+     "timestamp": "2026-11-10T10:46:19+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569664903675904010",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Thanks <@1565443437363200002>!",
+     "timestamp": "2026-11-10T10:47:56+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569665310523392011",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Morning all! Anyone tried the new **async closures** yet?",
+     "timestamp": "2026-11-10T10:49:33+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569673279700992012",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Yes! They make `tokio::spawn` code *much* nicer.",
+     "timestamp": "2026-11-10T11:21:13+00:00",
+     "edited_timestamp": null,
+     "type": 19,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false,
+     "referenced_message": {
+      "id": "1569664903675904010",
+      "channel_id": "1565443437363200010",
+      "guild_id": "1565443437363200006",
+      "author": {
+       "id": "1565443437363200001",
+       "username": "ferris_dev",
+       "global_name": "Ferris",
+       "discriminator": "0",
+       "avatar": null,
+       "bot": false
+      },
+      "content": "Thanks <@1565443437363200002>!",
+      "timestamp": "2026-11-10T10:47:56+00:00",
+      "edited_timestamp": null,
+      "type": 0,
+      "flags": 0,
+      "mentions": [],
+      "mention_roles": [],
+      "mention_everyone": false,
+      "attachments": [],
+      "embeds": [],
+      "reactions": [],
+      "pinned": false
+     },
+     "message_reference": {
+      "message_id": "1569664903675904010",
+      "channel_id": "1565443437363200010"
+     }
+    },
+    {
+     "id": "1569673686548480013",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Example:\n```rust\nlet f = async |x: u32| x * 2;\nprintln!(\"{}\", f(21).await);\n```",
+     "timestamp": "2026-11-10T11:22:50+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569674093395968014",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "> They make tokio code much nicer\nAgreed, also ~~no more~~ fewer boxed futures",
+     "timestamp": "2026-11-10T11:24:27+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569674500243456015",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Nice. I'm building a tiny chat client with egui, startup is under a second so far",
+     "timestamp": "2026-11-10T11:26:04+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569682469421056016",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "<@1565443437363200001> that's awesome, share it in <#1565443437363200012> when it's ready",
+     "timestamp": "2026-11-10T11:57:44+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [
+      {
+       "id": "1565443437363200001",
+       "username": "ferris_dev",
+       "global_name": "Ferris",
+       "discriminator": "0",
+       "avatar": null,
+       "bot": false
+      }
+     ],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569682876268544017",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200005",
+      "username": "dan_ops",
+      "global_name": null,
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "||spoiler: it's written in Rust|| :)",
+     "timestamp": "2026-11-10T11:59:21+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569683283116032018",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Links work too: https://www.rust-lang.org and [the book](https://doc.rust-lang.org/book/)",
+     "timestamp": "2026-11-10T12:00:58+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569683689963520019",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "# Release notes\n- faster builds\n- smaller binaries\n-# (subtext) beta only",
+     "timestamp": "2026-11-10T12:02:35+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569691659141120020",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "__underline__, ***bold italic***, and a timestamp <t:1793000000:R>",
+     "timestamp": "2026-11-10T12:34:15+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569692065988608021",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Thanks <@1565443437363200002>!",
+     "timestamp": "2026-11-10T12:35:52+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569692472836096022",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Morning all! Anyone tried the new **async closures** yet?",
+     "timestamp": "2026-11-10T12:37:29+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569692879683584023",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Yes! They make `tokio::spawn` code *much* nicer.",
+     "timestamp": "2026-11-10T12:39:06+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569700848861184024",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Example:\n```rust\nlet f = async |x: u32| x * 2;\nprintln!(\"{}\", f(21).await);\n```",
+     "timestamp": "2026-11-10T13:10:46+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569701255708672025",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "> They make tokio code much nicer\nAgreed, also ~~no more~~ fewer boxed futures",
+     "timestamp": "2026-11-10T13:12:23+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569701662556160026",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Nice. I'm building a tiny chat client with egui, startup is under a second so far",
+     "timestamp": "2026-11-10T13:14:00+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569702069403648027",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "<@1565443437363200001> that's awesome, share it in <#1565443437363200012> when it's ready",
+     "timestamp": "2026-11-10T13:15:37+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [
+      {
+       "id": "1565443437363200001",
+       "username": "ferris_dev",
+       "global_name": "Ferris",
+       "discriminator": "0",
+       "avatar": null,
+       "bot": false
+      }
+     ],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569710038581248028",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200005",
+      "username": "dan_ops",
+      "global_name": null,
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "||spoiler: it's written in Rust|| :)",
+     "timestamp": "2026-11-10T13:47:17+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569710445428736029",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200004",
+      "username": "cara.k",
+      "global_name": "Cara",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Links work too: https://www.rust-lang.org and [the book](https://doc.rust-lang.org/book/)",
+     "timestamp": "2026-11-10T13:48:54+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569710852276224030",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200003",
+      "username": "bobby",
+      "global_name": "Bob",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "# Release notes\n- faster builds\n- smaller binaries\n-# (subtext) beta only",
+     "timestamp": "2026-11-10T13:50:31+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569711259123712031",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200002",
+      "username": "alice",
+      "global_name": "Alice",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "__underline__, ***bold italic***, and a timestamp <t:1793000000:R>",
+     "timestamp": "2026-11-10T13:52:08+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    },
+    {
+     "id": "1569719228301312032",
+     "channel_id": "1565443437363200010",
+     "guild_id": "1565443437363200006",
+     "author": {
+      "id": "1565443437363200001",
+      "username": "ferris_dev",
+      "global_name": "Ferris",
+      "discriminator": "0",
+      "avatar": null,
+      "bot": false
+     },
+     "content": "Thanks <@1565443437363200002>!",
+     "timestamp": "2026-11-10T14:23:48+00:00",
+     "edited_timestamp": null,
+     "type": 0,
+     "flags": 0,
+     "mentions": [],
+     "mention_roles": [],
+     "mention_everyone": false,
+     "attachments": [],
+     "embeds": [],
+     "reactions": [],
+     "pinned": false
+    }
+   ]
+  ]
+ ]
+}
