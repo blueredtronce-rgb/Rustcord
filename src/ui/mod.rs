@@ -1,0 +1,1402 @@
+//! egui front-end. `RustcordApp` owns all state; sub-modules render pieces of it through
+//! a `UiCx` bundle of borrows.
+//!
+//! OWNERSHIP: ui-shell implementer (this file, login.rs, sidebar.rs, members.rs). `UiCx`,
+//! `ViewState` fields, `Modal`, `Confirm`, the shared dialog / settings-layer helpers below and
+//! the sub-module `pub fn` signatures are a shared contract between the ui implementers; add
+//! fields freely, don't remove/rename. Which file owns which surface: docs/SOCIAL_UI_DESIGN.md.
+
+pub mod autocomplete;
+pub mod call;
+pub mod chrome;
+pub mod composer;
+pub mod cosmetics;
+pub mod dm_call;
+pub mod forum;
+pub mod friends;
+pub mod images;
+pub mod inbox;
+pub mod login;
+pub mod markdown;
+pub mod members;
+pub mod messages;
+pub mod pickers;
+pub mod pins;
+pub mod profile;
+pub mod profile_modal;
+pub mod screen_share;
+pub mod search;
+pub mod server_menu;
+pub mod server_settings;
+pub mod sidebar;
+pub mod threads;
+pub mod user_settings;
+
+use crate::auth::Token;
+use crate::backend::{BackendEvent, BackendHandle, Command, CommandSender, ConnState};
+use crate::cache::Snapshot;
+use crate::config::Settings;
+use crate::model::{GatewayEvent, Id, Presence};
+use crate::state::AppState;
+use crate::theme::{Theme, ThemeApplier, ThemeColors};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Width of the server icon column.
+pub const GUILD_BAR_W: f32 = 72.0;
+/// Narrower windows hide the member list so the message area keeps ~450 px.
+pub const MEMBER_LIST_MIN_WINDOW_W: f32 = 1000.0;
+const MEMBER_LIST_W: f32 = 264.0;
+/// Title bar above all columns.
+const TITLE_BAR_H: f32 = 32.0;
+/// Channel list width: default, and the range its resize handle allows (the sidebar, server
+/// bar included, is 375 px and 264..=432 px wide).
+const CHANNEL_LIST_W: f32 = 303.0;
+const CHANNEL_LIST_MIN_W: f32 = 192.0;
+const CHANNEL_LIST_MAX_W: f32 = 360.0;
+/// The message area keeps this much width; the channel list gives way first.
+const MESSAGES_MIN_W: f32 = 450.0;
+/// Thread split panel (threads.rs) right of its parent's chat; narrower windows show it in the
+/// chat's place.
+pub const THREAD_PANEL_W: f32 = 400.0;
+/// Minimum time between two read acks of the same channel.
+const ACK_DEBOUNCE: Duration = Duration::from_secs(3);
+
+/// Borrow bundle handed to every UI module.
+pub struct UiCx<'a> {
+    pub state: &'a mut AppState,
+    pub view: &'a mut ViewState,
+    pub images: &'a mut images::ImageCache,
+    pub theme: &'a mut Theme,
+    pub settings: &'a mut Settings,
+    pub cmd: &'a CommandSender,
+    /// Local-only banner/avatar (edit, then call `crate::overrides::publish`).
+    pub overrides: &'a mut crate::overrides::LocalOverrides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Login,
+    Main,
+}
+
+pub struct Toast {
+    pub text: String,
+    pub error: bool,
+    pub until: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProfileTarget {
+    pub user_id: Id,
+    pub guild_id: Option<Id>,
+    /// Screen position to anchor the card at.
+    pub anchor: egui::Pos2,
+    /// Corner of the card placed at `anchor` (LEFT_BOTTOM grows the card upward).
+    pub pivot: egui::Align2,
+}
+
+/// UI-only state (never persisted, never sent anywhere).
+pub struct ViewState {
+    pub screen: Screen,
+    pub login_input: String,
+    pub login_remember: bool,
+    pub login_busy: bool,
+    pub login_error: Option<String>,
+    /// Composer drafts per channel.
+    pub drafts: HashMap<Id, String>,
+    /// (channel, message, ping author)
+    pub reply_to: Option<(Id, Id, bool)>,
+    /// (channel, message) being edited inline.
+    pub editing: Option<(Id, Id)>,
+    pub edit_text: String,
+    /// (message id, spoiler index) revealed by click. Attachments use index 1000+i.
+    pub revealed_spoilers: HashSet<(Id, usize)>,
+    pub toasts: Vec<Toast>,
+    pub settings_open: bool,
+    pub profile_card: Option<ProfileTarget>,
+    /// (channel, message) whose reaction picker is open.
+    pub reaction_picker: Option<(Id, Id)>,
+    /// Message pending delete confirmation (channel, message).
+    pub confirm_delete: Option<(Id, Id)>,
+    /// Set by settings when the theme changed and must be re-applied.
+    pub theme_dirty: bool,
+    pub window_focused: bool,
+    /// Channel for which the last member-list subscription / history fetch was issued.
+    pub(crate) last_selected: Option<Id>,
+    pub(crate) last_ack: HashMap<Id, Instant>,
+    /// Request to scroll the message list to the bottom on next frame.
+    pub scroll_to_bottom: bool,
+    /// Message to scroll to (jump to reply).
+    pub scroll_to_message: Option<Id>,
+    /// Channel categories collapsed in the sidebar (kept for the session).
+    pub collapsed_categories: HashSet<Id>,
+    /// Login screen: show the token in clear text.
+    pub login_show_token: bool,
+    /// Login screen: active tab, QR login and email/2FA state (secret buffers wiped on drop).
+    pub login_form: login::LoginForm,
+    /// Channel whose member list (op 37) was subscribed in the current gateway session.
+    pub(crate) member_list_sub: Option<Id>,
+    /// Read acks waiting for the per-channel debounce (channel -> message).
+    pub(crate) pending_acks: HashMap<Id, Id>,
+    /// When `AppState::conn` last changed (reconnect countdown).
+    pub(crate) conn_since: Instant,
+    /// Themes listed on the settings page; loaded when it opens, dropped when it closes.
+    pub(crate) settings_themes: Option<Vec<Theme>>,
+    /// DMs closed in the sidebar (channel -> its last message then); local only, a newer
+    /// message or opening the DM lists it again.
+    pub hidden_dms: HashMap<Id, Option<Id>>,
+    /// Text of the DM list's filter field.
+    pub dm_filter: String,
+    /// User panel mute / deafen switches (sent to the voice module on change).
+    pub self_mute: bool,
+    pub self_deaf: bool,
+    /// Channel list width set with its resize handle (None = automatic). Not persisted yet.
+    pub channel_list_w: Option<f32>,
+    /// Guilds whose muted channels are hidden in the sidebar ("Hide Muted Channels").
+    pub hide_muted: HashSet<Id>,
+    /// User settings layer (full screen while `settings_open`): the page shown.
+    pub settings_page: user_settings::Page,
+    /// Server settings layer (full screen): guild and page. `Page::Channel` is a channel's
+    /// settings (Edit Channel).
+    pub server_settings: Option<(Id, server_settings::Page)>,
+    /// The one open modal (`show_modals` draws it); `confirm` stacks above it.
+    pub modal: Option<Modal>,
+    /// Yes/no question before a destructive action (`ViewState::confirm`), above any modal.
+    pub confirm: Option<Confirm>,
+    /// Thread shown in the split panel right of its parent's chat (threads.rs). The shell
+    /// loads its history, acks it and closes it once its parent is no longer the open channel.
+    pub thread_panel: Option<Id>,
+    /// Inbox popout open (inbox.rs, Ctrl+I).
+    pub inbox_open: bool,
+    // Module-private UI state: one struct per module, defined and owned by that module's file
+    // (add fields there, not here). All of it is dropped on logout with the rest of the view.
+    pub friends_ui: friends::FriendsUi,
+    pub inbox_ui: inbox::InboxUi,
+    pub threads_ui: threads::ThreadsUi,
+    pub forum_ui: forum::ForumUi,
+    pub profile_modal_ui: profile_modal::ProfileModalUi,
+    pub server_menu_ui: server_menu::ServerMenuUi,
+    pub server_settings_ui: server_settings::ServerSettingsUi,
+    pub user_settings_ui: user_settings::UserSettingsUi,
+    pub call_ui: call::CallUi,
+}
+
+/// A modal dialog (`ViewState::modal`, drawn by `show_modals` through the owning module).
+/// Draft text and other form state live in that module's `*Ui` struct; the variant only names
+/// the target. A new variant is a contract change (mod.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modal {
+    /// threads.rs: Create Thread from a message (`from_message`) or the header.
+    CreateThread { channel_id: Id, from_message: Option<Id> },
+    /// forum.rs: New Post in a forum / media channel.
+    NewForumPost { forum_id: Id },
+    /// profile_modal.rs: the full profile (View Full Profile).
+    Profile { user_id: Id, guild_id: Option<Id> },
+    /// friends.rs: New Group DM picker, or Add Friends to DM for `channel_id`.
+    GroupDm { channel_id: Option<Id> },
+    /// server_menu.rs: Create Channel / Create Category (`category`) under `parent_id`.
+    CreateChannel { guild_id: Id, parent_id: Option<Id>, category: bool },
+    /// server_menu.rs: Invite People (link for `channel_id`).
+    Invite { guild_id: Id, channel_id: Id },
+    /// server_menu.rs: Add a Server (join by invite link / create my own).
+    JoinServer,
+    /// server_menu.rs: kick or ban with a reason (and the ban's delete-messages preset).
+    Moderate { guild_id: Id, user_id: Id, ban: bool },
+    /// user_settings.rs: Set Custom Status.
+    CustomStatus,
+    /// server_menu.rs: a server's Privacy Settings (DMs, message requests, activity).
+    PrivacySettings { guild_id: Id },
+    /// screen_share.rs: the screen share picker (Go Live).
+    ScreenShare,
+}
+
+/// A pending confirmation: `show_modals` asks, `then` goes out on the danger button.
+pub struct Confirm {
+    pub title: String,
+    pub body: String,
+    /// Label of the confirm button ("Leave Server", "Block").
+    pub button: String,
+    /// Danger colour (destructive); false = accent (e.g. accepting a stranger's request).
+    pub danger: bool,
+    pub then: Command,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            screen: Screen::Login,
+            login_input: String::new(),
+            login_remember: true,
+            login_busy: false,
+            login_error: None,
+            drafts: HashMap::new(),
+            reply_to: None,
+            editing: None,
+            edit_text: String::new(),
+            revealed_spoilers: HashSet::new(),
+            toasts: Vec::new(),
+            settings_open: false,
+            profile_card: None,
+            reaction_picker: None,
+            confirm_delete: None,
+            theme_dirty: false,
+            window_focused: true,
+            last_selected: None,
+            last_ack: HashMap::new(),
+            scroll_to_bottom: true,
+            scroll_to_message: None,
+            collapsed_categories: HashSet::new(),
+            login_show_token: false,
+            login_form: login::LoginForm::default(),
+            member_list_sub: None,
+            pending_acks: HashMap::new(),
+            conn_since: Instant::now(),
+            settings_themes: None,
+            hidden_dms: HashMap::new(),
+            dm_filter: String::new(),
+            self_mute: false,
+            self_deaf: false,
+            channel_list_w: None,
+            hide_muted: HashSet::new(),
+            settings_page: user_settings::Page::default(),
+            server_settings: None,
+            modal: None,
+            confirm: None,
+            thread_panel: None,
+            inbox_open: false,
+            friends_ui: Default::default(),
+            inbox_ui: Default::default(),
+            threads_ui: Default::default(),
+            forum_ui: Default::default(),
+            profile_modal_ui: Default::default(),
+            server_menu_ui: Default::default(),
+            server_settings_ui: Default::default(),
+            user_settings_ui: Default::default(),
+            call_ui: Default::default(),
+        }
+    }
+}
+
+impl ViewState {
+    pub fn toast(&mut self, text: impl Into<String>, error: bool) {
+        self.toasts.push(Toast { text: text.into(), error, until: Instant::now() + Duration::from_secs(5) });
+    }
+
+    /// Open the profile card for a user (clicking the same user again closes it).
+    /// Use this from every avatar / name / mention click.
+    pub fn open_profile(&mut self, user_id: Id, guild_id: Option<Id>, anchor: egui::Pos2) {
+        if self.profile_card.is_some_and(|p| p.user_id == user_id) {
+            self.profile_card = None;
+        } else {
+            self.profile_card = Some(ProfileTarget { user_id, guild_id, anchor, pivot: egui::Align2::LEFT_TOP });
+        }
+    }
+
+    /// `open_profile` for a card that grows upward from `anchor` (its bottom-left corner).
+    pub fn open_profile_above(&mut self, user_id: Id, guild_id: Option<Id>, anchor: egui::Pos2) {
+        self.open_profile(user_id, guild_id, anchor);
+        if let Some(p) = &mut self.profile_card {
+            p.pivot = egui::Align2::LEFT_BOTTOM;
+        }
+    }
+
+    /// Ask before sending `then` (leave server, delete channel, kick, block, …): a dialog with
+    /// `title`, `body`, Cancel and a danger-coloured `button`.
+    pub fn confirm(&mut self, title: impl Into<String>, body: impl Into<String>, button: impl Into<String>, then: Command) {
+        self.confirm = Some(Confirm { title: title.into(), body: body.into(), button: button.into(), danger: true, then });
+    }
+
+    /// A modal or confirmation is open: Esc and clicks belong to it, not to the page below.
+    pub fn dialog_open(&self) -> bool {
+        self.modal.is_some() || self.confirm.is_some()
+    }
+
+    /// A full-screen settings layer hides the chat (no read acks, no member list).
+    pub fn chat_hidden(&self) -> bool {
+        self.settings_open || self.server_settings.is_some()
+    }
+}
+
+pub struct RustcordApp {
+    rt: Option<tokio::runtime::Runtime>,
+    backend: BackendHandle,
+    state: AppState,
+    view: ViewState,
+    images: images::ImageCache,
+    theme: Theme,
+    theme_applier: ThemeApplier,
+    settings: Settings,
+    overrides: crate::overrides::LocalOverrides,
+    /// My user id and premium type the overrides were last published for.
+    overrides_me: Option<(Id, u8)>,
+    started: Instant,
+    frame_no: u64,
+    last_cache_save: Instant,
+}
+
+impl RustcordApp {
+    pub fn new(
+        ctx: &egui::Context,
+        rt: tokio::runtime::Runtime,
+        backend: BackendHandle,
+        settings: Settings,
+        snapshot: Option<Snapshot>,
+        token: Option<Token>,
+        started: Instant,
+    ) -> Self {
+        let theme = Theme::find(&settings.theme);
+        crate::theme::init_fonts(ctx, settings.use_discord_font);
+        let mut theme_applier = ThemeApplier::default();
+        theme_applier.apply(ctx, &theme);
+
+        let state = snapshot.map(AppState::from_snapshot).unwrap_or_default();
+        let mut view = ViewState::default();
+        let offline = crate::config::offline_mode();
+        user_settings::restore_voice(&settings, &backend.cmd);
+        if let Some(token) = token {
+            // Cached UI immediately; connect in the background.
+            view.screen = Screen::Main;
+            backend.cmd.send(Command::Resume { token });
+        } else if offline && state.has_data {
+            view.screen = Screen::Main;
+        }
+        // Test hook: RUSTCORD_LOGIN_TAB=qr|email|token|mfa opens that login tab (before the first
+        // frame, so the QR tab does not start a login when another tab is wanted).
+        if let Ok(tab) = std::env::var("RUSTCORD_LOGIN_TAB") {
+            login::open_test_tab(&mut view, &tab);
+        }
+
+        let images = images::ImageCache::new(backend.cmd.clone());
+        crate::plugins::apply_env();
+        Self {
+            rt: Some(rt),
+            backend,
+            state,
+            view,
+            images,
+            theme,
+            theme_applier,
+            settings,
+            overrides: crate::overrides::LocalOverrides::load(),
+            overrides_me: None,
+            started,
+            frame_no: 0,
+            last_cache_save: Instant::now(),
+        }
+    }
+
+    fn drain_events(&mut self, ctx: &egui::Context) {
+        let focused_channel = if self.view.window_focused && !self.view.chat_hidden() {
+            self.state.selected_channel
+        } else {
+            None
+        };
+        while let Ok(ev) = self.backend.events.try_recv() {
+            match ev {
+                BackendEvent::Conn(c) => {
+                    if c != self.state.conn {
+                        self.view.conn_since = Instant::now();
+                    }
+                    self.state.conn = c;
+                }
+                BackendEvent::LoggedIn => {
+                    login::on_logged_in(ctx, &mut self.view, &self.backend.cmd);
+                    self.view.screen = Screen::Main;
+                }
+                BackendEvent::LoginStep(step) => login::on_step(&mut self.view, step),
+                BackendEvent::AuthFailed(msg) => {
+                    self.state.reset();
+                    self.images.clear();
+                    self.view = ViewState { login_error: Some(msg), ..ViewState::default() };
+                    // Drops the session and deletes the rejected token from the keyring.
+                    self.backend.cmd.send(Command::Logout);
+                    std::thread::spawn(crate::cache::clear_all);
+                }
+                BackendEvent::Gateway(ev) => {
+                    if matches!(ev, GatewayEvent::Ready(_)) {
+                        // New session: op 37 subscriptions only survive a RESUME.
+                        self.view.member_list_sub = None;
+                    }
+                    // Plugins (MessageLogger, RelationshipNotifier) see it first; may swallow it.
+                    let Some(ev) = crate::plugins::on_gateway(&mut self.state, &mut self.view, &self.settings, ev) else { continue };
+                    // Do Not Disturb: unread state still updates, but no toast or taskbar flash.
+                    if let Some(n) = self.state.apply_gateway(ev, focused_channel)
+                        && self.state.chat.my_status != Some(crate::model::UserStatus::Dnd)
+                    {
+                        // Off, or Streamer Mode: none, or without sender and text.
+                        if let Some((title, body)) = self.settings.notification(&n.title, &n.body) {
+                            crate::notify::show(title, body);
+                        }
+                        if !self.view.window_focused && self.settings.flash_taskbar {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                                egui::UserAttentionType::Informational,
+                            ));
+                        }
+                    }
+                }
+                BackendEvent::MessagesLoaded { channel_id, before, result } => {
+                    if let Err(e) = &result {
+                        self.view.toast(format!("Could not load messages: {e}"), true);
+                    }
+                    self.state.apply_messages_loaded(channel_id, before, result, messages::PAGE_SIZE);
+                }
+                BackendEvent::SendResult { channel_id, nonce, result } => {
+                    if let Err(e) = &result {
+                        self.view.toast(format!("Message not sent: {e}"), true);
+                    }
+                    self.state.apply_send_result(channel_id, &nonce, result);
+                }
+                // A login that fails for a non-auth reason (network) must not spin forever.
+                BackendEvent::ActionFailed(e) if self.view.screen == Screen::Login && self.view.login_busy => {
+                    self.view.login_busy = false;
+                    self.view.login_error = Some(e);
+                }
+                BackendEvent::ActionFailed(e) => self.view.toast(e, true),
+                BackendEvent::ImageLoaded { url, result } => self.images.on_loaded(ctx, url, result),
+                // Voice status lives in AppState for the voice panel; failures become toasts.
+                BackendEvent::Voice(ev) => {
+                    if let Some(msg) = self.state.apply_voice(ev) {
+                        self.view.toast(msg, true);
+                    }
+                }
+                // Chat essentials (pins, search, GIFs, uploads…) live in AppState::chat.
+                BackendEvent::Chat(ev) => {
+                    if let Some(msg) = self.state.apply_chat(ev) {
+                        self.view.toast(msg, true);
+                    }
+                }
+                // Threads, friends, DMs, inbox, profiles live in AppState::social.
+                BackendEvent::Social(ev) => {
+                    if let Some(msg) = self.state.apply_social(ev) {
+                        self.view.toast(msg, true);
+                    }
+                }
+                // Settings proto, profile, server admin, invites live in AppState::account.
+                BackendEvent::Account(ev) => {
+                    if let Some(msg) = self.state.apply_account(ev) {
+                        self.view.toast(msg, true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Side effects of the current selection: history fetch, member list, read acks.
+    fn selection_effects(&mut self, ctx: &egui::Context) {
+        let online = self.state.conn == ConnState::Connected;
+        if let Some(ch) = self.state.selected_channel {
+            if self.view.last_selected != Some(ch) {
+                self.view.last_selected = Some(ch);
+                self.view.scroll_to_bottom = true;
+                self.view.scroll_to_message = None;
+                self.view.reaction_picker = None;
+                self.view.confirm_delete = None;
+                self.view.profile_card = None;
+            }
+            // Always subscribed, even with the member list hidden: op 37 also sets typing:true,
+            // without which large guilds send no live messages/typing. Tracked separately from
+            // `last_selected` so it is (re)sent once we are online or after a new session.
+            if let Some(guild_id) = self.state.channels.get(&ch).and_then(|c| c.guild_id)
+                && online && self.view.member_list_sub != Some(ch)
+            {
+                self.view.member_list_sub = Some(ch);
+                self.backend.cmd.send(Command::SubscribeMemberList { guild_id, channel_id: ch });
+            }
+        }
+        // The thread split panel belongs to its parent: it closes when another channel opens.
+        if let Some(t) = self.view.thread_panel
+            && self.state.channels.get(&t).and_then(|c| c.parent_id).is_none_or(|p| self.state.selected_channel != Some(p))
+        {
+            self.view.thread_panel = None;
+        }
+        // History and read acks for what is on screen: the open channel and the thread panel.
+        for ch in [self.state.selected_channel, self.view.thread_panel].into_iter().flatten() {
+            // Forum / media channels have no message history (forum.rs lists their posts).
+            let chat = self.state.channels.get(&ch).is_some_and(crate::model::Channel::is_text_chat);
+            if online && chat && !self.state.fresh_channels.contains(&ch) && self.state.can_view(ch) {
+                let entry = self.state.messages.entry(ch).or_default();
+                if !entry.loading {
+                    entry.loading = true;
+                    self.state.fresh_channels.insert(ch);
+                    self.backend.cmd.send(Command::FetchMessages { channel_id: ch, before: None, limit: messages::PAGE_SIZE });
+                }
+            }
+            // No is_unread gate: muted channels are acked on view too; mark_read dedups.
+            if self.view.window_focused && !self.view.chat_hidden()
+                && let Some(mid) = self.state.mark_read(ch)
+                && self.settings.send_read_acks
+            {
+                self.view.pending_acks.insert(ch, mid);
+            }
+        }
+        self.flush_acks(ctx, online);
+    }
+
+    /// Sends queued read acks, at most one per channel every `ACK_DEBOUNCE`. Debounced acks
+    /// stay queued (instead of being dropped) so the newest read position always reaches
+    /// the server.
+    fn flush_acks(&mut self, ctx: &egui::Context, online: bool) {
+        let ViewState { pending_acks, last_ack, .. } = &mut self.view;
+        if !self.settings.send_read_acks {
+            pending_acks.clear();
+            return;
+        }
+        if !online || pending_acks.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let (cmd, channels) = (&self.backend.cmd, &self.state.channels);
+        pending_acks.retain(|&channel_id, &mut message_id| {
+            if last_ack.get(&channel_id).is_some_and(|t| now.duration_since(*t) < ACK_DEBOUNCE) {
+                return true;
+            }
+            last_ack.insert(channel_id, now);
+            // Threads ack with read-state flags 3 (FEATURES_NOTES §2.1).
+            let thread = channels.get(&channel_id).is_some_and(crate::model::Channel::is_thread);
+            cmd.send(if thread { Command::AckThread { channel_id, message_id } } else { Command::Ack { channel_id, message_id } });
+            false
+        });
+        if !pending_acks.is_empty() {
+            ctx.request_repaint_after(ACK_DEBOUNCE);
+        }
+    }
+
+    fn maybe_save_cache(&mut self, force: bool) {
+        if !self.state.has_data || crate::config::offline_mode() {
+            return;
+        }
+        // Most churn (last_message_id, read drift) is rebuilt by READY anyway, and on_exit
+        // saves synchronously, so a long interval keeps snapshot cost and disk writes low.
+        if force || (self.state.dirty && self.last_cache_save.elapsed() > Duration::from_secs(300)) {
+            self.state.dirty = false;
+            self.last_cache_save = Instant::now();
+            let snap = self.state.to_snapshot();
+            let write = move || {
+                if let Err(e) = crate::cache::save_snapshot(&snap) {
+                    eprintln!("rustcord: cache save failed: {e}");
+                }
+            };
+            if force { write() } else { std::thread::spawn(write); }
+        }
+    }
+
+    fn show_toasts(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        self.view.toasts.retain(|t| t.until > now);
+        let Some(next_expiry) = self.view.toasts.iter().map(|t| t.until).min() else { return };
+        let c = &self.theme.colors;
+        // Quiet cards (popup style); errors are marked by a small danger dot, not a red fill.
+        let card = egui::Frame::popup(&ctx.global_style())
+            .fill(c.surface.to_color32())
+            .corner_radius(self.theme.layout.corner_radius * 2.0)
+            .inner_margin(egui::Margin { left: 12, right: 16, top: 8, bottom: 8 });
+        // Inside the message area, not straddling the member list's (or thread panel's) edge.
+        let right_column = match self.view.screen {
+            Screen::Main => right_column_w(&self.view, &self.settings, &self.state, ctx.content_rect().width()),
+            Screen::Login => 0.0,
+        };
+        let right = right_column + 16.0;
+        egui::Area::new(egui::Id::unique("toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-right, -80.0))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                for t in &self.view.toasts {
+                    let dot = if t.error { c.danger } else { c.text_muted }.to_color32();
+                    card.show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            let h = ui.text_style_height(&egui::TextStyle::Body);
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, h), egui::Sense::hover());
+                            ui.painter().circle_filled(r.center(), 3.5, dot);
+                            ui.add(egui::Label::new(egui::RichText::new(&t.text).color(c.text.to_color32())).wrap());
+                        });
+                    });
+                }
+            });
+        ctx.request_repaint_after(next_expiry.saturating_duration_since(now));
+    }
+
+    fn startup_hooks(&mut self, ctx: &egui::Context) {
+        self.frame_no += 1;
+        if self.frame_no == 1 {
+            crate::trace_startup("first_frame", self.started);
+            // Test hook: RUSTCORD_WINDOW_SIZE=<w>x<h> resizes the window (layout screenshots).
+            if let Some(size) = std::env::var("RUSTCORD_WINDOW_SIZE").ok().as_deref().and_then(parse_size) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+            // Test hook: RUSTCORD_OPEN=settings|profile|toast|members|muted|deafened|channel:<id>|voice:<id>|status:<s>
+            // opens the settings page / my account popout (profile card + status picker) / a sample error
+            // toast / a demo member list for the open guild (cached users, two in a role group, mixed
+            // presence with a custom status, a game and a phone) / mutes / deafens / that channel (DM ids
+            // show the DM list) / shows me connected (and speaking) in that voice channel, without
+            // joining / sets my status (online|idle|dnd|invisible) with a sample custom status. A comma
+            // list combines them, applied in order (e.g. `channel:<id>,toast`).
+            // Social / server UI (docs/SOCIAL_UI_DESIGN.md): `settings:<page>` (user settings page),
+            // `server-settings[:<page>]` (open guild), `friends` (Friends page with demo
+            // relationships from cached users), `inbox`, `threads` (Threads popout), `thread:<id>`
+            // (thread panel; selects its parent), `card:<user id>` (that user's profile card),
+            // `modal:<name>` (`demo_modal`), `confirm` (Leave Server question for the open guild).
+            // DM calls (dm_call.rs `demo`): `call:<dm id>` (a call going on there), `ring:<dm id>` (it rings me).
+            // None of them sends a request.
+            let open = std::env::var("RUSTCORD_OPEN").unwrap_or_default();
+            for open in open.split(',') {
+                match open.trim() {
+                    "settings" => self.view.settings_open = true,
+                    s if let Some(page) = s.strip_prefix("settings:").and_then(user_settings::Page::from_name) => {
+                        (self.view.settings_open, self.view.settings_page) = (true, page);
+                    }
+                    s if let Some(q) = s.strip_prefix("settings-search:") => {
+                        self.view.settings_open = true;
+                        user_settings::demo_search(ctx, q);
+                    }
+                    s if let Some(page) = s.strip_prefix("server-settings") && let Some(g) = self.state.selected_guild => {
+                        let page = server_settings::Page::from_name(page.trim_start_matches(':')).unwrap_or_default();
+                        self.view.server_settings = Some((g, page));
+                    }
+                    "friends" => friends::demo(&mut self.state),
+                    "inbox" => self.view.inbox_open = true,
+                    "threads" => egui::Popup::open_id(ctx, threads::popup_id()),
+                    s if let Some(t) = s.strip_prefix("thread:").and_then(|id| id.parse().ok()).map(Id) => {
+                        if let Some(parent) = self.state.channels.get(&t).and_then(|c| c.parent_id) {
+                            self.state.select_channel(parent);
+                        }
+                        self.view.thread_panel = Some(t);
+                    }
+                    s if let Some(u) = s.strip_prefix("card:").and_then(|id| id.parse().ok()).map(Id) => {
+                        self.view.open_profile(u, self.state.selected_guild, egui::pos2(GUILD_BAR_W + CHANNEL_LIST_W + 16.0, 120.0));
+                    }
+                    s if let Some(name) = s.strip_prefix("modal:") => self.view.modal = demo_modal(&self.state, name),
+                    "confirm" if let Some(g) = self.state.selected_guild => server_menu::ask_leave(&mut self.view, &self.state, g),
+                    "profile" if let Some(me) = &self.state.me => {
+                        // Where the user panel avatar opens it: 8 px above the floating panel.
+                        let top = ctx.content_rect().bottom() - 8.0 - sidebar::user_panel_height(&self.state, &self.theme);
+                        self.view.open_profile_above(me.id, self.state.selected_guild, egui::pos2(8.0, top - 8.0));
+                    }
+                    s if let Some(id) = s.strip_prefix("voice:").and_then(|id| id.parse().ok()) => {
+                        let (id, me) = (Id(id), self.state.me.as_ref().map(|u| u.id));
+                        let v = &mut self.state.voice;
+                        (v.channel_id, v.connected) = (Some(id), true);
+                        v.speaking.extend(me);
+                        // Listed under the channel too, as the gateway would report it.
+                        if let Some(me) = me {
+                            let guild_id = self.state.channels.get(&id).and_then(|c| c.guild_id);
+                            let vs = crate::model::VoiceState { guild_id, channel_id: Some(id), user_id: me, ..Default::default() };
+                            self.state.voice_states.entry(id).or_default().insert(me, vs);
+                        }
+                    }
+                    "toast" => self.view.toast("Message not sent: the connection was lost", true),
+                    "muted" => {
+                        self.view.self_mute = true;
+                        self.backend.cmd.send(Command::SetSelfMute(true));
+                    }
+                    "deafened" => {
+                        self.view.self_deaf = true;
+                        self.backend.cmd.send(Command::SetSelfDeaf(true));
+                    }
+                    "members" if let Some(g) = self.state.selected_guild => {
+                        use crate::model::{Member, MemberListItem};
+                        let mut users: Vec<_> = self.state.me.iter().chain(self.state.users.values()).cloned().collect();
+                        users.sort_by_key(|u| u.id.0);
+                        users.dedup_by_key(|u| u.id.0);
+                        let (online, offline) = users.split_at(users.len().min(4));
+                        // The first two online users form a group of the guild's first hoisted role.
+                        let role = self.state.guild(g).and_then(|g| g.roles.iter().find(|r| r.hoist)).map(|r| r.id);
+                        let role_group = role.map(|r| r.0.to_string()).unwrap_or_default();
+                        let (staff, online) = online.split_at(if role.is_some() { online.len().min(2) } else { 0 });
+                        let mut presence = [Presence::Online, Presence::Idle, Presence::Dnd, Presence::Online].into_iter();
+                        let mut items = Vec::new();
+                        for (id, group) in [(role_group.as_str(), staff), ("online", online), ("offline", offline)] {
+                            if group.is_empty() {
+                                continue;
+                            }
+                            items.push(MemberListItem::Group { id: id.into(), count: group.len() as u32 });
+                            for u in group {
+                                let status = if id == "offline" { Presence::Offline } else { presence.next().unwrap_or_default() };
+                                let roles = if id == role_group { role.into_iter().collect() } else { Vec::new() };
+                                let member = Member { user: Some(u.clone()), roles, ..Default::default() };
+                                items.push(MemberListItem::Member { member, status });
+                            }
+                        }
+                        members::demo_presences(&mut self.state, &items);
+                        // The whole (demo) server is listed: role counts show (server_settings.rs).
+                        let (member_count, online_count) = (users.len() as u32, online.len() as u32 + staff.len() as u32);
+                        self.state.member_lists.insert(g, crate::state::MemberList { items, member_count, online_count, ..Default::default() });
+                    }
+                    s if let Some(status) = s.strip_prefix("status:") => sidebar::demo_status(&mut self.state, status),
+                    s if let Some(id) = s.strip_prefix("channel:").and_then(|id| id.parse().ok()) => {
+                        self.state.select_channel(Id(id));
+                    }
+                    s if dm_call::demo(&mut self.state, s) => {}
+                    _ => {}
+                }
+            }
+        }
+        // Test hook: RUSTCORD_SCREENSHOT=<file.png> saves a screenshot after a few frames and exits;
+        // RUSTCORD_SCREENSHOT_FRAME=<n> (default 30, >= 50 ms each) waits longer, e.g. for a QR code.
+        if self.frame_no <= 1000
+            && let Some(path) = std::env::var_os("RUSTCORD_SCREENSHOT")
+        {
+            let at = std::env::var("RUSTCORD_SCREENSHOT_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+            if self.frame_no == at {
+                let ctx2 = ctx.clone();
+                ctx.request_screenshot(move |img| {
+                    let [w, h] = img.size;
+                    let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                    if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) {
+                        let _ = buf.save(&path);
+                    }
+                    ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
+                });
+            }
+            if self.frame_no < at + 10 {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+impl eframe::App for RustcordApp {
+    /// Runs before every `ui` call and also while the window is hidden/minimized, so
+    /// network events and notifications are processed even when nothing is drawn.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.view.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        self.drain_events(ctx);
+        if self.view.screen == Screen::Main {
+            self.selection_effects(ctx);
+        }
+        self.maybe_save_cache(false);
+        // My id and Nitro (local cosmetics apply only without it).
+        let me = self.state.me.as_ref().map(|u| (u.id, u.premium_type));
+        if me != self.overrides_me {
+            self.overrides_me = me;
+            crate::overrides::publish(self.state.me.as_ref(), &self.overrides);
+        }
+        images::mem_hooks(ctx, &mut self.state, &mut self.images);
+        // Videos shown in the last pass stay decoded, the rest are hidden (also while minimized).
+        call::sync(&mut self.view, &mut self.state, &self.backend.cmd, &self.backend.video);
+        dm_call::logic(&mut self.state, &self.backend.cmd, &self.settings.camera);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        if self.view.theme_dirty {
+            self.view.theme_dirty = false;
+            self.theme_applier.apply(&ctx, &self.theme);
+        }
+
+        let mut cx = UiCx {
+            state: &mut self.state,
+            view: &mut self.view,
+            images: &mut self.images,
+            theme: &mut self.theme,
+            settings: &mut self.settings,
+            cmd: &self.backend.cmd,
+            overrides: &mut self.overrides,
+        };
+        // Zoom, reduced motion, global keybinds, start minimized, close button minimizes.
+        user_settings::frame(&ctx, &mut cx);
+        match cx.view.screen {
+            Screen::Login => {
+                title_bar(ui, &mut cx);
+                login::show(ui, &mut cx);
+            }
+            Screen::Main => {
+                // Gradient themes: the window gradient under the translucent panels.
+                self.theme_applier.paint_background(&ctx);
+                // Taken before the page draws: the composer / message editor would read the same
+                // Ctrl+Enter as Enter and send the draft.
+                let accept = cx.state.incoming_call().is_some()
+                    && user_settings::shortcut(cx.settings, user_settings::Bind::AcceptCall).is_some_and(|k| ctx.input_mut(|i| i.consume_shortcut(&k)));
+                main_layout(ui, &mut cx);
+                profile::show_popup(&ctx, &mut cx);
+                show_modals(&ctx, &mut cx);
+                crate::plugins::frame(&ctx, &mut cx);
+                dm_call::incoming(&ctx, &mut cx, accept);
+            }
+        }
+
+        self.show_toasts(&ctx);
+        self.images.end_frame(&ctx);
+        self.startup_hooks(&ctx);
+        chrome::resize_cursor(&ctx);
+    }
+
+    /// Test hook: RUSTCORD_POINTER=<x>x<y> keeps the pointer at that point (logical px), so
+    /// screenshots show hover states and tooltips; RUSTCORD_CLICK=left|right also clicks there
+    /// once (frames 10-11), e.g. to open a context menu. With RUSTCORD_SCREENSHOT the window
+    /// counts as focused (text focus, completion popups, read acks), whatever is in front.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        chrome::resize_press(ctx, raw);
+        static SHOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *SHOT.get_or_init(|| std::env::var_os("RUSTCORD_SCREENSHOT").is_some()) {
+            raw.focused = true;
+            if let Some(v) = raw.viewports.get_mut(&raw.viewport_id) {
+                v.focused = Some(true);
+            }
+        }
+        static POINTER: std::sync::OnceLock<Option<egui::Pos2>> = std::sync::OnceLock::new();
+        let pointer = POINTER.get_or_init(|| std::env::var("RUSTCORD_POINTER").ok().as_deref().and_then(parse_size).map(|v| v.to_pos2()));
+        // Only when it moved away: every move event restarts the tooltip delay.
+        if let Some(p) = *pointer
+            && ctx.input(|i| i.pointer.latest_pos()) != Some(p)
+        {
+            raw.events.push(egui::Event::PointerMoved(p));
+        }
+        if let (Some(pos), 10 | 11) = (*pointer, self.frame_no) {
+            let button = match std::env::var("RUSTCORD_CLICK").as_deref() {
+                Ok("left") => egui::PointerButton::Primary,
+                Ok("right") => egui::PointerButton::Secondary,
+                _ => return,
+            };
+            let pressed = self.frame_no == 10;
+            raw.events.push(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::default() });
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.maybe_save_cache(true);
+        crate::notify::shutdown();
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
+    }
+}
+
+/// The 32 px title bar of the frameless window (`chrome`: drag, window buttons) with the
+/// location (main screen) or Rustcord's name (login).
+fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    let c = cx.theme.colors.clone();
+    egui::Panel::top("title_bar")
+        .exact_size(TITLE_BAR_H)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(cx.theme.panel_fills().frame.to_color32()))
+        .show(ui, |ui| {
+            chrome::title_bar(ui, &c, |ui| match cx.view.screen {
+                Screen::Login => chrome::app_label(ui, cx.theme),
+                Screen::Main => sidebar::title_bar(ui, cx),
+            })
+        });
+}
+
+/// Title bar over the columns: server bar | channel list card | page | right column; the
+/// floating user panel spans the first two. The page is the Friends page (DM home with no DM
+/// open), a forum's post list or the chat; the right column the search results, the thread
+/// panel or the member list. User and server settings cover everything under the title bar.
+/// The channel list (303 px, resizable) narrows first so the page keeps ~450 px; narrow windows
+/// drop the member list and show the thread panel in the chat's place (minimum window 720 px).
+fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    threads::track(cx, ui.ctx().pixels_per_point());
+    call::demo(cx);
+    let c = cx.theme.colors.clone();
+    // Panel backgrounds: the theme colours, or overlays over the window gradient.
+    let fill = cx.theme.panel_fills();
+    let width = ui.available_width();
+    let right = right_column_w(cx.view, cx.settings, cx.state, width);
+    let (channels_w, max_w) = channel_list_width(width, right, cx.view.channel_list_w);
+    let edge = sidebar::line(&c);
+    title_bar(ui, cx);
+    // Full-screen layers.
+    if cx.view.chat_hidden() {
+        pickers::close_if_open(ui.ctx(), cx);
+        cx.view.inbox_open = false;
+        let page = egui::Frame::new().fill(fill.chat.to_color32());
+        match cx.view.server_settings.filter(|_| !cx.view.settings_open) {
+            Some((g, p)) => egui::CentralPanel::default().frame(page).show(ui, |ui| server_settings::show(ui, cx, g, p)),
+            None => egui::CentralPanel::default().frame(page).show(ui, |ui| user_settings::show(ui, cx)),
+        };
+        return;
+    }
+    cx.view.settings_themes = None;
+    egui::Panel::left("guild_bar")
+        .exact_size(GUILD_BAR_W)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(fill.frame.to_color32()))
+        .show(ui, |ui| sidebar::guild_bar(ui, cx));
+    // On the server-bar colour, which shows around the card's rounded corner.
+    let list = egui::Panel::left("channel_list")
+        .exact_size(channels_w)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(fill.frame.to_color32()))
+        .show(ui, |ui| {
+            sidebar::paint_card(ui.painter(), ui.max_rect(), &ThemeColors { sidebar: fill.card, ..c.clone() });
+            sidebar::channel_list(ui, cx)
+        })
+        .response
+        .rect;
+    ui.painter().vline(list.right() - 0.5, list.y_range(), edge);
+
+    let page = egui::Frame::new().fill(fill.chat.to_color32());
+    if friends::is_open(cx.state) {
+        pickers::close_if_open(ui.ctx(), cx);
+        egui::CentralPanel::default().frame(page).show(ui, |ui| friends::show(ui, cx));
+    } else if call::is_open(cx.state) && !dm_call::in_chat(cx.state) {
+        // The open channel is my call: the stage (call.rs), with its chat column (`right`). A DM
+        // call stays above the DM's chat (dm_call.rs).
+        call::show(ui, cx, right);
+    } else {
+        let thread = cx.view.thread_panel;
+        let searching = search::is_open(cx.state);
+        // The thread panel has its own header: full height, beside the chat's.
+        if let Some(t) = thread.filter(|_| right > 0.0 && !searching) {
+            let r = egui::Panel::right("thread_panel")
+                .exact_size(THREAD_PANEL_W)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(page)
+                .show(ui, |ui| threads::panel(ui, cx, t))
+                .response
+                .rect;
+            ui.painter().vline(r.left() + 0.5, r.y_range(), edge);
+        }
+        // Spans the page and the member list / search results, like the web client's title section.
+        messages::chat_header(ui, cx);
+        // Open search results take the member list's place, so does the thread panel.
+        if searching {
+            search::side_panel(ui, cx);
+        } else if thread.is_none() && right > 0.0 {
+            let r = egui::Panel::right("member_list")
+                .exact_size(MEMBER_LIST_W)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(fill.side.to_color32()))
+                .show(ui, |ui| members::show(ui, cx))
+                .response
+                .rect;
+            ui.painter().vline(r.left() + 0.5, r.y_range(), edge);
+        }
+        egui::CentralPanel::default().frame(page).show(ui, |ui| match (thread, forum::open_forum(cx.state)) {
+            // Too narrow for a split: the thread panel takes the page.
+            (Some(t), _) if right == 0.0 => threads::panel(ui, cx, t),
+            (_, Some(f)) => forum::show(ui, cx, f),
+            _ => messages::show(ui, cx),
+        });
+    }
+    // The card's top hairline continues over the message area and the member list.
+    ui.painter().hline(list.right()..=ui.max_rect().right(), list.top() + 0.5, edge);
+    channel_list_handle(ui, cx, list, max_w);
+    sidebar::user_panel(ui.ctx(), cx, GUILD_BAR_W + channels_w);
+}
+
+/// (width, current maximum) of the channel list in a window `width` wide with a `right` px
+/// right column: 303 px or the width the user dragged it to, narrowed so the message area
+/// keeps 450 px, never under 192 px.
+fn channel_list_width(width: f32, right: f32, user: Option<f32>) -> (f32, f32) {
+    let room = width - GUILD_BAR_W - MESSAGES_MIN_W - right;
+    let max_w = room.clamp(CHANNEL_LIST_MIN_W, CHANNEL_LIST_MAX_W);
+    (user.unwrap_or(CHANNEL_LIST_W).clamp(CHANNEL_LIST_MIN_W, max_w), max_w)
+}
+
+/// 4 px resize handle on the channel list's right edge: drag it, or focus it (Tab) and use
+/// ←/→ (10 px), Home/End. Registered after the message area so it wins the hover there.
+fn channel_list_handle(ui: &mut egui::Ui, cx: &mut UiCx<'_>, list: egui::Rect, max_w: f32) {
+    let rect = egui::Rect::from_x_y_ranges(list.right() - 2.0..=list.right() + 2.0, list.y_range());
+    let resp = ui.interact(rect, ui.make_persistent_id("channel_list_resize"), egui::Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, "Resize channel list"));
+    let mut w = resp.interact_pointer_pos().filter(|_| resp.dragged()).map(|p| p.x - list.left());
+    if resp.has_focus() {
+        let filter = egui::EventFilter { horizontal_arrows: true, ..Default::default() };
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, filter));
+        let keys = [(egui::Key::ArrowLeft, list.width() - 10.0), (egui::Key::ArrowRight, list.width() + 10.0), (egui::Key::Home, 0.0), (egui::Key::End, f32::MAX)];
+        w = keys.into_iter().find(|(k, _)| ui.input(|i| i.key_pressed(*k))).map(|(_, w)| w).or(w);
+    }
+    if let Some(w) = w {
+        cx.view.channel_list_w = Some(w.clamp(CHANNEL_LIST_MIN_W, max_w));
+        ui.ctx().request_repaint();
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if resp.hovered() || resp.dragged() || resp.has_focus() {
+        ui.painter().vline(list.right() - 0.5, list.y_range(), ui.visuals().widgets.hovered.fg_stroke);
+    }
+}
+
+/// Whether `main_layout` shows the member list in a window `width` wide (settings closed).
+fn member_list_shown(settings: &Settings, state: &AppState, width: f32) -> bool {
+    settings.show_member_list && width >= MEMBER_LIST_MIN_WINDOW_W && members::available(state)
+}
+
+/// Width of `main_layout`'s right column (thread panel or member list) in a window `width`
+/// wide; 0 when there is none (settings, Friends page, narrow window). Search results size
+/// themselves (search.rs).
+fn right_column_w(view: &ViewState, settings: &Settings, state: &AppState, width: f32) -> f32 {
+    if view.chat_hidden() || friends::is_open(state) {
+        0.0
+    } else if call::is_open(state) && !dm_call::in_chat(state) {
+        call::chat_w(view, width)
+    } else if view.thread_panel.is_some() {
+        if width >= MEMBER_LIST_MIN_WINDOW_W { THREAD_PANEL_W } else { 0.0 }
+    } else if member_list_shown(settings, state, width) {
+        MEMBER_LIST_W
+    } else {
+        0.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Modals, confirmation, settings layers (shared by the social / server / settings modules)
+// ---------------------------------------------------------------------------
+
+/// Every modal and dialog, drawn after the page and the profile card (one call site in
+/// `RustcordApp::ui`): the open `Modal` through its module, then the confirmation above it.
+pub fn show_modals(ctx: &egui::Context, cx: &mut UiCx<'_>) {
+    match cx.view.modal {
+        Some(Modal::CreateThread { channel_id, from_message }) => threads::create_modal(ctx, cx, channel_id, from_message),
+        Some(Modal::NewForumPost { forum_id }) => forum::new_post_modal(ctx, cx, forum_id),
+        Some(Modal::Profile { user_id, guild_id }) => profile_modal::show(ctx, cx, user_id, guild_id),
+        Some(Modal::GroupDm { channel_id }) => friends::group_dm_modal(ctx, cx, channel_id),
+        Some(Modal::CreateChannel { guild_id, parent_id, category }) => server_menu::create_channel_modal(ctx, cx, guild_id, parent_id, category),
+        Some(Modal::Invite { guild_id, channel_id }) => server_menu::invite_modal(ctx, cx, guild_id, channel_id),
+        Some(Modal::JoinServer) => server_menu::join_server_modal(ctx, cx),
+        Some(Modal::Moderate { guild_id, user_id, ban }) => server_menu::moderate_modal(ctx, cx, guild_id, user_id, ban),
+        Some(Modal::CustomStatus) => user_settings::custom_status_modal(ctx, cx),
+        Some(Modal::PrivacySettings { guild_id }) => server_menu::privacy_modal(ctx, cx, guild_id),
+        Some(Modal::ScreenShare) => screen_share::modal(ctx, cx),
+        None => {}
+    }
+    confirm_dialog(ctx, cx);
+}
+
+/// The `ViewState::confirm` question. Cancel, Esc or a click beside it drop it; the button
+/// sends its command (once: the dialog closes with it).
+fn confirm_dialog(ctx: &egui::Context, cx: &mut UiCx<'_>) {
+    let Some(c) = &cx.view.confirm else { return };
+    let theme = &*cx.theme;
+    let resp = dialog(ctx, theme, "rc_confirm", 440.0, &c.title, |ui| {
+        dialog_text(ui, theme, &c.body);
+        dialog_buttons(ui, theme, &c.button, c.danger, true)
+    });
+    match resp.inner {
+        Some(true) => {
+            if let Some(c) = cx.view.confirm.take() {
+                cx.cmd.send(c.then);
+            }
+        }
+        Some(false) => cx.view.confirm = None,
+        None if resp.should_close() => cx.view.confirm = None,
+        None => {}
+    }
+}
+
+/// Shared modal look (FEATURES_NOTES §4.9 generic modal: 442 / 602 / 800 wide, 24 px padding,
+/// dark backdrop): a bold title, then `add`. Esc or a click on the backdrop make
+/// `should_close()` true; the caller then clears its `ViewState` field. Narrow windows shrink it;
+/// short ones cap it 16 px off the window edges and scroll its contents.
+pub fn dialog<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width: f32, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+    let pal = messages::Pal::new(theme);
+    let frame = egui::Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(egui::Margin::same(24));
+    let width = width.min(ctx.content_rect().width() - 80.0).max(200.0);
+    // shortcut: the buttons scroll with the body (they sit inside `add`); pinning them needs a split API.
+    let max_h = (ctx.content_rect().height() - 32.0 - 48.0).max(120.0);
+    egui::Modal::new(egui::Id::unique(salt)).frame(frame).show(ctx, |ui| {
+        ui.set_width(width);
+        // An area's ui is only as tall as last frame's contents; the scroll area takes its height
+        // from it, so without this the dialog could never grow.
+        ui.set_max_height(max_h);
+        egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.label(egui::RichText::new(title).font(bold(pal.size + 5.0)).color(pal.text));
+            add(ui)
+        })
+        .inner
+    })
+}
+
+/// Body text of a dialog: muted, wrapped.
+pub fn dialog_text(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).color(theme.colors.text_muted.to_color32())).wrap());
+}
+
+/// Cancel + action button, right-aligned at the dialog's bottom. Some(true) = the action
+/// (`danger` colours it red, else accent; disabled unless `enabled`), Some(false) = Cancel.
+pub fn dialog_buttons(ui: &mut egui::Ui, theme: &Theme, action: &str, danger: bool, enabled: bool) -> Option<bool> {
+    let c = &theme.colors;
+    let (fill, text) = if danger { (c.danger.to_color32(), egui::Color32::WHITE) } else { (c.accent.to_color32(), c.accent_text.to_color32()) };
+    ui.add_space(8.0);
+    // Fixed height: `with_layout` would take all the height left, and a modal keeps its largest size.
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let go = egui::Button::new(egui::RichText::new(action).color(text)).fill(fill).min_size(egui::vec2(96.0, 36.0));
+        if ui.add_enabled(enabled, go).clicked() {
+            return Some(true);
+        }
+        let cancel = egui::Button::new("Cancel").frame(false).min_size(egui::vec2(72.0, 36.0));
+        ui.add(cancel).clicked().then_some(false)
+    })
+    .inner
+}
+
+/// Nav column width of the settings layers (192 px content + 26 px padding).
+const LAYER_NAV_W: f32 = 218.0;
+/// Page column of the settings layers.
+const LAYER_PAGE_W: f32 = 740.0;
+
+/// Full-screen settings layer (user and server settings, FEATURES_NOTES §4.9): `nav` in a
+/// column right-aligned in the left ~30 % (sidebar colour), `page` in a ≤ 740 px scrolling
+/// column, a round × ("Esc") in a 60 px tools column right of it. True when it should close: the ×, or Esc while no
+/// popup, profile card or dialog is above it. `salt` keeps the two layers' scroll states apart.
+pub fn settings_layer(
+    ui: &mut egui::Ui,
+    cx: &mut UiCx<'_>,
+    salt: &str,
+    nav: impl FnOnce(&mut egui::Ui, &mut UiCx<'_>),
+    page: impl FnOnce(&mut egui::Ui, &mut UiCx<'_>),
+) -> bool {
+    use egui::{Margin, Rect, ScrollArea, UiBuilder, pos2, vec2};
+    let c = cx.theme.colors.clone();
+    let full = ui.max_rect();
+    let left = Rect::from_min_max(full.min, pos2(full.left() + (full.width() * 0.3).max(LAYER_NAV_W + 8.0), full.bottom()));
+    ui.painter().rect_filled(left, 0.0, cx.theme.panel_fills().card.to_color32());
+    let nav_col = Rect::from_min_max(pos2(left.right() - LAYER_NAV_W, full.top()), left.right_bottom());
+    let out = ui.scope_builder(UiBuilder::new().max_rect(nav_col), |ui| {
+        // egui's own fade would cover only the nav column, in the window's colour.
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+        ScrollArea::vertical().id_salt((salt, "nav")).auto_shrink(false).show(ui, |ui| {
+            egui::Frame::new().inner_margin(Margin { left: 20, right: 6, top: 60, bottom: 60 }).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 2.0;
+                nav(ui, cx);
+            });
+        })
+    });
+    // Scroll fades across the whole sidebar, in its own fill.
+    let (card, fade) = (cx.theme.panel_fills().card.to_color32(), 20.0);
+    let below = out.inner.content_size.y - out.inner.inner_rect.height() - out.inner.state.clamped_offset().y;
+    for (t, rect, dir) in [
+        (out.inner.state.clamped_offset().y, Rect::from_min_max(left.min, pos2(left.right(), left.top() + fade)), egui::Direction::TopDown),
+        (below, Rect::from_min_max(pos2(left.left(), left.bottom() - fade), left.max), egui::Direction::BottomUp),
+    ] {
+        if t > 0.0 {
+            ui.painter().add(egui::Shape::gradient_rect(rect, dir, [card.gamma_multiply((t / fade).min(1.0)), egui::Color32::TRANSPARENT]));
+        }
+    }
+    let right = Rect::from_min_max(pos2(left.right(), full.top()), full.max);
+    let col_w = (right.width() - 40.0 - 60.0).clamp(160.0, LAYER_PAGE_W);
+    ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
+        ScrollArea::vertical().id_salt((salt, "page")).auto_shrink(false).show(ui, |ui| {
+            egui::Frame::new().inner_margin(Margin { left: 40, right: 0, top: 60, bottom: 80 }).show(ui, |ui| {
+                ui.set_width(col_w);
+                page(ui, cx);
+            });
+        });
+    });
+    // Round × with "ESC" under it, centred in the tools column, 60 px from the top.
+    let x = Rect::from_center_size(pos2(right.left() + 40.0 + col_w + 30.0, full.top() + 78.0), vec2(36.0, 36.0));
+    let resp = ui.interact(x, ui.make_persistent_id((salt, "close")), egui::Sense::click());
+    let color = if resp.hovered() || resp.has_focus() { c.text } else { c.text_muted }.to_color32();
+    ui.painter().circle_stroke(x.center(), 17.0, egui::Stroke::new(2.0, color));
+    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(24.0), color);
+    ui.painter().text(x.center_bottom() + vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, "ESC", bold(11.0), color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close"));
+    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && !egui::Popup::is_any_open(ui.ctx())
+        && cx.view.profile_card.is_none()
+        && !cx.view.dialog_open();
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || esc
+}
+
+/// Small uppercase heading over a group of nav rows ("USER SETTINGS").
+pub fn nav_heading(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.add_space(6.0);
+    let color = theme.colors.text_muted.to_color32();
+    ui.add(egui::Label::new(egui::RichText::new(text.to_uppercase()).font(bold(theme.font.size - 3.0)).color(color)).selectable(false).truncate());
+}
+
+/// One 32 px nav row of a settings layer (selected: the sidebar's selected fill; `danger`: red
+/// text, e.g. Log Out). True when clicked.
+pub fn nav_item(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool, danger: bool) -> bool {
+    let c = &theme.colors;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+    let (selected_fill, hover_fill) = sidebar::row_fills(ui, c);
+    let hot = resp.hovered() || resp.has_focus();
+    let fill = if selected { selected_fill } else if hot { hover_fill } else { egui::Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, theme.layout.corner_radius, fill);
+    let color = if danger { c.danger } else if selected || hot { c.text } else { c.text_muted }.to_color32();
+    let g = one_line(ui, label, egui::FontId::proportional(theme.font.size), color, rect.width() - 20.0);
+    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, color);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Page title at the top of a settings page.
+pub fn page_title(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.label(egui::RichText::new(text).font(bold(theme.font.size + 5.0)).color(theme.colors.text.to_color32()));
+    ui.add_space(8.0);
+}
+
+/// Section heading inside a settings page (uppercase, muted, with a rule under it).
+pub fn section(ui: &mut egui::Ui, theme: &Theme, title: &str) {
+    ui.add_space(22.0);
+    ui.label(egui::RichText::new(title.to_uppercase()).font(bold(theme.font.size - 2.0)).color(theme.colors.text_muted.to_color32()));
+    ui.separator();
+}
+
+/// One muted hint line under a setting (only where the control needs explaining).
+pub fn hint(ui: &mut egui::Ui, theme: &Theme, text: &str) {
+    ui.label(egui::RichText::new(text).size(theme.font.size - 1.5).color(theme.colors.text_muted.to_color32()));
+}
+
+/// Test hook `RUSTCORD_OPEN=modal:<name>`: create-thread / new-post (the open channel), profile
+/// (the lowest cached user id other than me and the open guild's owner), group-dm, create-channel / create-category / invite (the open
+/// guild / channel), join-server, kick / ban (that user in the open guild), custom-status, privacy
+/// (the open guild's Privacy Settings).
+fn demo_modal(state: &AppState, name: &str) -> Option<Modal> {
+    let (ch, g) = (state.selected_channel, state.selected_guild);
+    let me = state.me.as_ref().map(|u| u.id);
+    let owner = state.guilds.iter().find(|x| Some(x.id) == g).map(|x| x.owner_id);
+    let user = || state.users.keys().filter(|&&u| Some(u) != me && Some(u) != owner).min().copied();
+    Some(match name {
+        "create-thread" => Modal::CreateThread { channel_id: ch?, from_message: None },
+        "new-post" => Modal::NewForumPost { forum_id: ch? },
+        "profile" => Modal::Profile { user_id: user()?, guild_id: g },
+        "group-dm" => Modal::GroupDm { channel_id: None },
+        "create-channel" | "create-category" => Modal::CreateChannel { guild_id: g?, parent_id: None, category: name == "create-category" },
+        "invite" => Modal::Invite { guild_id: g?, channel_id: ch? },
+        "join-server" => Modal::JoinServer,
+        "kick" | "ban" => Modal::Moderate { guild_id: g?, user_id: user()?, ban: name == "ban" },
+        "custom-status" => Modal::CustomStatus,
+        "privacy" => Modal::PrivacySettings { guild_id: g? },
+        _ => return None,
+    })
+}
+
+fn parse_size(s: &str) -> Option<egui::Vec2> {
+    let (w, h) = s.split_once('x')?;
+    Some(egui::vec2(w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Format an ISO-8601 timestamp for message headers ("Today at 14:03", "12/03/2026 09:15").
+pub fn format_timestamp(iso: &str) -> String {
+    use chrono::{DateTime, Local};
+    let Ok(t) = DateTime::parse_from_rfc3339(iso) else { return String::new() };
+    let t = t.with_timezone(&Local);
+    let today = Local::now().date_naive();
+    let d = t.date_naive();
+    if d == today {
+        format!("Today at {}", t.format("%H:%M"))
+    } else if today.pred_opt() == Some(d) {
+        format!("Yesterday at {}", t.format("%H:%M"))
+    } else {
+        t.format("%d.%m.%Y %H:%M").to_string()
+    }
+}
+
+/// 0xRRGGBB -> Color32.
+pub fn rgb(c: u32) -> egui::Color32 {
+    egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+/// Status dot color (presence, connection state). Status colors are semantic, so only DnD
+/// and offline follow the theme.
+pub fn presence_color(p: Presence, c: &ThemeColors) -> egui::Color32 {
+    match p {
+        Presence::Online => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
+        Presence::Idle => egui::Color32::from_rgb(0xe0, 0xa2, 0x1b),
+        Presence::Dnd => c.danger.to_color32(),
+        Presence::Offline => c.text_muted.to_color32(),
+    }
+}
+
+/// Call first in a `horizontal_wrapped` row that mixes labels with buttons or combo boxes: rows
+/// start `interact_size.y` tall, shorter than a themed button, which leaves labels a few px high.
+pub fn button_row(ui: &mut egui::Ui) {
+    ui.set_row_height(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y);
+}
+
+/// Bold font of the given size.
+pub fn bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, crate::theme::bold_family())
+}
+
+/// Single-line galley, truncated with "…" at `max_width`.
+pub fn one_line(ui: &egui::Ui, text: impl Into<String>, font: egui::FontId, color: egui::Color32, max_width: f32) -> Arc<egui::Galley> {
+    let text = text.into();
+    let mut job = egui::text::LayoutJob { break_on_newline: false, ..Default::default() };
+    crate::theme::append_boxed(&mut job, &text, &egui::TextFormat::simple(font, color));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// `one_line` in bold after `glyph` (if any) drawn as a monochrome icon (`icon_family`): bold
+/// text alone would draw it as the OS color emoji.
+pub fn icon_line(ui: &egui::Ui, glyph: &str, text: &str, size: f32, color: egui::Color32, max_width: f32) -> Arc<egui::Galley> {
+    use egui::text::{LayoutJob, TextFormat, TextWrapping};
+    let mut job = LayoutJob { break_on_newline: false, ..Default::default() };
+    if !glyph.is_empty() {
+        job.append(&format!("{glyph} "), 0.0, TextFormat::simple(egui::FontId::new(size, crate::theme::icon_family()), color));
+    }
+    job.append(text, 0.0, TextFormat::simple(bold(size), color));
+    job.wrap = TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// Circular avatar (via `images::circle_image`) placed at `rect` without moving the cursor.
+pub fn avatar_at(ui: &mut egui::Ui, images: &mut images::ImageCache, url: &str, rect: egui::Rect, animate: bool, opacity: f32) {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    child.multiply_opacity(opacity);
+    images::circle_image(&mut child, images, url, rect.width(), animate);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_window_size() {
+        assert_eq!(parse_size("720x420"), Some(egui::vec2(720.0, 420.0)));
+        assert_eq!(parse_size("720"), None);
+        assert_eq!(parse_size("ax1"), None);
+    }
+
+    #[test]
+    fn channel_list_gives_way_to_the_message_area() {
+        assert_eq!(channel_list_width(1180.0, MEMBER_LIST_W, None), (303.0, 360.0));
+        assert_eq!(channel_list_width(1000.0, MEMBER_LIST_W, None), (214.0, 214.0));
+        assert_eq!(channel_list_width(720.0, 0.0, None), (198.0, 198.0));
+        assert_eq!(channel_list_width(600.0, 0.0, None), (192.0, 192.0));
+        assert_eq!(channel_list_width(1180.0, 0.0, Some(500.0)), (360.0, 360.0));
+        assert_eq!(channel_list_width(1180.0, 0.0, Some(100.0)).0, 192.0);
+    }
+
+    #[test]
+    fn right_column_follows_the_page() {
+        let (mut view, settings, mut state) = (ViewState::default(), Settings::default(), AppState::default());
+        // DM home without a DM open is the Friends page: no right column.
+        assert!(friends::is_open(&state));
+        view.thread_panel = Some(Id(5));
+        assert_eq!(right_column_w(&view, &settings, &state, 1180.0), 0.0);
+        state.selected_channel = Some(Id(4));
+        assert_eq!(right_column_w(&view, &settings, &state, 1180.0), THREAD_PANEL_W);
+        assert_eq!(right_column_w(&view, &settings, &state, 900.0), 0.0);
+        view.settings_open = true;
+        assert_eq!(right_column_w(&view, &settings, &state, 1180.0), 0.0);
+    }
+
+    #[test]
+    fn demo_modals_need_their_target() {
+        let mut state = AppState::default();
+        assert_eq!(demo_modal(&state, "join-server"), Some(Modal::JoinServer));
+        assert_eq!(demo_modal(&state, "create-thread"), None);
+        assert_eq!(demo_modal(&state, "nope"), None);
+        state.selected_channel = Some(Id(3));
+        assert_eq!(demo_modal(&state, "create-thread"), Some(Modal::CreateThread { channel_id: Id(3), from_message: None }));
+    }
+
+    #[test]
+    fn open_profile_toggles() {
+        let mut v = ViewState::default();
+        v.open_profile(Id(1), None, egui::Pos2::ZERO);
+        assert_eq!(v.profile_card.map(|p| p.user_id), Some(Id(1)));
+        v.open_profile(Id(2), Some(Id(9)), egui::Pos2::ZERO);
+        assert_eq!(v.profile_card.map(|p| p.user_id), Some(Id(2)));
+        v.open_profile(Id(2), Some(Id(9)), egui::Pos2::ZERO);
+        assert!(v.profile_card.is_none());
+    }
+}

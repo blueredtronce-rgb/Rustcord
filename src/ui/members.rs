@@ -1,0 +1,299 @@
+//! Member sidebar from the lazy member list (groups + members with status icon and custom
+//! status / activity line); for group DMs the recipients. Clicking a member opens the profile
+//! card.
+//! OWNERSHIP: ui-shell implementer.
+
+use super::sidebar::{name_and_status, row_fills, status_dot, status_tooltip, user_avatar_at, user_dot, user_presence, user_status_text};
+use super::{UiCx, bold, cosmetics, one_line, rgb};
+use crate::api::cdn;
+use crate::backend::ConnState;
+use crate::config::AnimateMode;
+use crate::model::{Activity, CustomStatus, Emoji, GatewayEvent, Id, Member, MemberListItem, Presence, RichPresence, Role, User, UserPresence, channel_type};
+use crate::state::AppState;
+use egui::{CornerRadius, FontId, Rect, Role as A11yRole, Sense, Shape, Vec2, WidgetInfo, pos2, vec2};
+
+/// Fixed row height (groups and members) so the list can be virtualized.
+const ROW_H: f32 = 42.0;
+const AVATAR: f32 = 32.0;
+const PAD: f32 = 16.0;
+/// Rich presence art right in a row, and its CDN / decode size.
+const ART: f32 = 20.0;
+const ART_PX: u32 = 64;
+
+/// Whether the selected channel has a member sidebar (guild channel or group DM). Offline with
+/// no cached guild member list there is nothing to show, so the message area takes the space.
+pub fn available(state: &AppState) -> bool {
+    let Some(ch) = state.selected_channel else { return false };
+    match state.selected_guild {
+        Some(g) => {
+            let empty = state.member_lists.get(&g).is_none_or(|l| l.items.is_empty());
+            !(empty && (crate::config::offline_mode() || state.conn == ConnState::Offline))
+        }
+        None => state.channels.get(&ch).is_some_and(|c| c.kind == channel_type::GROUP_DM),
+    }
+}
+
+pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    match cx.state.selected_guild {
+        Some(guild_id) => guild_members(ui, cx, guild_id),
+        None => group_dm_members(ui, cx),
+    }
+}
+
+fn guild_members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
+    let total = cx.state.member_lists.get(&guild_id).map_or(0, |l| l.items.len());
+    // Offline with no list the panel is hidden (`available`), so empty means loading.
+    if total == 0 {
+        skeleton(ui, cx);
+        return;
+    }
+    crate::plugins::people::member_count(ui, cx, guild_id);
+    egui::ScrollArea::vertical()
+        .id_salt(("members", guild_id))
+        .auto_shrink(false)
+        .show_rows(ui, ROW_H, total, |ui, range| {
+            for i in range {
+                // Cloned so rendering can borrow `cx` mutably; only visible rows get here.
+                let Some(item) = cx.state.member_lists.get(&guild_id).and_then(|l| l.items.get(i)).cloned() else { break };
+                match item {
+                    MemberListItem::Group { id, count } => {
+                        let roles = cx.state.guild(guild_id).map(|g| g.roles.as_slice()).unwrap_or_default();
+                        let label = group_label(&id, roles);
+                        group_row(ui, cx, &label, count as usize);
+                    }
+                    MemberListItem::Member { member, status } => match &member.user {
+                        Some(user) => member_row(ui, cx, Some(guild_id), user, Some(&member), Some(status)),
+                        None => {
+                            ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+                        }
+                    },
+                }
+            }
+        });
+}
+
+/// Group DM: me plus the recipients.
+fn group_dm_members(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    let Some(ch) = cx.state.selected_channel.and_then(|id| cx.state.channels.get(&id)) else { return };
+    let me = cx.state.me.clone();
+    let my_id = me.as_ref().map(|u| u.id);
+    let users: Vec<User> = me
+        .into_iter()
+        .chain(ch.recipient_ids.iter().filter(|&&id| Some(id) != my_id).filter_map(|id| cx.state.users.get(id).cloned()))
+        .collect();
+    egui::ScrollArea::vertical().id_salt("group_dm_members").auto_shrink(false).show_rows(
+        ui,
+        ROW_H,
+        users.len() + 1,
+        |ui, range| {
+            for i in range {
+                match i.checked_sub(1) {
+                    None => group_row(ui, cx, "Members", users.len()),
+                    Some(u) => member_row(ui, cx, None, &users[u], None, None),
+                }
+            }
+        },
+    );
+}
+
+/// Section header text: role name for hoisted-role groups.
+fn group_label(id: &str, roles: &[Role]) -> String {
+    match id {
+        "online" => "Online".into(),
+        "offline" => "Offline".into(),
+        _ => id
+            .parse::<u64>()
+            .ok()
+            .and_then(|rid| roles.iter().find(|r| r.id.0 == rid))
+            .map_or_else(|| "Members".into(), |r| r.name.clone()),
+    }
+}
+
+/// Loading state: a few faint avatar + name silhouettes instead of a "Loading…" sentence.
+fn skeleton(ui: &mut egui::Ui, cx: &UiCx<'_>) {
+    let tint = cx.theme.colors.text.to_color32().gamma_multiply(0.07);
+    let (area, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H * 7.0), Sense::hover());
+    resp.widget_info(|| WidgetInfo::labeled(A11yRole::Label, true, "Loading members"));
+    let p = ui.painter();
+    p.rect_filled(Rect::from_min_size(pos2(area.left() + PAD, area.top() + ROW_H - 16.0), vec2(72.0, 8.0)), 4, tint);
+    for (i, w) in [112.0, 84.0, 128.0, 96.0, 72.0, 104.0].into_iter().enumerate() {
+        let cy = area.top() + ROW_H * (i as f32 + 1.5);
+        p.circle_filled(pos2(area.left() + PAD + AVATAR / 2.0, cy), AVATAR / 2.0, tint);
+        p.rect_filled(Rect::from_min_size(pos2(area.left() + PAD + AVATAR + 12.0, cy - 5.0), vec2(w, 10.0)), 5, tint);
+    }
+}
+
+fn group_row(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, count: usize) {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    let color = cx.theme.colors.text_muted.to_color32();
+    let g = one_line(ui, format!("{label} — {count}"), bold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD);
+    ui.painter().galley(pos2(row.left() + PAD, row.bottom() - g.size().y - 6.0), g, color);
+}
+
+/// 32 px avatar with status icon, the name in its role color over the custom status or
+/// activity. Offline members are dimmed (avatar faded, muted name that stays readable in High
+/// Contrast) until hovered, without icon or line. `listed`: the member list's status for the row.
+fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: &User, member: Option<&Member>, listed: Option<Presence>) {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    let bg_slot = ui.painter().add(Shape::Noop);
+    let hot = ui.rect_contains_pointer(row);
+    // Mine before the gateway names my status: the list's (my group says I'm online), not offline.
+    let is_me = cx.state.me.as_ref().is_some_and(|m| m.id == user.id);
+    let own_listed = listed.filter(|_| is_me && cx.state.chat.my_status.is_none());
+    let offline = own_listed.unwrap_or_else(|| user_presence(cx.state, user.id)) == Presence::Offline;
+    let name = cx.state.member_display_name(guild_id, user, member);
+    // Cosmetics (ui/cosmetics.rs): nameplate under the row, decoration, name style, guild tag.
+    let fx = crate::overrides::effective_for(user, member);
+    let (dim, fx_anim) = (offline && !hot, cosmetics::animates(cx, hot));
+    // Filled once the text's extent is known (light themes fade the art in after it).
+    let plate = ui.painter().add(Shape::Noop);
+
+    let avatar = Rect::from_min_size(pos2(row.left() + PAD, row.center().y - AVATAR / 2.0), Vec2::splat(AVATAR));
+    let animate = crate::overrides::my_avatar_animates(user.id, hot).unwrap_or(cx.settings.animate_others == AnimateMode::Always);
+    let url = super::images::user_avatar_url(guild_id, user, member, 64, animate);
+    let opacity = if dim { 0.35 } else { 1.0 };
+    user_avatar_at(ui, cx.images, &url, avatar, animate, opacity, (user.id, &name));
+    super::images::decoration_at(ui, cx.images, avatar, fx.decoration.as_ref(), fx_anim, opacity);
+
+    let c = &cx.theme.colors;
+    let mut ring = c.sidebar.to_color32();
+    if hot {
+        ring = row_fills(ui, c).1;
+        let bg = row.shrink2(vec2(8.0, 1.0));
+        ui.painter().set(bg_slot, Shape::rect_filled(bg, CornerRadius::from(cx.theme.layout.corner_radius), ring));
+    }
+    match own_listed {
+        _ if offline => {}
+        Some(p) => {
+            status_dot(ui.painter(), avatar, p, c, ring);
+        }
+        None => {
+            user_dot(ui.painter(), avatar, cx.state, user.id, c, ring);
+        }
+    }
+    let role_color = guild_id.zip(member).and_then(|(g, m)| cx.state.role_color(g, &m.roles)).map(rgb).or_else(|| crate::plugins::people::irc_color(guild_id, user.id, ui.visuals().dark_mode));
+    let color = if offline { c.text_muted.to_color32() } else { role_color.unwrap_or(c.text.to_color32()) };
+    let (text_left, mut max_w) = (avatar.right() + 12.0, row.right() - PAD - avatar.right() - 12.0);
+    // Rich presence art at the row's right end (the game's image).
+    let art = cx.state.presence_of(user.id).and_then(|p| cdn::activity_image_url(p.activity.as_ref()?, false, ART_PX)).filter(|_| !offline);
+    if let Some(url) = art {
+        let r = Rect::from_min_size(pos2(row.right() - PAD - ART, row.center().y - ART / 2.0), Vec2::splat(ART));
+        if let Some(tex) = cx.images.get(ui.ctx(), &url, ART_PX, false) {
+            egui::Image::from_texture(tex).corner_radius(4).paint_at(ui, r);
+        }
+        max_w -= ART + 8.0;
+    }
+    let size = cx.theme.font.size;
+    let (tag, chip_color) = (cosmetics::guild_tag(user, member), if offline { color } else { c.text.to_color32() });
+    let chip_w = tag.map_or(0.0, |pg| cosmetics::tag_chip_width(ui, pg, size) + 4.0);
+    // Plugin tags after the name get their room first: the name is cut with "…" instead.
+    let plug_w = crate::plugins::people::member_row_width(ui, cx, guild_id, user, member);
+    let style = fx.name_style.as_ref().filter(|_| !offline);
+    let g = cosmetics::name_galley(ui, &name, FontId::proportional(size), style, color, (max_w - chip_w - plug_w).max(24.0));
+    let status = user_status_text(cx.state, user.id).filter(|_| !offline);
+    let tip = status.as_ref().and_then(|st| status_tooltip(ui, st));
+    let under = ui.painter().add(Shape::Noop);
+    let (name_rect, text_end) = name_and_status(ui, cx, g.clone(), color, status.as_ref(), pos2(text_left, row.center().y), max_w);
+    ui.painter().set(under, cosmetics::name_underlay(name_rect.min, &g, style, ui.visuals().dark_mode));
+    // Chips over a nameplate get the row's own colour under them (opaque on the art).
+    let surface = fx.nameplate.as_ref().map(|_| ring);
+    if let Some(pg) = tag {
+        let at = pos2(name_rect.right() + 4.0, name_rect.center().y);
+        match surface {
+            Some(s) => cosmetics::tag_chip_on(ui, cx.images, pg, at, size, chip_color, s),
+            None => cosmetics::tag_chip(ui, cx.images, pg, at, size, chip_color),
+        };
+    }
+    // Plugins: tags, platforms, voice, timeout after the name.
+    let plug_w = crate::plugins::people::member_row(ui, cx, guild_id, user, member, pos2(name_rect.right() + 4.0 + chip_w, name_rect.center().y), surface);
+    if let Some(np) = &fx.nameplate {
+        let end = text_end.max(name_rect.right() + 4.0 + chip_w + plug_w);
+        let (plate_rect, radius) = (row.shrink2(vec2(8.0, 1.0)), cx.theme.layout.corner_radius.round() as u8);
+        let shape = cosmetics::nameplate(ui, cx.images, plate_rect, np, fx_anim, dim, radius, end);
+        // Dark themes: a scrim keeps the status line off the art's bright spots.
+        let scrim = (ui.visuals().dark_mode && !dim).then(|| cosmetics::plate_scrim(plate_rect, radius, ring, end, crate::theme::is_high_contrast(&cx.theme.colors)));
+        ui.painter().set(plate, Shape::Vec(std::iter::once(shape).chain(scrim).collect()));
+    }
+
+    // Registered after the avatar widget so the whole row stays clickable.
+    let resp = ui.interact(row, ui.make_persistent_id(("member", user.id)), Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(A11yRole::Button, true, &name));
+    // The anchor is the card's top-left; the card (300 wide, profile.rs) opens left of the list.
+    let anchor = pos2(row.left() - 8.0 - 300.0, row.top());
+    resp.context_menu(|ui| super::sidebar::user_menu(ui, cx, user.id, guild_id, anchor));
+    let resp = match tip {
+        Some(t) => resp.on_hover_text(t),
+        None => resp,
+    };
+    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        cx.view.open_profile(user.id, guild_id, anchor);
+    }
+}
+
+/// Test hooks: a sample activity of type `kind` (0-5) with rich presence; the game (0) has
+/// app-asset art (`DEMO_APP` / `DEMO_ASSET`, from the image cache offline), music (2) a Spotify
+/// image (not loaded: third-party host, so its type icon stands in).
+pub(super) fn demo_activity(kind: u8) -> Activity {
+    let (name, details, state, mins) = match kind {
+        1 => ("Twitch", "Speedrunning the borrow checker", "Factorio", 95),
+        2 => ("Spotify", "Borrow Checker Blues", "The Lifetimes", 3),
+        3 => ("YouTube", "Rust in 100 seconds", "", 12),
+        5 => ("Rust Golf Cup", "Round 3", "Top 10", 1500),
+        _ => ("Factorio", "Building a megabase", "Nauvis · 3 of 4", 47),
+    };
+    let text = |s: &str| (!s.is_empty()).then(|| s.to_owned());
+    let rich = RichPresence {
+        details: text(details),
+        state: text(state),
+        start: Some(super::threads::unix_ms() - mins * 60_000),
+        application_id: (kind == 0).then_some(DEMO_APP),
+        large_image: match kind {
+            0 => Some(DEMO_ASSET.into()),
+            2 => Some("spotify:ab67616d0000b273".into()),
+            _ => None,
+        },
+        large_text: (kind == 0).then(|| "Factorio 2.0".into()),
+        small_image: None,
+    };
+    Activity { kind, name: name.into(), rich: Some(Box::new(rich)) }
+}
+
+/// The demo game's application and art asset (seed the image cache with
+/// `app-assets/{DEMO_APP}/{DEMO_ASSET}.png?size=64` and `?size=128` for screenshots).
+const DEMO_APP: Id = Id(1565443437363200900);
+const DEMO_ASSET: &str = "1565443437363200901";
+
+/// Test hook (`RUSTCORD_OPEN=members`, ui/mod.rs): the demo list's presences as the gateway
+/// reports them next to a member list, the 2nd-4th online member with a custom status, a game
+/// and a phone.
+pub(super) fn demo_presences(state: &mut AppState, items: &[MemberListItem]) {
+    let custom = CustomStatus { text: Some("Reviewing PRs".into()), emoji: Some(Emoji { name: Some("👀".into()), ..Default::default() }) };
+    let extras = [
+        UserPresence::default(),
+        UserPresence { custom_status: Some(custom), ..Default::default() },
+        UserPresence { activity: Some(demo_activity(0)), ..Default::default() },
+        UserPresence { mobile: true, activity: Some(demo_activity(2)), ..Default::default() },
+    ];
+    let online = items.iter().filter_map(|it| match it {
+        MemberListItem::Member { member, status } if *status != Presence::Offline => Some((member.user.as_ref()?.id, *status)),
+        _ => None,
+    });
+    let list = online.zip(extras.into_iter().chain(std::iter::repeat_with(UserPresence::default))).map(|((id, status), p)| (id, UserPresence { status, ..p })).collect();
+    state.apply_gateway(GatewayEvent::PresenceUpdate(list), None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_labels() {
+        let roles = vec![Role { id: Id(42), name: "Maintainers".into(), ..Default::default() }];
+        assert_eq!(group_label("online", &roles), "Online");
+        assert_eq!(group_label("offline", &roles), "Offline");
+        assert_eq!(group_label("42", &roles), "Maintainers");
+        assert_eq!(group_label("43", &roles), "Members");
+        assert_eq!(group_label("weird", &roles), "Members");
+    }
+}
