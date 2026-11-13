@@ -127,15 +127,17 @@ fn forget_all_history(ctx: &egui::Context) {
 }
 
 pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
-    let bg = cx.theme.colors.background.to_color32();
+    // The page and its glow under the card and the footer alike (no edge where the footer starts).
+    let page = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(page, 0.0, cx.theme.colors.background.to_color32());
+    backdrop(ui.painter(), page, cx.theme);
     ui.style_mut().interaction.selectable_labels = false;
     egui::Panel::bottom("login_footer")
         .resizable(false)
         .show_separator_line(false)
-        .frame(Frame::new().fill(bg).inner_margin(Margin::symmetric(16, 10)))
+        .frame(Frame::new().inner_margin(Margin::symmetric(16, 10)))
         .show(ui, |ui| footer(ui, cx.theme));
-    egui::CentralPanel::default().frame(Frame::new().fill(bg)).show(ui, |ui| {
-        backdrop(ui.painter(), ui.max_rect(), cx.theme);
+    egui::CentralPanel::default().frame(Frame::new()).show(ui, |ui| {
         let avail_h = ui.available_height();
         let compact = avail_h < COMPACT_BELOW_H;
         // Centre on the tallest card seen at this panel height, so a tab switch only moves the
@@ -164,13 +166,16 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     });
 }
 
-/// The brand backdrop behind the card: two soft ember glows (the accent above left of the card,
-/// the mark's red below right), so the page is not a flat field.
+/// The brand backdrop behind the card, the logo's ember gradient as soft light: the accent as a
+/// halo behind the card's head, the mark's amber above left and its red below right, so the
+/// page is not a flat field. Static meshes: nothing animates or repaints.
 fn backdrop(p: &egui::Painter, r: egui::Rect, theme: &Theme) {
-    let k = if theme.dark { 0.16 } else { 0.10 };
+    let k = if theme.dark { 0.2 } else { 0.14 };
     let side = r.width().min(r.height());
-    glow(p, r.center() + egui::vec2(-0.22, -0.18) * side, 0.75 * side, theme.colors.accent.to_color32().gamma_multiply(k));
-    glow(p, r.center() + egui::vec2(0.3, 0.26) * side, 0.6 * side, Color32::from_rgb(0xE8, 0x40, 0x3F).gamma_multiply(k * 0.8));
+    let at = |x: f32, y: f32| r.center() + egui::vec2(x, y) * side;
+    glow(p, at(-0.42, -0.3), 0.6 * side, Color32::from_rgb(0xFF, 0xA2, 0x4A).gamma_multiply(k * 0.6));
+    glow(p, at(0.36, 0.3), 0.65 * side, Color32::from_rgb(0xE8, 0x40, 0x3F).gamma_multiply(k * 0.8));
+    glow(p, at(0.0, -0.12), 0.55 * side, theme.colors.accent.to_color32().gamma_multiply(k));
 }
 
 /// A radial glow: `color` at the centre fading smoothly to clear at `radius` (rings of a mesh;
@@ -346,7 +351,8 @@ fn tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 }
 
 /// Full-width segmented control: one rounded track, equal segments, the selected one raised.
-fn segmented<T: Copy + PartialEq>(ui: &mut egui::Ui, theme: &Theme, value: &mut T, options: &[(T, &str)]) {
+/// Also the settings' one-of-a-few choices (2FA method, plugin filter, profile tabs).
+pub(crate) fn segmented<T: Copy + PartialEq>(ui: &mut egui::Ui, theme: &Theme, value: &mut T, options: &[(T, &str)]) {
     let c = &theme.colors;
     let radius = theme.layout.corner_radius;
     let (track_fill, raised) = segment_fills(theme);
