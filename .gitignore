@@ -1,0 +1,5 @@
+# build output
+/target/
+# leftovers from replacing a running exe on Windows
+*.old
+*.tmp
