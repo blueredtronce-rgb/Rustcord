@@ -3,13 +3,16 @@
 //!     cargo run --example export_icons [-- path/to/logo.svg [out_dir]]
 //!
 //! Sizes <= 32 px use `logo-small.svg` when it exists next to the main SVG (a simplified mark
-//! that stays legible at tiny sizes).
+//! that stays legible at tiny sizes). `logo-mono.svg` next to it (the flat mark) becomes
+//! `rustcord-tray.ico`, the notification-area icon (resource id 2, notify.rs).
 
 use resvg::{tiny_skia, usvg};
 use std::path::{Path, PathBuf};
 
 const PNG_SIZES: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
 const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+/// The small-icon size at 100-300 % scaling.
+const TRAY_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -29,14 +32,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("wrote {}", path.display());
     }
 
+    write_ico(&out.join("rustcord.ico"), &ICO_SIZES, tree_for)?;
+    let mono = svg.with_file_name("logo-mono.svg");
+    if mono.exists() {
+        let mono_tree = load(&mono)?;
+        write_ico(&out.join("rustcord-tray.ico"), &TRAY_SIZES, |_| &mono_tree)?;
+    }
+    Ok(())
+}
+
+fn write_ico<'a>(path: &Path, sizes: &[u32], tree_for: impl Fn(u32) -> &'a usvg::Tree) -> Result<(), Box<dyn std::error::Error>> {
     let mut frames = Vec::new();
-    for size in ICO_SIZES {
+    for &size in sizes {
         let rgba = render(tree_for(size), size)?;
         frames.push(image::codecs::ico::IcoFrame::as_png(&rgba, size, size, image::ExtendedColorType::Rgba8)?);
     }
-    let ico_path = out.join("rustcord.ico");
-    image::codecs::ico::IcoEncoder::new(std::fs::File::create(&ico_path)?).encode_images(&frames)?;
-    println!("wrote {}", ico_path.display());
+    image::codecs::ico::IcoEncoder::new(std::fs::File::create(path)?).encode_images(&frames)?;
+    println!("wrote {}", path.display());
     Ok(())
 }
 

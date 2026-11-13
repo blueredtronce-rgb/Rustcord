@@ -31,8 +31,8 @@ mod imp {
         NOTIFYICONDATAW, Shell_NotifyIconW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, DispatchMessageW, HICON, HWND_MESSAGE, IDI_APPLICATION, LoadIconW, MSG,
-        PM_REMOVE, PeekMessageW, TranslateMessage,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, HICON, HWND_MESSAGE, IDI_APPLICATION, IMAGE_ICON, LR_SHARED,
+        LoadIconW, LoadImageW, MSG, PM_REMOVE, PeekMessageW, SM_CXSMICON, SM_CYSMICON, TranslateMessage,
     };
 
     /// At most one balloon per this interval; messages in between are summarized.
@@ -152,7 +152,10 @@ mod imp {
     /// Hidden message-only window + tray icon, owned by the worker thread.
     struct Tray {
         hwnd: HWND,
+        /// The flat mark in the notification area.
         icon: HICON,
+        /// The app icon on balloons / toasts.
+        app_icon: HICON,
     }
 
     impl Tray {
@@ -166,12 +169,16 @@ mod imp {
                 if hwnd.is_null() {
                     return None;
                 }
-                // Resource id 1 = the app icon embedded by the build script.
-                let mut icon = LoadIconW(module, std::ptr::without_provenance(1));
-                if icon.is_null() {
-                    icon = LoadIconW(null_mut(), IDI_APPLICATION);
+                // Resource ids (assets/rustcord.rc): 1 the app icon, 2 the flat mark (logo-mono.svg),
+                // loaded at the small-icon size so the shell does not scale a 32 px frame down (shared:
+                // the system frees it).
+                let mut app_icon = LoadIconW(module, std::ptr::without_provenance(1));
+                if app_icon.is_null() {
+                    app_icon = LoadIconW(null_mut(), IDI_APPLICATION);
                 }
-                let tray = Tray { hwnd, icon };
+                let mark = LoadImageW(module, std::ptr::without_provenance(2), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+                let icon = if mark.is_null() { app_icon } else { mark };
+                let tray = Tray { hwnd, icon, app_icon };
                 tray.add().then_some(tray)
             }
         }
@@ -198,7 +205,7 @@ mod imp {
             let mut data = self.data();
             data.uFlags = NIF_INFO;
             data.dwInfoFlags = NIIF_USER | NIIF_RESPECT_QUIET_TIME;
-            data.hBalloonIcon = self.icon;
+            data.hBalloonIcon = self.app_icon;
             fill_wide(&mut data.szInfoTitle, title);
             // An empty szInfo would remove the balloon instead of showing it.
             fill_wide(&mut data.szInfo, if body.trim().is_empty() { "New message" } else { body });

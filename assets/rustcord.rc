@@ -1,2 +1,4 @@
-// Icon resource id 1: exe icon in Explorer and the tray icon (notify.rs loads id 1).
+// Icon resource id 1: exe icon in Explorer, window and balloon icon; id 2: the flat mark in the
+// notification area (notify.rs, at the small-icon size).
 1 ICON "rustcord.ico"
+2 ICON "rustcord-tray.ico"
