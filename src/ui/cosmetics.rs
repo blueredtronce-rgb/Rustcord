@@ -202,10 +202,25 @@ fn faded_tex(tex: SizedTexture, r: Rect, uv: Rect, corners: CornerRadius, text_e
 /// status line. One strip mesh over `row` with `corners` (one radius, or per corner: the user
 /// panel under the voice section).
 pub fn plate_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, text_end: f32, strong: bool) -> Shape {
-    let c: CornerRadius = corners.into();
     let x0 = text_end + 8.0;
     let x1 = (x0 + 40.0).max(row.left() + row.width() * 0.6);
     let peak = if strong { 1.0 } else { 0.7 };
+    scrim(row, corners.into(), bg, [x0, x1], |x| peak * (1.0 - egui::remap_clamp(x, x0..=x1.max(x0 + 1.0), 0.0..=1.0)))
+}
+
+/// The scrim behind the user panel's buttons on my nameplate (`row`: the panel, `buttons_left`:
+/// the leftmost button's left edge): `bg` (the panel colour) at 75 % (`strong`, High Contrast:
+/// opaque) from 8 px before the buttons to the right edge, faded in over the 24 px before, so
+/// their glyphs keep their contrast on bright art.
+pub fn buttons_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, buttons_left: f32, strong: bool) -> Shape {
+    let (x0, x1) = (buttons_left - 32.0, buttons_left - 8.0);
+    let peak = if strong { 1.0 } else { 0.75 };
+    scrim(row, corners.into(), bg, [x0, x1], |x| peak * egui::remap_clamp(x, x0..=x1, 0.0..=1.0))
+}
+
+/// `bg` at `alpha(x)` over `row` with corners `c`: one strip mesh, columns at the `stops` and
+/// along the corners.
+fn scrim(row: Rect, c: CornerRadius, bg: Color32, stops: [f32; 2], alpha: impl Fn(f32) -> f32) -> Shape {
     let rad = |v: u8| f32::from(v).min(row.height() / 2.0);
     // How far a corner of radius `r` cuts into the edge `d` px inside its quarter.
     let cut = |r: f32, d: f32| if d > 0.0 { r - (r * r - d * d).max(0.0).sqrt() } else { 0.0 };
@@ -213,12 +228,12 @@ pub fn plate_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, tex
     let arc = |v: u8| (0..=8).map(move |i| rad(v) * (1.0 - (i as f32 * std::f32::consts::FRAC_PI_2 / 8.0).cos()));
     let lefts = arc(c.nw).chain(arc(c.sw)).map(|d| row.left() + d);
     let rights = arc(c.ne).chain(arc(c.se)).map(|d| row.right() - d);
-    let mut xs: Vec<f32> = lefts.chain(rights).chain([x0, x1]).filter(|x| row.x_range().contains(*x)).collect();
+    let mut xs: Vec<f32> = lefts.chain(rights).chain(stops).filter(|x| row.x_range().contains(*x)).collect();
     xs.sort_by(f32::total_cmp);
     xs.dedup();
     let mut mesh = egui::Mesh::default();
     for (i, &x) in xs.iter().enumerate() {
-        let color = bg.gamma_multiply(peak * (1.0 - egui::remap_clamp(x, x0..=x1.max(x0 + 1.0), 0.0..=1.0)));
+        let color = bg.gamma_multiply(alpha(x));
         mesh.colored_vertex(pos2(x, row.top() + inset(x, c.nw, c.ne)), color);
         mesh.colored_vertex(pos2(x, row.bottom() - inset(x, c.sw, c.se)), color);
         if i > 0 {

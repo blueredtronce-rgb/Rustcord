@@ -1780,6 +1780,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     status_dot(ui.painter(), avatar, my_presence(cx.state), &c, fill);
 
     let (mute, deaf) = (cx.view.self_mute, cx.view.self_deaf);
+    let buttons_left = mic.left() - plug_w;
     crate::plugins::panel::game_button(ui, cx, mic.translate(vec2(-plug_w, 0.0)).with_max_x(mic.left() - 4.0), base);
     let mic = voice_button(ui, cx, mic, false, if mute || deaf { "Unmute" } else { "Mute" }, mute || deaf);
     let phones = voice_button(ui, cx, phones, true, if deaf { "Undeafen" } else { "Deafen" }, deaf);
@@ -1837,9 +1838,12 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
         let corners = if rect.top() > panel.y + 0.5 { CornerRadius { sw: PANEL_R, se: PANEL_R, ..CornerRadius::ZERO } } else { CornerRadius::same(PANEL_R) };
         let end = name_end.max(sub.right());
         let shape = super::cosmetics::nameplate_cover(ui, cx.images, rect, np, fx_anim, corners, base, end);
-        // High Contrast: the panel colour stays opaque behind the text.
-        let strong = (crate::theme::is_high_contrast(&c) && !matches!(shape, Shape::Noop)).then(|| super::cosmetics::plate_scrim(rect, corners, base, end, true));
-        ui.painter().set(cover, Shape::Vec(std::iter::once(shape).chain(strong).collect()));
+        // High Contrast: the panel colour stays opaque behind the text (and the buttons).
+        let (hc, art) = (crate::theme::is_high_contrast(&c), !matches!(shape, Shape::Noop));
+        let strong = (hc && art).then(|| super::cosmetics::plate_scrim(rect, corners, base, end, true));
+        // The buttons' glyphs on bright art.
+        let buttons = art.then(|| super::cosmetics::buttons_scrim(rect, corners, base, buttons_left, hc));
+        ui.painter().set(cover, Shape::Vec(std::iter::once(shape).chain(strong).chain(buttons).collect()));
     }
 
     let Some(me) = &me else { return };
