@@ -166,6 +166,8 @@ fn preview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, host: Id, ch: Id, mid: Id) -> b
                     }
                     Look::Unknown => {
                         ui.horizontal(|ui| {
+                            // As tall as the button (a row starts at interact_size.y), so the caption centres on it.
+                            ui.set_min_height(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y);
                             ui.label(RichText::new(format!("A message in {}", place.as_deref().unwrap_or("a channel"))).color(muted));
                             load = ui.button("Load message").on_hover_text("Loads this one message").clicked();
                         });
