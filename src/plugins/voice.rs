@@ -70,15 +70,12 @@ fn can_boost(state: &AppState, user: Id) -> bool {
     enabled(Plugin::VolumeBooster) && with_me && state.me.as_ref().is_some_and(|m| m.id != user)
 }
 
-/// In the user menu: "User Volume" for someone in my voice channel (not me); `sep`: a line
-/// above it, apart from the menu's other rows.
-pub fn volume_slider(ui: &mut egui::Ui, state: &AppState, user: Id, sep: bool) -> Result<(), String> {
+/// In the user menu: "User Volume" for someone in my voice channel (not me), a line above it.
+pub fn volume_slider(ui: &mut egui::Ui, state: &AppState, user: Id) -> Result<(), String> {
     if !can_boost(state, user) {
         return Ok(());
     }
-    if sep {
-        ui.separator();
-    }
+    ui.separator();
     let mut v = volume(user);
     ui.label(egui::RichText::new("User Volume").size(12.0).color(ui.visuals().weak_text_color()));
     let resp = ui.add(egui::Slider::new(&mut v, 0..=MAX_VOLUME).suffix(" %"));
@@ -86,19 +83,6 @@ pub fn volume_slider(ui: &mut egui::Ui, state: &AppState, user: Id, sep: bool) -
         set_volume(user, i64::from(v), resp.drag_stopped() || !resp.dragged())?;
     }
     Ok(())
-}
-
-/// A call tile's right-click menu (`ui/call.rs`): the volume slider alone, kept open by a click
-/// on it (Esc or a click outside closes it).
-pub fn tile_menu(resp: &egui::Response, cx: &mut crate::ui::UiCx<'_>, user: Id) {
-    if !can_boost(cx.state, user) {
-        return;
-    }
-    egui::Popup::context_menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        if let Err(e) = volume_slider(ui, cx.state, user, false) {
-            cx.view.toast(format!("Could not save plugin settings: {e}"), true);
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
