@@ -307,7 +307,7 @@ fn readable(c: Color32, dark: bool) -> Color32 {
 }
 
 /// `c` moved towards `to` (10 % steps, at most 10) until it has `min` contrast on every `bgs`.
-fn reach(mut c: Color32, bgs: &[Color32], to: Color32, min: f32) -> Color32 {
+pub(crate) fn reach(mut c: Color32, bgs: &[Color32], to: Color32, min: f32) -> Color32 {
     for _ in 0..10 {
         if bgs.iter().all(|&bg| contrast(c, bg) >= min) {
             break;
@@ -381,9 +381,13 @@ pub fn name_underlay(pos: Pos2, galley: &Arc<Galley>, style: Option<&NameStyle>,
             let ring = |n: usize, r: f32| (0..n).map(move |i| Vec2::angled(i as f32 * std::f32::consts::TAU / n as f32) * r);
             if dark { (ring(8, 1.5).chain(ring(12, 3.0)).collect(), c.gamma_multiply(0.08)) } else { (ring(8, 1.5).collect(), c.gamma_multiply(0.04)) }
         }
-        Some(4) => ([(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)].map(Vec2::from).to_vec(), Color32::from_black_alpha(200)),
-        // Pop: one crisp shadow, the colour 40 % darker.
-        Some(5) => (vec![vec2(1.5, 1.5)], c.lerp_to_gamma(Color32::BLACK, 0.4)),
+        // Toon: a dark outline; light backgrounds: a light one (a dark one muddies the name).
+        Some(4) => {
+            let outline = if dark { Color32::from_black_alpha(200) } else { Color32::from_white_alpha(170) };
+            ([(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)].map(Vec2::from).to_vec(), outline)
+        }
+        // Pop: one crisp shadow, the colour 40 % darker; light backgrounds: the colour at 30 %.
+        Some(5) => (vec![vec2(1.5, 1.5)], if dark { c.lerp_to_gamma(Color32::BLACK, 0.4) } else { c.gamma_multiply(0.3) }),
         _ => return Shape::Noop,
     };
     let copy = |&d: &Vec2| Shape::Text(TextShape::new(pos + d, galley.clone(), color).with_override_text_color(color));
@@ -1058,6 +1062,14 @@ fn game_tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, wg: &WidgetGame, d
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gold_tag_reaches_4_5_on_cream() {
+        // MoreUserTags' OWNER chip on Paper Light's darkest surface (`plugins/people.rs` paint_chip).
+        let gold = Color32::from_rgb(0xF0, 0xB2, 0x32);
+        let bg = Color32::from_rgb(0xED, 0xE6, 0xDC).blend(gold.gamma_multiply(0.18));
+        assert!(contrast(reach(gold, &[bg], Color32::BLACK, 4.5), bg) >= 4.5);
+    }
 
     #[test]
     fn light_nameplate_art_is_clear_under_the_text() {

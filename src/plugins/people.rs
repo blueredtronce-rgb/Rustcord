@@ -127,9 +127,13 @@ pub fn paint_speaker(p: &Painter, r: Rect, color: Color32) {
 /// A text chip (tags, timeout) with its left edge at `left_center`, on an opaque `surface` when
 /// given (rows with a nameplate behind them); returns its rect.
 fn paint_chip(ui: &egui::Ui, left_center: Pos2, text: &str, color: Color32, size: f32, surface: Option<Color32>) -> Rect {
+    let tint = color.gamma_multiply(0.18);
+    let v = ui.visuals();
+    // Light themes: the text darkened to 4.5:1 on its chip (the gold OWNER is ~1.9:1 on cream).
+    let bgs = surface.map_or([v.panel_fill, v.window_fill], |s| [s, s]).map(|b| b.blend(tint));
+    let color = if v.dark_mode { color } else { crate::ui::cosmetics::reach(color, &bgs, Color32::BLACK, 4.5) };
     let g = ui.painter().layout_no_wrap(text.to_owned(), FontId::new(size, crate::theme::bold_family()), color);
     let r = Rect::from_min_size(pos2(left_center.x, left_center.y - g.size().y / 2.0 - 1.0), g.size() + vec2(8.0, 2.0));
-    let tint = color.gamma_multiply(0.18);
     ui.painter().rect_filled(r, 4, surface.map_or(tint, |s| s.blend(tint)));
     ui.painter().galley(r.min + vec2(4.0, 1.0), g, color);
     r
