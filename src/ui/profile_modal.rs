@@ -101,10 +101,18 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
         // The theme's gradient outline instead (`cosmetics::theme_outline`).
         frame = frame.stroke(egui::Stroke::NONE);
     }
-    let area = egui::Modal::default_area(egui::Id::unique("rc_profile_modal")).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, (super::TITLE_BAR_H + ot) / 2.0));
+    // Centred under that line (its height from last frame); a modal taller than the room is
+    // clipped at the window bottom instead of pushed up over the title bar. Not constrained:
+    // the area's clip (= its constrain rect) also clips the backdrop, which must dim the whole
+    // window like every other modal's.
+    let id = egui::Id::unique("rc_profile_modal");
+    let top = super::TITLE_BAR_H + MARGIN + ot;
+    let h = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.height());
+    let y = top + ((screen_h - top - MARGIN - h) / 2.0).max(0.0);
+    let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, vec2(0.0, y)).constrain(false);
     let member = guild_id.and_then(|g| cx.state.find_member(g, user_id)).cloned();
     let fx = crate::overrides::effective_for(&user, member.as_ref());
-    let resp = egui::Modal::new(egui::Id::unique("rc_profile_modal")).area(area).frame(frame).show(ctx, |ui| {
+    let resp = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
         if look.theme.is_some() {
             cosmetics::theme_visuals(ui, &pal);
         }
