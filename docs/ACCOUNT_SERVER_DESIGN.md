@@ -113,8 +113,12 @@ One view each (bans, invites, created invite). Settings: one decoded view.
   the guild names joined with ", ".
 - **Status:** `chat.my_status` stays the effective status (dot); `account.settings.status` is
   what is saved.
-- Not covered yet: the 2FA re-prompt (`POST /mfa/finish`), guild `mfa_level` gating (not in the
-  model), member timeout, deleting a guild, templates, password/email change, username
+- 2FA: gated actions that answer 60003 wait for the "Confirm it's you" prompt (`POST /mfa/finish`,
+  `AccountEvent::Mfa`), then retry once with `X-Discord-MFA-Authorization` (`api::with_mfa`); the
+  `/mfa/finish` token is not cached, so each gated action asks again. Password change and the
+  authenticator / SMS / backup-code / security-key flows are in `ui/user_settings/security.rs`.
+- Not covered yet: guild `mfa_level` gating (not in the
+  model), member timeout, deleting a guild, templates, email/phone change (opens discord.com), username
   availability (`pomelo-attempt`), recent avatars, per-server profiles, category collapse sync
   (`channel_overrides.collapsed`), status durations (`status_expires_at_ms`),
   USER_REQUIRED_ACTION_UPDATE, animated avatars/emoji (flattened to PNG), the gateway

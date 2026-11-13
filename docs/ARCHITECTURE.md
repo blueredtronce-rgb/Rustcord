@@ -111,9 +111,10 @@ cargo check
 | plugins | `src/plugins/*` (registry + plugins.toml, one module per area), `src/ui/user_settings/plugins.rs`; one-line hooks elsewhere guarded by `plugins::enabled`: see `docs/PLUGINS_NOTES.md` |
 
 Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.rs` (resvg) →
-`assets/icons/*.png` + `assets/rustcord.ico`, embedded by `build.rs` (embed-resource,
-`assets/rustcord.rc`) as icon id 1 (exe icon and tray icon in `notify.rs`). `assets/logo-mono.svg`
-is the flat one-colour mark (not exported yet); the in-app mark (home button, title bars) is
+`assets/icons/*.png` + `assets/rustcord.ico`, and the flat one-colour `assets/logo-mono.svg` →
+`assets/rustcord-tray.ico`. `build.rs` (embed-resource, `assets/rustcord.rc`) embeds them as
+icon id 1 (exe, window and balloon icon) and id 2 (notification-area icon, loaded by `notify.rs`
+at the small-icon size, falling back to id 1). The in-app mark (home button, title bars) is
 painted by `ui/sidebar.rs` `logo_mark` from the same geometry.
 
 Shared-contract items (pub signatures in stubs, `model.rs`, `backend.rs` enums, `UiCx`,
@@ -168,7 +169,8 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   `friends`, `inbox`, `threads`, `thread:<id>`, `card:<user id>`, `modal:<name>`, `confirm`; see
   `docs/SOCIAL_UI_DESIGN.md`.
 - `RUSTCORD_PLUGINS=all|<Name>,<Name>`: switches those plugins on for this run (`plugins::apply_env`),
-  without writing plugins.toml; `RUSTCORD_OPEN=settings:plugins` opens their page.
+  without writing plugins.toml; `RUSTCORD_OPEN=settings:plugins` opens their page,
+  `RUSTCORD_PLUGIN_SEARCH=<text>` fills in its search.
 - `RUSTCORD_POINTER=<x>x<y>`: keep the pointer at that point (logical px) for hover states and
   tooltips in screenshots; with `RUSTCORD_CLICK=left|right` it also clicks there once (frames
   10-11), e.g. to open a context menu.
@@ -189,7 +191,9 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   offline mode can't reach, none sends a request: `folders` / `folder-open` (server bar
   folders), `mentions` (inbox mentions from cached messages), `profile` (loaded profiles),
   `tab:<online|all|pending|blocked|add>` (Friends tab), `settings` (sample devices, authorized apps
-  and consents on those Settings pages).
+  and consents on those Settings pages, two sample security keys),
+  `account:<password|totp|scan|sms|codes-key|codes|mfa|removal>` (that My Account security dialog
+  with sample data; `mfa` = the 2FA re-check prompt).
 - `RUSTCORD_CALL_DEMO=<comma list>` (ui/call.rs `demo`), with
   `RUSTCORD_OPEN=voice:<id>,channel:<id>` (the call view): `people` (cached users in the call:
   speaking, muted, deafened + live, camera), `video` (synthetic camera / stream frames, my camera

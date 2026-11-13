@@ -75,6 +75,11 @@
   Advanced, Activity Privacy and more. Synced options are written to your account's settings;
   options whose meaning is unconfirmed are left out. Log Out and other destructive actions ask
   first.
+- My Account security: email and phone, Change Password, authenticator app (QR code + key,
+  then backup codes) and its removal, SMS backup, View/Generate Backup Codes, security keys
+  (rename, remove), the 2FA re-check Discord asks for, Account Standing. Passwords and codes
+  are wiped from memory when their dialog closes; a rotated login token replaces the stored
+  one. Disable and Delete Account only open discord.com.
 - Server administration (channels, categories, roles, permission overwrites, members,
   kick/ban, bans, invites, emoji, notification settings).
 - Discord's UI font (gg sans), downloaded at runtime from discord.com into the cache folder
@@ -82,14 +87,16 @@
   channel and role names (`・〢┊꒰ᘏ`, 𝐛𝐨𝐥𝐝 letters, box drawing) use the system's fallback fonts
   instead of empty boxes.
 - Plugins (Settings → Plugins), rebuilt from Vencord's, all off by default and local to this
-  app: BetterFolders, BetterRoleDot, CallTimer, ClearURLs, CopyUserURLs, FavoriteEmojiFirst,
-  FriendsSince, ImageZoom, IrcColors, MemberCount, MessageLogger (memory only),
-  MoreUserTags, MutualGroupDMs, NoBlockedMessages, NoReplyMention, OpenInApp,
-  PermissionsViewer, PlatformIndicators, ReadAllNotificationsButton, RelationshipNotifier,
-  ReplyTimestamp, ReverseImageSearch, ServerInfo, ShowConnections, ShowHiddenChannels,
-  ShowMeYourName, ShowTimeoutDuration, SilentMessageToggle, SilentTyping, Translate,
-  TypingIndicator, TypingTweaks, UserVoiceShow, ValidUser, ViewIcons, ViewRaw,
-  VoiceMessages (playback), WhoReacted. Their options live in `plugins.toml`.
+  app: AccountPanelServerProfile, BetterFolders, BetterRoleDot, CallTimer, CharacterCounter,
+  ClearURLs, CopyUserURLs, CustomIdle, FavoriteEmojiFirst, FriendsSince, GameActivityToggle,
+  ImageZoom, IrcColors, MemberCount, MessageLinkEmbeds, MessageLogger (memory only),
+  MoreUserTags, MutualGroupDMs, NoBlockedMessages, NoReplyMention, OnePingPerDM, OpenInApp,
+  PermissionsViewer, PinDMs, PlatformIndicators, ReadAllNotificationsButton,
+  RelationshipNotifier, ReplyTimestamp, ReverseImageSearch, ServerInfo, ShowConnections,
+  ShowHiddenChannels, ShowMeYourName, ShowTimeoutDuration, SilentMessageToggle, SilentTyping,
+  TextReplace, Translate, TypingIndicator, TypingTweaks, UserVoiceShow, ValidUser, VcNarrator
+  (Windows speech), ViewIcons, ViewRaw, VoiceMessages (playback), VolumeBooster (up to 400 %,
+  local mix only), WhoReacted. Their options live in `plugins.toml`.
 - Voice channels and calls with DAVE end-to-end encryption, camera, screen share (Go Live)
   and watching streams. Camera and screen are only captured after an explicit click.
 
