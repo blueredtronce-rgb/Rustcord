@@ -1,0 +1,1384 @@
+//! Server menus and dialogs (FEATURES_NOTES §3.3-§3.11, layout §4.2 / §4.11):
+//! - `server_header`: the channel list's 49 px header: the server-name pill (its dropdown is
+//!   `header_menu`) and the 32 px Invite button right of it.
+//! - `guild_menu`: the server icon's right-click menu (§4.11 order); the header dropdown has
+//!   the same items in the §4.2 order. Mark As Read, Invite People, Mute Server ▸ /
+//!   Notification Settings ▸ (`UpdateGuildNotifications`), Hide Muted Channels, Server Settings,
+//!   Create Channel / Category, Privacy Settings (dialog: one `SetSetting` per switch),
+//!   Edit Per-server Profile (Settings > Profiles, its server tab), Leave Server (confirm),
+//!   Copy ID.
+//! - `channel_menu_items` / `category_menu`: Invite, Mute ▸, Notification Settings ▸
+//!   (`UpdateChannelOverride`), Edit (= `server_settings::Page::Channel`), Delete (confirm);
+//!   `member_menu_items`: a member's Roles ▸ (stays open for several toggles), Change
+//!   Nickname ▸ (a field in the submenu), Kick / Ban (the Moderate dialog).
+//! - Dialogs: Create Channel / Category (`CreateChannel`, kinds 0 / 2 / 5 / 15, Private =
+//!   deny View Channel to @everyone once the channel exists), Invite (`created_invite` +
+//!   `CreateInvite`, copy, expiry / use limit), Add a Server (create: `CreateGuild` with name and
+//!   icon; join: `invite_code`, `request_invite` + `ResolveInvite` preview, then `AcceptInvite`),
+//!   Moderate (kick / ban with reason and the ban's delete-messages preset).
+//!
+//! Hook-up guide: docs/ACCOUNT_SERVER_DESIGN.md. Every item is gated with `account_check` and
+//! hidden without the permission; leave / delete only after `ViewState::confirm`, kick / ban in
+//! the Moderate dialog; captcha / 2FA answers arrive as `Done(Err(text))` and are shown as
+//! selectable text. Menu actions send untracked (errors become toasts); dialogs track their
+//! write with `begin(op)` and drop the `ops` entry when they close.
+//! OWNERSHIP: server engineer (docs/SOCIAL_UI_DESIGN.md).
+
+use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, paint_megaphone};
+use super::server_settings::{self, Page};
+use super::sidebar::{mark_read, row_fills};
+use super::{Modal, UiCx, ViewState, bold, dialog, dialog_buttons, dialog_text, one_line};
+use crate::backend::{AccountCommand, AccountOp, Command, NotificationPatch};
+use crate::model::{Id, MuteConfig, Overwrite, Perms, channel_type as ct, perm};
+use crate::state::account::{CreatedInvite, OpState};
+use crate::state::{AppState, SidebarItem};
+use egui::containers::menu::{MenuConfig, SubMenuButton};
+use egui::{Align2, Button, Color32, FontId, PopupCloseBehavior, Rect, RichText, Role, Sense, Shape, Stroke, TextEdit, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
+use std::path::PathBuf;
+
+/// Mute presets (FEATURES_NOTES §4.11); None = until I unmute.
+const MUTE_FOR: [(&str, Option<u32>); 6] = [
+    ("For 15 Minutes", Some(900)),
+    ("For 1 Hour", Some(3600)),
+    ("For 3 Hours", Some(10_800)),
+    ("For 8 Hours", Some(28_800)),
+    ("For 24 Hours", Some(86_400)),
+    ("Until I turn it back on", None),
+];
+/// `message_notifications` levels.
+const LEVELS: [(&str, u8); 3] = [("All Messages", 0), ("Only @mentions", 1), ("Nothing", 2)];
+/// Invite dialog: expiry (seconds, 0 = never) and use limit (0 = none).
+const INVITE_AGES: [(u32, &str); 7] =
+    [(1800, "30 minutes"), (3600, "1 hour"), (21_600, "6 hours"), (43_200, "12 hours"), (86_400, "1 day"), (604_800, "7 days"), (0, "Never")];
+const INVITE_USES: [(u32, &str); 7] = [(0, "No limit"), (1, "1 use"), (5, "5 uses"), (10, "10 uses"), (25, "25 uses"), (50, "50 uses"), (100, "100 uses")];
+/// Ban: delete the member's messages of the last … (FEATURES_NOTES §3.6 presets).
+const BAN_DELETE: [(u32, &str); 7] = [
+    (0, "Don't Delete Any"),
+    (3600, "Previous Hour"),
+    (21_600, "Previous 6 Hours"),
+    (43_200, "Previous 12 Hours"),
+    (86_400, "Previous 24 Hours"),
+    (259_200, "Previous 3 Days"),
+    (604_800, "Previous 7 Days"),
+];
+/// Create Channel: the kinds offered and what each is for (tooltip).
+const KINDS: [(u8, &str, &str); 4] = [
+    (ct::GUILD_TEXT, "Text", "Send messages, images, GIFs, emoji, opinions and puns"),
+    (ct::GUILD_VOICE, "Voice", "Hang out together with voice, video and screen share"),
+    (ct::GUILD_FORUM, "Forum", "Create a space for organized discussions"),
+    (ct::GUILD_ANNOUNCEMENT, "Announcement", "Important updates for people in and out of the server"),
+];
+
+/// Drafts of the server dialogs (in `ViewState::server_menu_ui`); reset when a dialog opens.
+#[derive(Debug)]
+pub struct ServerMenuUi {
+    /// Channel name, invite link, server name or reason being typed.
+    pub text: String,
+    /// Create Channel: the kind picked; Private Channel / Category.
+    kind: u8,
+    private: bool,
+    /// Add a Server: the screen shown.
+    step: Step,
+    /// Add a Server > Create: the icon file picked.
+    icon: Option<PathBuf>,
+    /// Add a Server > Join: the code whose preview is shown.
+    code: Option<String>,
+    /// Invite: settings shown; expiry and use limit of the next link; "Copied" since (ctx time).
+    invite_edit: bool,
+    max_age: u32,
+    max_uses: u32,
+    copied: Option<f64>,
+    /// Ban: the delete-messages preset.
+    delete_secs: u32,
+    /// The write this dialog waits on (its `account.ops` entry goes with the dialog).
+    op: Option<AccountOp>,
+    /// Member menu ▸ Change Nickname: (member, draft).
+    nick: Option<(Id, String)>,
+}
+
+impl Default for ServerMenuUi {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            kind: ct::GUILD_TEXT,
+            private: false,
+            step: Step::Start,
+            icon: None,
+            code: None,
+            invite_edit: false,
+            max_age: 604_800,
+            max_uses: 0,
+            copied: None,
+            delete_secs: 0,
+            op: None,
+            nick: None,
+        }
+    }
+}
+
+/// Screens of the Add a Server dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Start,
+    Create,
+    Join,
+}
+
+/// Opens a server dialog with fresh drafts. Invite People asks for its link right away (the
+/// click is the user action; the dialog shows it once it arrives).
+pub fn open(cx: &mut UiCx<'_>, modal: Modal) {
+    cx.view.profile_card = None;
+    cx.view.server_menu_ui = ServerMenuUi::default();
+    if let Modal::Invite { channel_id, .. } = modal {
+        create_invite(cx, channel_id);
+    }
+    cx.view.modal = Some(modal);
+}
+
+/// Closes the dialog and forgets what it waited on (a late error then becomes a toast).
+fn close(cx: &mut UiCx<'_>) {
+    if let Some(op) = cx.view.server_menu_ui.op.take() {
+        cx.state.account.ops.remove(&op);
+    }
+    cx.state.account.created_invite = None;
+    cx.view.modal = None;
+}
+
+/// Sends a write the open dialog shows progress for; a click while the same write is pending
+/// sends nothing.
+fn send_tracked(cx: &mut UiCx<'_>, cmd: AccountCommand) {
+    let op = cmd.op();
+    if cx.state.account.begin(op) {
+        cx.cmd.send(Command::Account(cmd));
+    }
+    cx.view.server_menu_ui.op = Some(op);
+}
+
+/// State of the write a form waits on.
+pub(super) fn op_state(state: &AppState, op: Option<AccountOp>) -> Option<&OpState> {
+    state.account.ops.get(&op?)
+}
+
+// ---------------------------------------------------------------------------
+// Header and menus
+// ---------------------------------------------------------------------------
+
+/// Server name in a 32 px pill with a chevron (tinted on hover / while open; a click or a
+/// right-click opens the dropdown below it), and a 32 px Invite button right of it when I may
+/// invite.
+pub fn server_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, title: String, rect: Rect) {
+    let c = cx.theme.colors.clone();
+    let invite = invite_channel(cx.state, guild_id).filter(|&ch| can_invite(cx.state, ch));
+    let pill_w = rect.width() - 16.0 - if invite.is_some() { 36.0 } else { 0.0 };
+    let pill = Rect::from_min_size(pos2(rect.left() + 8.0, rect.center().y - 16.0), vec2(pill_w, 32.0));
+    let resp = ui.interact(pill, ui.make_persistent_id(("guild_header", guild_id)), Sense::click());
+    let menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    if menu_open || resp.hovered() {
+        ui.painter().rect_filled(pill, 8, row_fills(ui, &c).1);
+    }
+    let color = c.text.to_color32();
+    // Chevron pointing down, up while the menu is open.
+    let tip = pos2(pill.right() - 14.0, pill.center().y + if menu_open { -2.0 } else { 2.0 });
+    let dy = if menu_open { 4.0 } else { -4.0 };
+    ui.painter().add(Shape::line(vec![tip + vec2(-4.0, dy), tip, tip + vec2(4.0, dy)], Stroke::new(1.5, color)));
+    let g = one_line(ui, title.as_str(), bold(cx.theme.font.size + 1.0), color, pill.width() - 40.0);
+    ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, color);
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, menu_open, &title));
+    let set = if resp.secondary_clicked() || demo_menu() { Some(egui::SetOpenCommand::Bool(true)) } else { resp.clicked().then_some(egui::SetOpenCommand::Toggle) };
+    egui::Popup::menu(&resp).open_memory(set).gap(4.0).show(|ui| header_menu(ui, cx, guild_id));
+    if let Some(ch) = invite {
+        let r = Rect::from_center_size(pos2(rect.right() - 24.0, rect.center().y), Vec2::splat(32.0));
+        let pal = Pal::new(cx.theme);
+        let clicked = ui.scope_builder(UiBuilder::new().max_rect(r), |ui| invite_icon_button(ui, &pal)).inner.clicked();
+        if clicked {
+            open(cx, Modal::Invite { guild_id, channel_id: ch });
+        }
+    }
+}
+
+/// Test hook `RUSTCORD_OPEN=server-menu`: the header dropdown starts open (with
+/// `RUSTCORD_POINTER` on a row, its submenu too). True once.
+fn demo_menu() -> bool {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    !DONE.load(std::sync::atomic::Ordering::Relaxed)
+        && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+        && std::env::var("RUSTCORD_OPEN").is_ok_and(|v| v.split(',').any(|s| s.trim() == "server-menu"))
+}
+
+/// 32 px "Invite People" button: a person with a plus, painted (no emoji glyph has both).
+fn invite_icon_button(ui: &mut egui::Ui, pal: &Pal) -> egui::Response {
+    let resp = icon_button(ui, pal, "", "Invite People", 32.0, false, pal.text);
+    let color = if resp.hovered() || resp.has_focus() { pal.text } else { pal.muted };
+    let (p, c) = (ui.painter(), resp.rect.center() + vec2(-2.0, 0.0));
+    p.circle_stroke(c + vec2(0.0, -4.0), 3.5, Stroke::new(1.6, color));
+    let shoulders: Vec<_> = (0..=10).map(|i| c + vec2(0.0, 7.0) + 6.0 * Vec2::angled(std::f32::consts::PI * (1.0 + i as f32 / 10.0))).collect();
+    p.add(Shape::line(shoulders, Stroke::new(1.6, color)));
+    let plus = c + vec2(8.0, -1.0);
+    p.line_segment([plus + vec2(-3.0, 0.0), plus + vec2(3.0, 0.0)], Stroke::new(1.6, color));
+    p.line_segment([plus + vec2(0.0, -3.0), plus + vec2(0.0, 3.0)], Stroke::new(1.6, color));
+    resp
+}
+
+/// 28 px "More" button: three painted dots (the fonts lack ⋯).
+pub(super) fn more_button(ui: &mut egui::Ui, pal: &Pal) -> egui::Response {
+    let resp = icon_button(ui, pal, "", "More", 28.0, false, pal.text);
+    let color = if resp.hovered() || resp.has_focus() { pal.text } else { pal.muted };
+    for dx in [-6.0, 0.0, 6.0] {
+        ui.painter().circle_filled(resp.rect.center() + vec2(dx, 0.0), 2.0, color);
+    }
+    resp
+}
+
+/// The header dropdown (§4.2 order): Invite People, Server Settings, Create Channel / Category,
+/// Notification Settings ▸ (with Mute Server ▸), Mark As Read, Hide Muted Channels, Leave
+/// Server, Copy Server ID.
+fn header_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
+    menu_setup(ui);
+    let (accent, text) = (cx.theme.colors.accent.to_color32(), cx.theme.colors.text.to_color32());
+    invite_item(ui, cx, guild_id, accent);
+    settings_item(ui, cx, guild_id, text);
+    create_items(ui, cx, guild_id, text);
+    ui.separator();
+    notification_menu(ui, cx, guild_id, None, true);
+    privacy_items(ui, cx, guild_id, text);
+    mark_read_item(ui, cx, guild_id, text);
+    hide_muted_item(ui, cx, guild_id, text);
+    crate::plugins::menus::guild_items(ui, cx, guild_id, &mut |ui, label, glyph| menu_item(ui, label, MenuIcon::Glyph(glyph), text));
+    leave_item(ui, cx, guild_id);
+    // Settings > Advanced > Developer Mode.
+    let dev = cx.state.account.settings.developer_mode();
+    if dev {
+        ui.separator();
+    }
+    if dev && menu_item(ui, "Copy Server ID", MenuIcon::Glyph("🆔"), text) {
+        ui.ctx().copy_text(guild_id.0.to_string());
+    }
+}
+
+/// The server icon's right-click menu (§4.11 order).
+pub fn guild_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
+    menu_setup(ui);
+    let text = cx.theme.colors.text.to_color32();
+    mark_read_item(ui, cx, guild_id, text);
+    ui.separator();
+    if invite_item(ui, cx, guild_id, text) {
+        ui.separator();
+    }
+    mute_items(ui, cx, guild_id, None, "Server");
+    notification_menu(ui, cx, guild_id, None, false);
+    hide_muted_item(ui, cx, guild_id, text);
+    privacy_items(ui, cx, guild_id, text);
+    ui.separator();
+    settings_item(ui, cx, guild_id, text);
+    create_items(ui, cx, guild_id, text);
+    crate::plugins::menus::guild_items(ui, cx, guild_id, &mut |ui, label, glyph| menu_item(ui, label, MenuIcon::Glyph(glyph), text));
+    leave_item(ui, cx, guild_id);
+    // Settings > Advanced > Developer Mode.
+    let dev = cx.state.account.settings.developer_mode();
+    if dev {
+        ui.separator();
+    }
+    if dev && menu_item(ui, "Copy Server ID", MenuIcon::Glyph("🆔"), text) {
+        ui.ctx().copy_text(guild_id.0.to_string());
+    }
+}
+
+fn mark_read_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+    let s = &*cx.state;
+    let unread = s.channels.values().any(|c| c.guild_id == Some(guild_id) && s.is_unread(c.id));
+    if ui.add_enabled_ui(unread, |ui| menu_item(ui, "Mark As Read", MenuIcon::Glyph("✔"), text)).inner {
+        // §3.11: every unread channel and joined thread, acked in bulk.
+        let acks = cx.state.mark_guild_read(guild_id);
+        for (ch, _) in &acks {
+            cx.view.pending_acks.remove(ch);
+        }
+        if cx.settings.send_read_acks && !acks.is_empty() {
+            cx.cmd.send(Command::Social(crate::backend::SocialCommand::MarkAllRead { acks }));
+        }
+    }
+}
+
+/// Invite People, when I may invite to the open (or first) channel. True when shown.
+fn invite_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, color: Color32) -> bool {
+    let Some(ch) = invite_channel(cx.state, guild_id).filter(|&ch| can_invite(cx.state, ch)) else { return false };
+    if menu_item(ui, "Invite People", MenuIcon::Glyph("👤"), color) {
+        open(cx, Modal::Invite { guild_id, channel_id: ch });
+    }
+    true
+}
+
+/// Server Settings, when any of its pages is mine to use.
+fn settings_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+    if let Some(page) = server_settings::first_page(cx.state, guild_id)
+        && menu_item(ui, "Server Settings", MenuIcon::Glyph("⚙"), text)
+    {
+        server_settings::open(cx, guild_id, page);
+    }
+}
+
+fn create_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+    let create = AccountCommand::CreateChannel { guild_id, name: String::new(), kind: ct::GUILD_TEXT, parent_id: None };
+    if cx.state.account_check(&create).is_err() {
+        return;
+    }
+    if menu_item(ui, "Create Channel", MenuIcon::Glyph("➕"), text) {
+        open(cx, Modal::CreateChannel { guild_id, parent_id: None, category: false });
+    }
+    if menu_item(ui, "Create Category", MenuIcon::Glyph("📁"), text) {
+        open(cx, Modal::CreateChannel { guild_id, parent_id: None, category: true });
+    }
+}
+
+/// Privacy Settings (the dialog) and Edit Per-server Profile (Settings > Profiles on this server).
+fn privacy_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+    if menu_item(ui, "Privacy Settings", MenuIcon::Glyph("🛡"), text) {
+        open(cx, Modal::PrivacySettings { guild_id });
+    }
+    if menu_item(ui, "Edit Per-server Profile", MenuIcon::Glyph("✏"), text) {
+        super::user_settings::open_server_profile(cx.view, guild_id);
+    }
+}
+
+/// Per-server privacy (SETTINGS_NOTES §1 "Per-server privacy menu"): settings proto 8.x lists of
+/// guild ids where the option is off. (label, hint, field).
+const PRIVACY: [(&str, &str, u32); 4] = [
+    ("Direct Messages", "Allow direct messages from other members of this server.", 3),
+    ("Message Requests", "Filter messages from members you may not know into Message Requests.", 16),
+    ("Activity Status", "Share your activity status with this server's members.", 13),
+    ("Activity Joining", "Let this server's members join your activities.", 15),
+];
+
+/// The list after switching `guild` on (removed: allowed again) or off (added).
+fn privacy_list(mut ids: Vec<u64>, guild: u64, on: bool) -> Vec<u64> {
+    ids.retain(|&g| g != guild);
+    if !on {
+        ids.push(guild);
+    }
+    ids
+}
+
+/// `Modal::PrivacySettings`: a switch per `PRIVACY` row; a click sends that field's whole list
+/// (one `SetSetting` of field 8; the switches wait while it is on its way).
+pub fn privacy_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id) {
+    let name = cx.state.guilds.iter().find(|g| g.id == guild_id).map_or_else(String::new, |g| g.name.clone());
+    let theme = &*cx.theme;
+    let pal = Pal::new(theme);
+    let settings = &cx.state.account.settings;
+    let busy = cx.state.account.ops.get(&AccountOp { kind: crate::backend::OpKind::SetSetting, target: Some(Id(8)) }) == Some(&OpState::Pending);
+    let mut write = None;
+    let resp = dialog(ctx, theme, "rc_privacy", 440.0, "Privacy Settings", |ui| {
+        dialog_text(ui, theme, &name);
+        for (label, hint, field) in PRIVACY {
+            let ids = settings.proto_ids(8, &[field]);
+            let mut on = !ids.contains(&guild_id.0);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).color(pal.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled_ui(!busy, |ui| switch(ui, &pal, &mut on)).inner.changed() {
+                        write = Some((field, privacy_list(ids, guild_id.0, on)));
+                    }
+                });
+            });
+            super::hint(ui, theme, hint);
+        }
+        // Each switch is saved on its click: Done only closes (no Cancel that could not undo).
+        ui.add_space(8.0);
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let done = Button::new(RichText::new("Done").color(theme.colors.accent_text.to_color32())).fill(pal.accent).min_size(vec2(96.0, 36.0));
+            ui.add(done).clicked()
+        })
+        .inner
+    });
+    if let Some((field, ids)) = write {
+        let values = vec![(vec![field], crate::api::settings_proto::SettingValue::Ids(ids))];
+        let cmd = AccountCommand::SetSetting { top: 8, values: values.clone() };
+        if cx.state.account.begin(cmd.op()) {
+            cx.state.account.settings.set_local(8, &values);
+            cx.cmd.send(Command::Account(cmd));
+        }
+    }
+    if resp.inner || resp.should_close() {
+        close(cx);
+    }
+}
+
+fn hide_muted_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Color32) {
+    let hidden = cx.view.hide_muted.contains(&guild_id);
+    if menu_item(ui, "Hide Muted Channels", MenuIcon::Check(hidden), text) && !cx.view.hide_muted.remove(&guild_id) {
+        cx.view.hide_muted.insert(guild_id);
+    }
+}
+
+fn leave_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
+    if cx.state.account_check(&AccountCommand::LeaveGuild { guild_id }).is_ok() {
+        ui.separator();
+        if menu_item(ui, "Leave Server", MenuIcon::Glyph("🚪"), cx.theme.colors.danger.to_color32()) {
+            ask_leave(cx.view, cx.state, guild_id);
+        }
+    }
+}
+
+/// Channel an "Invite People" link points to: the open channel of this server, else its first
+/// listed channel.
+fn invite_channel(state: &AppState, guild_id: Id) -> Option<Id> {
+    let open = state.selected_channel.filter(|c| state.channels.get(c).is_some_and(|c| c.guild_id == Some(guild_id) && !c.is_thread()));
+    open.or_else(|| state.sidebar_channels(guild_id).into_iter().find_map(|i| if let SidebarItem::Channel { id } = i { Some(id) } else { None }))
+}
+
+fn can_invite(state: &AppState, channel_id: Id) -> bool {
+    state.account_check(&AccountCommand::CreateInvite { channel_id, max_age: 0, max_uses: 0, temporary: false }).is_ok()
+}
+
+/// Leave Server question (not offered to the owner: `account_check` says why).
+pub fn ask_leave(view: &mut ViewState, state: &AppState, guild_id: Id) {
+    let cmd = AccountCommand::LeaveGuild { guild_id };
+    if let Err(why) = state.account_check(&cmd) {
+        view.toast(why, true);
+        return;
+    }
+    let name = state.guild(guild_id).map(|g| g.name.clone()).unwrap_or_default();
+    let body = format!("Are you sure you want to leave {name}? You won't be able to rejoin unless you are re-invited.");
+    view.confirm(format!("Leave '{name}'"), body, "Leave Server", Command::Account(cmd));
+}
+
+/// Delete Channel / Delete Category question.
+pub(super) fn ask_delete_channel(view: &mut ViewState, state: &AppState, channel_id: Id) {
+    let cmd = AccountCommand::DeleteChannel { channel_id };
+    if let Err(why) = state.account_check(&cmd) {
+        view.toast(why, true);
+        return;
+    }
+    let name = state.channel_name(channel_id);
+    let (title, body) = if state.channels.get(&channel_id).is_some_and(|c| c.kind == ct::GUILD_CATEGORY) {
+        ("Delete Category", format!("Are you sure you want to delete {name}? Its channels stay, without a category. This cannot be undone."))
+    } else {
+        ("Delete Channel", format!("Are you sure you want to delete #{name}? This cannot be undone."))
+    };
+    view.confirm(title, body, title, Command::Account(cmd));
+}
+
+/// Items of a guild channel's menu (sidebar), before its Copy Link / ID: Invite People,
+/// Mute ▸, Notification Settings ▸, Edit Channel, Delete Channel (confirm).
+pub fn channel_menu_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, channel_id: Id) {
+    let Some((guild_id, kind)) = cx.state.channels.get(&channel_id).and_then(|c| Some((c.guild_id?, c.kind))) else { return };
+    let c = &cx.theme.colors;
+    let (text, danger) = (c.text.to_color32(), c.danger.to_color32());
+    let category = kind == ct::GUILD_CATEGORY;
+    let noun = if category { "Category" } else { "Channel" };
+    ui.separator();
+    if !category && can_invite(cx.state, channel_id) && menu_item(ui, "Invite People", MenuIcon::Glyph("👤"), text) {
+        open(cx, Modal::Invite { guild_id, channel_id });
+    }
+    mute_items(ui, cx, guild_id, Some(channel_id), noun);
+    notification_menu(ui, cx, guild_id, Some(channel_id), false);
+    let edit = cx.state.account_check(&AccountCommand::UpdateChannel { channel_id, patch: Default::default() }).is_ok();
+    let delete = cx.state.account_check(&AccountCommand::DeleteChannel { channel_id }).is_ok();
+    if edit || delete {
+        ui.separator();
+    }
+    if edit && menu_item(ui, &format!("Edit {noun}"), MenuIcon::Glyph("⚙"), text) {
+        server_settings::open(cx, guild_id, Page::Channel(channel_id));
+    }
+    if delete && menu_item(ui, &format!("Delete {noun}"), MenuIcon::Glyph("🗑"), danger) {
+        ask_delete_channel(cx.view, cx.state, channel_id);
+    }
+}
+
+/// A category's right-click menu: Mark As Read, Collapse, Mute ▸, Notification Settings ▸,
+/// Create Channel in it, Edit / Delete Category, Copy ID.
+pub fn category_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, category_id: Id) {
+    menu_setup(ui);
+    let text = cx.theme.colors.text.to_color32();
+    let s = &*cx.state;
+    let unread: Vec<Id> = s.channels.values().filter(|c| c.parent_id == Some(category_id) && c.is_text_chat() && s.is_unread(c.id)).map(|c| c.id).collect();
+    if ui.add_enabled_ui(!unread.is_empty(), |ui| menu_item(ui, "Mark As Read", MenuIcon::Glyph("✔"), text)).inner {
+        mark_read(cx, unread);
+    }
+    ui.separator();
+    let collapsed = cx.view.collapsed_categories.contains(&category_id);
+    if menu_item(ui, "Collapse Category", MenuIcon::Check(collapsed), text) && !cx.view.collapsed_categories.remove(&category_id) {
+        cx.view.collapsed_categories.insert(category_id);
+    }
+    if menu_item(ui, "Collapse All Categories", MenuIcon::Glyph(""), text) {
+        let cats = cx.state.channels.values().filter(|c| c.guild_id == Some(guild_id) && c.kind == ct::GUILD_CATEGORY).map(|c| c.id);
+        cx.view.collapsed_categories.extend(cats);
+    }
+    let create = AccountCommand::CreateChannel { guild_id, name: String::new(), kind: ct::GUILD_TEXT, parent_id: Some(category_id) };
+    if cx.state.account_check(&create).is_ok() {
+        ui.separator();
+        if menu_item(ui, "Create Channel", MenuIcon::Glyph("➕"), text) {
+            open(cx, Modal::CreateChannel { guild_id, parent_id: Some(category_id), category: false });
+        }
+    }
+    channel_menu_items(ui, cx, category_id);
+    // Settings > Advanced > Developer Mode.
+    let dev = cx.state.account.settings.developer_mode();
+    if dev {
+        ui.separator();
+    }
+    if dev && menu_item(ui, "Copy Category ID", MenuIcon::Glyph("🆔"), text) {
+        ui.ctx().copy_text(category_id.0.to_string());
+    }
+}
+
+/// A member's admin items (member list, voice users, server settings > Members): Roles ▸,
+/// Change Nickname ▸, Kick, Ban. Each only with the permission and a higher top role.
+pub fn member_menu_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id) {
+    let me = cx.state.me.as_ref().is_some_and(|u| u.id == user_id);
+    let danger = cx.theme.colors.danger.to_color32();
+    let roles = assignable_roles(cx.state, guild_id, user_id);
+    let nick_cmd = if me { AccountCommand::SetMyNick { guild_id, nick: None } } else { AccountCommand::SetNick { guild_id, user_id, nick: None } };
+    let can_nick = cx.state.account_check(&nick_cmd).is_ok();
+    let kick = AccountCommand::KickMember { guild_id, user_id, reason: None };
+    let ban = AccountCommand::BanMember { guild_id, user_id, reason: None, delete_message_seconds: 0 };
+    let (can_kick, can_ban) = (cx.state.account_check(&kick).is_ok(), cx.state.account_check(&ban).is_ok());
+    if roles.is_empty() && !can_nick && !can_kick && !can_ban {
+        return;
+    }
+    ui.separator();
+    if !roles.is_empty() {
+        roles_submenu(ui, cx, guild_id, user_id, &roles);
+    }
+    if can_nick {
+        nick_submenu(ui, cx, guild_id, user_id, me);
+    }
+    let name = user_name(cx.state, guild_id, user_id);
+    if can_kick && menu_item(ui, &format!("Kick {name}"), MenuIcon::Glyph("👢"), danger) {
+        open(cx, Modal::Moderate { guild_id, user_id, ban: false });
+    }
+    if can_ban && menu_item(ui, &format!("Ban {name}"), MenuIcon::Glyph("🔨"), danger) {
+        open(cx, Modal::Moderate { guild_id, user_id, ban: true });
+    }
+}
+
+/// Roles I may give this member or take away (highest first; none when the member is not
+/// cached, as its roles are unknown): (role, name, colour, has it).
+pub(super) fn assignable_roles(state: &AppState, guild_id: Id, user_id: Id) -> Vec<(Id, String, u32, bool)> {
+    let (Some(g), Some(member)) = (state.guild(guild_id), state.find_member(guild_id, user_id)) else { return Vec::new() };
+    let me = state.me.as_ref().is_some_and(|u| u.id == user_id);
+    if !me && !state.outranks(guild_id, user_id, &member.roles) {
+        return Vec::new();
+    }
+    let mut roles: Vec<_> = (g.roles.iter())
+        .filter(|r| state.account_check(&AccountCommand::AddMemberRole { guild_id, user_id, role_id: r.id }).is_ok())
+        .map(|r| (r.position, r.id, r.name.clone(), r.color, member.roles.contains(&r.id)))
+        .collect();
+    roles.sort_by_key(|r| (std::cmp::Reverse(r.0), r.1));
+    roles.into_iter().map(|(_, id, name, color, has)| (id, name, color, has)).collect()
+}
+
+/// Gives or takes a role (one click, one request; the gateway's member update shows it).
+pub(super) fn toggle_role(cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, role_id: Id, has: bool) {
+    let cmd = if has { AccountCommand::RemoveMemberRole { guild_id, user_id, role_id } } else { AccountCommand::AddMemberRole { guild_id, user_id, role_id } };
+    if cx.state.account_check(&cmd).is_ok() {
+        cx.cmd.send(Command::Account(cmd));
+    }
+}
+
+/// Roles ▸ with a check per role; it stays open so several roles can be toggled.
+fn roles_submenu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, roles: &[(Id, String, u32, bool)]) {
+    let text = cx.theme.colors.text.to_color32();
+    let keep_open = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+    SubMenuButton::new(RichText::new("Roles").color(text)).config(keep_open).ui(ui, |ui| {
+        menu_setup(ui);
+        for (id, name, color, has) in roles {
+            let color = if *color == 0 { text } else { super::rgb(*color) };
+            if menu_item(ui, name, MenuIcon::Check(*has), color) {
+                toggle_role(cx, guild_id, user_id, *id, *has);
+            }
+        }
+    });
+}
+
+/// Change Nickname ▸: a field with Save (Enter) and Reset, inside the submenu (no dialog).
+fn nick_submenu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, me: bool) {
+    let pal = Pal::new(cx.theme);
+    let keep_open = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+    SubMenuButton::new(RichText::new("Change Nickname").color(pal.text)).config(keep_open).ui(ui, |ui| {
+        menu_setup(ui);
+        ui.set_width(240.0);
+        let current = cx.state.find_member(guild_id, user_id).and_then(|m| m.nick.clone()).unwrap_or_default();
+        let hint = cx.state.users.get(&user_id).or(cx.state.me.as_ref().filter(|_| me)).map(|u| u.display_name().to_owned()).unwrap_or_default();
+        let m = &mut cx.view.server_menu_ui;
+        let fresh = m.nick.as_ref().is_none_or(|(u, _)| *u != user_id);
+        if fresh {
+            m.nick = Some((user_id, current));
+        }
+        let Some((_, draft)) = m.nick.as_mut() else { return };
+        let field = ui.add(TextEdit::singleline(draft).char_limit(32).hint_text(hint).desired_width(f32::INFINITY));
+        if fresh {
+            field.request_focus();
+        }
+        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let (reset, save) = ui
+            .horizontal(|ui| {
+                let reset = ui.add(Button::new("Reset").frame(false)).clicked();
+                let save = ui.add(Button::new(RichText::new("Save").color(cx.theme.colors.accent_text.to_color32())).fill(pal.accent)).clicked();
+                (reset, save)
+            })
+            .inner;
+        if reset || save || enter {
+            let nick = if reset { None } else { Some(draft.trim().to_owned()).filter(|n| !n.is_empty()) };
+            let cmd = if me { AccountCommand::SetMyNick { guild_id, nick } } else { AccountCommand::SetNick { guild_id, user_id, nick } };
+            cx.view.server_menu_ui.nick = None;
+            cx.cmd.send(Command::Account(cmd));
+            ui.close();
+        }
+    });
+}
+
+fn user_name(state: &AppState, guild_id: Id, user_id: Id) -> String {
+    let user = state.users.get(&user_id).or(state.me.as_ref().filter(|u| u.id == user_id));
+    user.map_or_else(|| user_id.to_string(), |u| state.member_display_name(Some(guild_id), u, None))
+}
+
+// ---------------------------------------------------------------------------
+// Notification menus (§3.10)
+// ---------------------------------------------------------------------------
+
+/// Muted by its own setting (a channel's parent aside) and the level (3 = inherit), plus the
+/// guild's suppress switches.
+fn notify_state(state: &AppState, guild_id: Id, channel: Option<Id>) -> (bool, u8, bool, bool) {
+    let s = state.guild_settings.get(&Some(guild_id));
+    match channel {
+        None => (state.is_guild_muted(guild_id), s.map_or(3, |s| s.message_notifications), s.is_some_and(|s| s.suppress_everyone), s.is_some_and(|s| s.suppress_roles)),
+        Some(c) => {
+            let o = s.and_then(|s| s.channel_overrides.iter().find(|o| o.channel_id == c));
+            (o.is_some_and(|o| mute_active(o.muted, &o.mute_config)), o.map_or(3, |o| o.message_notifications), false, false)
+        }
+    }
+}
+
+/// Muted and the mute has not ended (state.rs keeps its own copy private).
+fn mute_active(muted: bool, cfg: &Option<MuteConfig>) -> bool {
+    let end = cfg.as_ref().and_then(|c| c.end_time.as_deref());
+    muted && end.is_none_or(|t| chrono::DateTime::parse_from_rfc3339(t).map_or(true, |end| end > chrono::Utc::now()))
+}
+
+/// One click, one request (menus close on the click, so there is nothing to coalesce).
+fn notify(cx: &mut UiCx<'_>, guild_id: Id, channel: Option<Id>, patch: NotificationPatch) {
+    let cmd = match channel {
+        None => AccountCommand::UpdateGuildNotifications { guild_id: Some(guild_id), patch },
+        Some(channel_id) => AccountCommand::UpdateChannelOverride { guild_id: Some(guild_id), channel_id, patch },
+    };
+    cx.cmd.send(Command::Account(cmd));
+}
+
+/// "Mute X ▸" with the durations, or "Unmute X" while muted.
+fn mute_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel: Option<Id>, noun: &str) {
+    let text = cx.theme.colors.text.to_color32();
+    if notify_state(cx.state, guild_id, channel).0 {
+        if menu_item(ui, &format!("Unmute {noun}"), MenuIcon::Glyph("🔔"), text) {
+            notify(cx, guild_id, channel, NotificationPatch { muted: Some(false), ..Default::default() });
+        }
+        return;
+    }
+    let picked = ui
+        .menu_button(RichText::new(format!("Mute {noun}")).color(text), |ui| {
+            menu_setup(ui);
+            MUTE_FOR.into_iter().find(|(label, _)| menu_item(ui, label, MenuIcon::Glyph(""), text)).map(|(_, secs)| secs)
+        })
+        .inner
+        .flatten();
+    if let Some(mute_secs) = picked {
+        notify(cx, guild_id, channel, NotificationPatch { muted: Some(true), mute_secs, ..Default::default() });
+    }
+}
+
+/// Notification Settings ▸: the level (a channel may follow its category / the server), the
+/// server's suppress switches and, in the header dropdown, Mute Server ▸.
+fn notification_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel: Option<Id>, with_mute: bool) {
+    let text = cx.theme.colors.text.to_color32();
+    let (_, level, everyone, roles) = notify_state(cx.state, guild_id, channel);
+    let in_category = channel.and_then(|c| cx.state.channels.get(&c)).is_some_and(|c| c.parent_id.is_some());
+    let server_default = cx.state.guild(guild_id).map_or(0, |g| g.default_message_notifications);
+    let picked = ui
+        .menu_button(RichText::new("Notification Settings").color(text), |ui| {
+            menu_setup(ui);
+            // Room for the longest label next to its painted check box.
+            ui.set_min_width(270.0);
+            let mut patch = None;
+            let shown = match channel {
+                Some(_) => {
+                    let label = if in_category { "Use Category Default" } else { "Use Server Default" };
+                    if radio_item(ui, label, level == 3, text) {
+                        patch = Some(NotificationPatch { level: Some(3), ..Default::default() });
+                    }
+                    ui.separator();
+                    level
+                }
+                None if level == 3 => server_default,
+                None => level,
+            };
+            for (label, l) in LEVELS {
+                if radio_item(ui, label, shown == l, text) {
+                    patch = Some(NotificationPatch { level: Some(l), ..Default::default() });
+                }
+            }
+            if channel.is_none() {
+                ui.separator();
+                if menu_item(ui, "Suppress @everyone and @here", MenuIcon::Check(everyone), text) {
+                    patch = Some(NotificationPatch { suppress_everyone: Some(!everyone), ..Default::default() });
+                }
+                if menu_item(ui, "Suppress All Role @mentions", MenuIcon::Check(roles), text) {
+                    patch = Some(NotificationPatch { suppress_roles: Some(!roles), ..Default::default() });
+                }
+                if with_mute {
+                    ui.separator();
+                    mute_items(ui, cx, guild_id, None, "Server");
+                }
+            }
+            patch
+        })
+        .inner
+        .flatten();
+    if let Some(p) = picked {
+        notify(cx, guild_id, channel, p);
+    }
+}
+
+/// Menu row with a radio circle on the right (filled when `on`).
+pub(super) fn radio_item(ui: &mut egui::Ui, text: &str, on: bool, color: Color32) -> bool {
+    let resp = ui.add(Button::new(RichText::new(text).color(color)).right_text(RichText::new("  ")));
+    let c = pos2(resp.rect.right() - ui.spacing().button_padding.x - 8.0, resp.rect.center().y);
+    let icon = color.gamma_multiply(0.8);
+    ui.painter().circle_stroke(c, 6.5, Stroke::new(1.5, icon));
+    if on {
+        ui.painter().circle_filled(c, 3.5, icon);
+    }
+    resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, ui.is_enabled(), on, text));
+    resp.clicked()
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+
+/// Small uppercase label over a dialog / settings field ("CHANNEL NAME").
+pub(super) fn field_label(ui: &mut egui::Ui, theme: &crate::theme::Theme, text: &str) {
+    ui.add_space(4.0);
+    let color = theme.colors.text_muted.to_color32();
+    ui.label(RichText::new(text.to_uppercase()).font(bold(theme.font.size - 2.5)).color(color));
+}
+
+/// An error answer (captcha hand-offs carry a link: selectable).
+pub(super) fn error_text(ui: &mut egui::Ui, theme: &crate::theme::Theme, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).color(theme.colors.danger.to_color32()).size(theme.font.size - 1.0)).wrap().selectable(true));
+}
+
+/// Round × in a dialog's top-right corner (dialogs without a Cancel button). True when clicked.
+fn corner_close(ui: &mut egui::Ui, pal: &Pal) -> bool {
+    // Inside the dialog's scroll area: within its clip, level with the title.
+    let r = Rect::from_min_size(pos2(ui.max_rect().right() - 28.0, ui.max_rect().top()), Vec2::splat(28.0));
+    ui.scope_builder(UiBuilder::new().max_rect(r), |ui| icon_button(ui, pal, "×", "Close", 28.0, false, pal.text)).inner.clicked()
+}
+
+/// `Modal::CreateChannel`: kind (channels only), name, Private. Private sends the @everyone
+/// View Channel deny once the channel exists; the dialog waits for that.
+pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, parent_id: Option<Id>, category: bool) {
+    let status = op_state(cx.state, cx.view.server_menu_ui.op).cloned();
+    if let Some(OpState::Done(created)) = status {
+        let m = &cx.view.server_menu_ui;
+        match created.filter(|_| m.private) {
+            // Wait for its CHANNEL_CREATE: the overwrite is checked against the cached channel.
+            Some(id) if !cx.state.channels.contains_key(&id) => {}
+            Some(id) => {
+                let overwrite = Overwrite { id: guild_id, kind: 0, allow: Perms(0), deny: Perms(perm::VIEW_CHANNEL) };
+                let cmd = AccountCommand::SetPermissionOverwrite { channel_id: id, overwrite };
+                match cx.state.account_check(&cmd) {
+                    Ok(()) => cx.cmd.send(Command::Account(cmd)),
+                    Err(why) => cx.view.toast(why, true),
+                }
+                return close(cx);
+            }
+            None => return close(cx),
+        }
+    }
+    let busy = matches!(status, Some(OpState::Pending | OpState::Done(_)));
+    let pal = Pal::new(cx.theme);
+    let theme = &*cx.theme;
+    let state = &*cx.state;
+    let m = &mut cx.view.server_menu_ui;
+    // Also when opened without `open` (test hook): a category is always kind 4.
+    let kind = if category { ct::GUILD_CATEGORY } else { m.kind };
+    let text_like = matches!(kind, ct::GUILD_TEXT | ct::GUILD_ANNOUNCEMENT | ct::GUILD_FORUM);
+    let cmd = AccountCommand::CreateChannel { guild_id, name: m.text.trim().to_owned(), kind, parent_id };
+    let allowed = state.account_check(&cmd);
+    // Private needs MANAGE_ROLES; offered to owners and admins only: anyone else would lock
+    // themselves out (shortcut: no member / role picker yet, add one to offer it to all).
+    let admin = state.guild(guild_id).is_some_and(|g| state.me.as_ref().is_some_and(|me| me.id == g.owner_id)) || state.guild_permissions(guild_id) & perm::ADMINISTRATOR != 0;
+    let noun = if category { "Category" } else { "Channel" };
+    let title = format!("Create {noun}");
+    let short = ctx.content_rect().height() < 600.0;
+    let mut x = false;
+    let resp = dialog(ctx, theme, "rc_create_channel", 460.0, &title, |ui| {
+        x = corner_close(ui, &pal);
+        if let Some(p) = parent_id {
+            dialog_text(ui, theme, &format!("in {}", state.channel_name(p)));
+        }
+        if !category {
+            if !short {
+                field_label(ui, theme, "Channel Type");
+            }
+            // Short windows (720×420) get two kinds per row so the dialog fits.
+            let per_row = if short { 2 } else { 1 };
+            for kinds in KINDS.chunks(per_row) {
+                ui.columns(per_row, |cols| {
+                    for (col, &(kind, label, tip)) in cols.iter_mut().zip(kinds) {
+                        if kind_row(col, &pal, kind, label, m.kind == kind, if short { 32.0 } else { 48.0 }).on_hover_text(tip).clicked() {
+                            m.kind = kind;
+                        }
+                    }
+                });
+            }
+        }
+        field_label(ui, theme, &format!("{noun} Name"));
+        let prefix = if category { "" } else { channel_glyph(m.kind) };
+        let hint = if category { "New Category" } else { "new-channel" };
+        let edit = TextEdit::singleline(&mut m.text).char_limit(100).hint_text(hint).prefix(RichText::new(prefix).family(crate::theme::icon_family())).desired_width(f32::INFINITY);
+        let field = ui.add_enabled(!busy, edit);
+        if text_like && field.changed() {
+            // Text-like names are lowercase with dashes, as Discord shows them while typing.
+            m.text = m.text.to_lowercase().replace(' ', "-");
+        }
+        if admin {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔒").family(crate::theme::icon_family()).color(pal.muted));
+                ui.label(RichText::new(format!("Private {noun}")).color(pal.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled(!busy, |ui: &mut egui::Ui| switch(ui, &pal, &mut m.private)).on_hover_text("Only selected members and roles can view it");
+                });
+            });
+        }
+        if let Err(why) = allowed {
+            error_text(ui, theme, why);
+        }
+        if let Some(OpState::Failed(e)) = &status {
+            error_text(ui, theme, e);
+        }
+        let label = if busy { "Creating…".to_owned() } else { title.clone() };
+        dialog_buttons(ui, theme, &label, false, allowed.is_ok() && !busy && !m.text.trim().is_empty())
+    });
+    // Cancel, ×, Esc, backdrop; a pending Private follow-up keeps it open (it would be lost and
+    // the channel stay public).
+    let keep = busy && cx.view.server_menu_ui.private;
+    match resp.inner {
+        Some(true) => send_tracked(cx, cmd),
+        Some(false) if !keep => close(cx),
+        None if (x || resp.should_close()) && !keep => close(cx),
+        _ => {}
+    }
+}
+
+/// Channel-type glyph of the name field and the kind rows.
+fn channel_glyph(kind: u8) -> &'static str {
+    match kind {
+        ct::GUILD_VOICE => "🔊 ",
+        ct::GUILD_FORUM => "💬 ",
+        ct::GUILD_ANNOUNCEMENT => "📢 ",
+        _ => "# ",
+    }
+}
+
+/// A kind choice (48 px, 32 in short windows): glyph, name, radio circle; selected = tinted.
+fn kind_row(ui: &mut egui::Ui, pal: &Pal, kind: u8, label: &str, selected: bool, height: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    let hot = resp.hovered() || resp.has_focus();
+    let fill = if selected { pal.text.gamma_multiply(0.14) } else if hot { pal.tint() } else { pal.text.gamma_multiply(0.04) };
+    ui.painter().rect_filled(rect, pal.radius, fill);
+    let icon = pos2(rect.left() + 26.0, rect.center().y);
+    let color = if selected || hot { pal.text } else { pal.muted };
+    if kind == ct::GUILD_ANNOUNCEMENT {
+        paint_megaphone(ui.painter(), icon, 20.0, color);
+    } else {
+        ui.painter().text(icon, Align2::CENTER_CENTER, channel_glyph(kind).trim(), FontId::new(20.0, crate::theme::icon_family()), color);
+    }
+    ui.painter().text(pos2(rect.left() + 50.0, rect.center().y), Align2::LEFT_CENTER, label, bold(pal.size), pal.text);
+    let dot = pos2(rect.right() - 20.0, rect.center().y);
+    ui.painter().circle_stroke(dot, 8.0, Stroke::new(1.5, if selected { pal.text } else { pal.muted }));
+    if selected {
+        ui.painter().circle_filled(dot, 4.5, pal.text);
+    }
+    resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, selected, label));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// On/off switch (40×24 pill, knob right and accent when on). Toggles `on` on click.
+pub(super) fn switch(ui: &mut egui::Ui, pal: &Pal, on: &mut bool) -> egui::Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(40.0, 24.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
+    let off_fill = pal.muted.gamma_multiply(0.5);
+    let fill = if ui.is_enabled() { off_fill.lerp_to_gamma(pal.accent, t) } else { off_fill.gamma_multiply(0.5) };
+    ui.painter().rect_filled(rect, 12.0, fill);
+    let knob = pos2(egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, t), rect.center().y);
+    ui.painter().circle_filled(knob, 9.0, Color32::WHITE);
+    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, ""));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Asks for an invite link with the dialog's expiry / use limit (opening Invite People, or
+/// Generate a New Link).
+fn create_invite(cx: &mut UiCx<'_>, channel_id: Id) {
+    let m = &cx.view.server_menu_ui;
+    let cmd = AccountCommand::CreateInvite { channel_id, max_age: m.max_age, max_uses: m.max_uses, temporary: false };
+    if cx.state.account_check(&cmd).is_ok() {
+        cx.state.account.created_invite = Some(CreatedInvite { channel_id, result: None });
+        cx.cmd.send(Command::Account(cmd));
+    }
+}
+
+/// `Modal::Invite`: the link with Copy, its expiry, and (gear) expiry / use limit with
+/// Generate a New Link.
+pub fn invite_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, channel_id: Id) {
+    let name = cx.state.guild(guild_id).map(|g| g.name.clone()).unwrap_or_default();
+    let ch = cx.state.channel_name(channel_id);
+    let allowed = cx.state.account_check(&AccountCommand::CreateInvite { channel_id, max_age: 0, max_uses: 0, temporary: false });
+    let pal = Pal::new(cx.theme);
+    let theme = &*cx.theme;
+    let made = cx.state.account.created_invite.as_ref().filter(|v| v.channel_id == channel_id);
+    let loading = made.is_some_and(|v| v.result.is_none());
+    let invite = made.and_then(|v| v.result.as_ref());
+    let link = invite.and_then(|r| r.as_ref().ok()).and_then(|i| i.as_ref()).map(|i| (format!("https://discord.gg/{}", i.code), i.max_age.unwrap_or(0)));
+    // Streamer Mode: the link masked on screen; Copy still copies it.
+    let hide = cx.settings.streamer.hides_invites();
+    let now = ctx.input(|i| i.time);
+    let m = &mut cx.view.server_menu_ui;
+    let copied = m.copied.is_some_and(|t| now - t < 1.5);
+    let (mut generate, mut x) = (false, false);
+    let resp = dialog(ctx, theme, "rc_invite", 442.0, &format!("Invite friends to {name}"), |ui| {
+        x = corner_close(ui, &pal);
+        ui.label(RichText::new(format!("# {ch}")).color(pal.muted));
+        field_label(ui, theme, "Send a server invite link to a friend");
+        egui::Frame::new().fill(pal.bg).corner_radius(pal.radius).inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 }).show(ui, |ui| {
+            egui::Sides::new().height(32.0).shrink_left().show(
+                ui,
+                |ui| {
+                    let shown = match (&link, loading) {
+                        (Some(_), _) if hide => RichText::new("discord.gg/••••••••").color(pal.text),
+                        (Some((l, _)), _) => RichText::new(l).color(pal.text),
+                        (None, true) => RichText::new("Creating a link…").color(pal.muted),
+                        (None, false) => RichText::new("No link yet").color(pal.muted),
+                    };
+                    ui.add(egui::Label::new(shown).truncate().selectable(true));
+                },
+                |ui| {
+                    let (fill, label) = if copied { (Color32::from_rgb(0x3f, 0xb9, 0x50), "Copied") } else { (pal.accent, "Copy") };
+                    let button = Button::new(RichText::new(label).color(theme.colors.accent_text.to_color32())).fill(fill).min_size(vec2(76.0, 32.0));
+                    if ui.add_enabled(link.is_some(), button).clicked()
+                        && let Some((l, _)) = &link
+                    {
+                        ui.ctx().copy_text(l.clone());
+                        m.copied = Some(now);
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(1600));
+                    }
+                },
+            );
+        });
+        match invite {
+            Some(Err(e)) => error_text(ui, theme, e),
+            Some(Ok(None)) => error_text(ui, theme, "Invites are paused for this server."),
+            _ => {}
+        }
+        if let Err(why) = allowed {
+            error_text(ui, theme, why);
+        }
+        ui.horizontal(|ui| {
+            let age = link.as_ref().map_or(m.max_age, |l| l.1);
+            let expiry = match INVITE_AGES.iter().find(|a| a.0 == age) {
+                Some((0, _)) => "Your invite link never expires.".to_owned(),
+                Some((_, label)) => format!("Your invite link expires in {label}."),
+                None => format!("Your invite link expires in {} hours.", age / 3600),
+            };
+            ui.label(RichText::new(expiry).size(pal.meta()).color(pal.muted));
+            if icon_button(ui, &pal, "⚙", "Edit invite link", 24.0, m.invite_edit, pal.text).clicked() {
+                m.invite_edit = !m.invite_edit;
+            }
+        });
+        if m.invite_edit {
+            field_label(ui, theme, "Expire After");
+            choice(ui, "rc_invite_age", &mut m.max_age, &INVITE_AGES);
+            field_label(ui, theme, "Max Number of Uses");
+            choice(ui, "rc_invite_uses", &mut m.max_uses, &INVITE_USES);
+            ui.add_space(4.0);
+            let button = Button::new(RichText::new("Generate a New Link").color(theme.colors.accent_text.to_color32())).fill(pal.accent).min_size(vec2(0.0, 32.0));
+            generate = ui.add_enabled(allowed.is_ok() && !loading, button).clicked();
+        }
+    });
+    if generate {
+        create_invite(cx, channel_id);
+    }
+    if x || resp.should_close() {
+        close(cx);
+    }
+}
+
+/// ComboBox over (value, label) presets.
+pub(super) fn choice(ui: &mut egui::Ui, salt: &str, value: &mut u32, options: &[(u32, &str)]) -> bool {
+    let shown = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(ui.available_width().min(400.0)).show_ui(ui, |ui| {
+        for (v, label) in options {
+            changed |= ui.selectable_value(value, *v, *label).changed();
+        }
+    });
+    changed
+}
+
+/// The code of an invite link or a bare code ("hTKzmak").
+fn parse_code(text: &str) -> Option<String> {
+    let t = text.trim();
+    let bare = (2..=64).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    crate::api::guild_admin::invite_code(t).or(bare.then_some(t)).map(str::to_owned)
+}
+
+/// `Modal::JoinServer` (Add a Server): Create My Own (name, icon) or Join a Server (link ->
+/// Continue resolves its preview -> Join Server accepts it).
+pub fn join_server_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
+    let status = op_state(cx.state, cx.view.server_menu_ui.op).cloned();
+    // Created / joined: the state opens the server once its GUILD_CREATE arrives.
+    if let Some(OpState::Done(_)) = status {
+        return close(cx);
+    }
+    match cx.view.server_menu_ui.step {
+        Step::Start => start_screen(ctx, cx),
+        Step::Create => create_screen(ctx, cx, status),
+        Step::Join => join_screen(ctx, cx, status),
+    }
+}
+
+fn start_screen(ctx: &egui::Context, cx: &mut UiCx<'_>) {
+    let pal = Pal::new(cx.theme);
+    let theme = &*cx.theme;
+    let (mut next, mut x) = (None, false);
+    let resp = dialog(ctx, theme, "rc_add_server", 442.0, "Create Your Server", |ui| {
+        x = corner_close(ui, &pal);
+        dialog_text(ui, theme, "Your server is where you and your friends hang out.");
+        ui.add_space(8.0);
+        if big_choice(ui, &pal, "🏠", "Create My Own").clicked() {
+            next = Some(Step::Create);
+        }
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| ui.label(RichText::new("Have an invite already?").font(bold(pal.size + 2.0)).color(pal.text)));
+        let button = Button::new(RichText::new("Join a Server").color(pal.text)).fill(pal.text.gamma_multiply(0.12)).min_size(vec2(0.0, 38.0));
+        if ui.vertical_centered_justified(|ui| ui.add(button)).inner.clicked() {
+            next = Some(Step::Join);
+        }
+    });
+    if let Some(step) = next {
+        let m = &mut cx.view.server_menu_ui;
+        m.step = step;
+        if step == Step::Create {
+            m.text = cx.state.me.as_ref().map(|u| format!("{}'s server", u.display_name())).unwrap_or_default();
+        }
+    }
+    if x || resp.should_close() {
+        close(cx);
+    }
+}
+
+/// 56 px full-width choice row: glyph, bold label, chevron.
+fn big_choice(ui: &mut egui::Ui, pal: &Pal, glyph: &str, label: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+    let hot = resp.hovered() || resp.has_focus();
+    ui.painter().rect(rect, pal.card_radius(), if hot { pal.tint() } else { Color32::TRANSPARENT }, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
+    ui.painter().text(pos2(rect.left() + 28.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::new(24.0, crate::theme::icon_family()), pal.text);
+    ui.painter().text(pos2(rect.left() + 56.0, rect.center().y), Align2::LEFT_CENTER, label, bold(pal.size + 1.0), pal.text);
+    ui.painter().text(pos2(rect.right() - 18.0, rect.center().y), Align2::CENTER_CENTER, "›", FontId::proportional(24.0), pal.muted);
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Back (left) and the action (right). Some(true) = action, Some(false) = Back.
+fn back_and(ui: &mut egui::Ui, pal: &Pal, accent_text: Color32, action: &str, enabled: bool) -> Option<bool> {
+    ui.add_space(8.0);
+    // A fixed-height row: a right-to-left layout would otherwise centre in all remaining height.
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let back = ui.add(Button::new(RichText::new("Back").color(pal.text)).frame(false).min_size(vec2(64.0, 36.0))).clicked();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let go = Button::new(RichText::new(action).color(accent_text)).fill(pal.accent).min_size(vec2(96.0, 36.0));
+            if ui.add_enabled(enabled, go).clicked() { Some(true) } else { back.then_some(false) }
+        })
+        .inner
+    })
+    .inner
+}
+
+fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>) {
+    let pal = Pal::new(cx.theme);
+    let accent_text = cx.theme.colors.accent_text.to_color32();
+    let theme = &*cx.theme;
+    let m = &mut cx.view.server_menu_ui;
+    let busy = matches!(status, Some(OpState::Pending));
+    let mut x = false;
+    let resp = dialog(ctx, theme, "rc_create_server", 442.0, "Customize Your Server", |ui| {
+        x = corner_close(ui, &pal);
+        dialog_text(ui, theme, "Give it a name and an icon. You can change both later.");
+        ui.add_space(8.0);
+        ui.vertical_centered(|ui| {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(80.0), Sense::click());
+            let hot = resp.hovered() || resp.has_focus();
+            let stroke = Stroke::new(2.0, if hot { pal.text } else { pal.muted });
+            match &m.icon {
+                Some(_) => {
+                    ui.painter().circle_filled(rect.center(), 40.0, pal.accent.gamma_multiply(0.25));
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "✔", FontId::new(28.0, crate::theme::icon_family()), pal.text);
+                }
+                None => {
+                    // Dashed ring with a camera and UPLOAD, like the official dialog.
+                    for i in 0..24 {
+                        let a = std::f32::consts::TAU * i as f32 / 24.0;
+                        ui.painter().line_segment([rect.center() + 39.0 * Vec2::angled(a), rect.center() + 39.0 * Vec2::angled(a + 0.15)], stroke);
+                    }
+                    ui.painter().text(rect.center() - vec2(0.0, 8.0), Align2::CENTER_CENTER, "📷", FontId::new(20.0, crate::theme::icon_family()), stroke.color);
+                    ui.painter().text(rect.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, "UPLOAD", bold(10.0), stroke.color);
+                }
+            }
+            resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Upload an icon"));
+            let tip = m.icon.as_ref().and_then(|p| p.file_name()).map_or_else(|| "Upload an icon".to_owned(), |n| n.to_string_lossy().into_owned());
+            if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+                && let Some(path) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file()
+            {
+                m.icon = Some(path);
+            }
+        });
+        field_label(ui, theme, "Server Name");
+        ui.add_enabled(!busy, TextEdit::singleline(&mut m.text).char_limit(100).desired_width(f32::INFINITY));
+        if let Some(OpState::Failed(e)) = &status {
+            error_text(ui, theme, e);
+        }
+        let len = m.text.trim().chars().count();
+        back_and(ui, &pal, accent_text, if busy { "Creating…" } else { "Create" }, !busy && (2..=100).contains(&len))
+    });
+    match resp.inner {
+        Some(true) => {
+            let m = &cx.view.server_menu_ui;
+            let cmd = AccountCommand::CreateGuild { name: m.text.trim().to_owned(), icon: m.icon.clone() };
+            send_tracked(cx, cmd);
+        }
+        Some(false) => back_to_start(cx),
+        None if x || resp.should_close() => close(cx),
+        None => {}
+    }
+}
+
+fn back_to_start(cx: &mut UiCx<'_>) {
+    if let Some(op) = cx.view.server_menu_ui.op.take() {
+        cx.state.account.ops.remove(&op);
+    }
+    cx.view.server_menu_ui = ServerMenuUi::default();
+}
+
+fn join_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>) {
+    let pal = Pal::new(cx.theme);
+    let accent_text = cx.theme.colors.accent_text.to_color32();
+    let busy = matches!(status, Some(OpState::Pending));
+    let code = parse_code(&cx.view.server_menu_ui.text);
+    // The preview shown: the one asked for with Continue, while the field still names it.
+    let shown = code.as_ref().filter(|c| cx.view.server_menu_ui.code.as_ref() == Some(*c));
+    let preview = shown.and_then(|c| cx.state.invite_preview(c));
+    let resolved = preview.and_then(|p| p.result.as_ref()?.as_ref().ok());
+    let known = resolved.and_then(|i| i.guild.as_ref()).map(|g| g.id).filter(|g| cx.state.guild(*g).is_some());
+    let online = super::presence_color(crate::model::Presence::Online, &cx.theme.colors);
+    let theme = &*cx.theme;
+    let images = &mut *cx.images;
+    let m = &mut cx.view.server_menu_ui;
+    let (mut x, mut edited) = (false, false);
+    let resp = dialog(ctx, theme, "rc_join_server", 442.0, "Join a Server", |ui| {
+        x = corner_close(ui, &pal);
+        dialog_text(ui, theme, "Enter an invite below to join an existing server.");
+        field_label(ui, theme, "Invite Link");
+        let field = ui.add_enabled(!busy, TextEdit::singleline(&mut m.text).hint_text("https://discord.gg/hTKzmak").desired_width(f32::INFINITY));
+        edited = field.changed();
+        super::hint(ui, theme, "Invites look like hTKzmak or https://discord.gg/cool-people");
+        if let Some(p) = preview {
+            match &p.result {
+                Some(Ok(invite)) => invite_card(ui, &pal, images, invite, online),
+                Some(Err(e)) => error_text(ui, theme, e),
+                None => {
+                    ui.add(egui::Spinner::new().size(16.0).color(pal.muted));
+                }
+            }
+        }
+        if let Some(OpState::Failed(e)) = &status {
+            error_text(ui, theme, e);
+        }
+        let action = match (busy, known, resolved) {
+            (true, ..) => "Joining…",
+            (_, Some(_), _) => "Open Server",
+            (_, _, Some(_)) => "Join Server",
+            _ => "Continue",
+        };
+        let loading = preview.is_some_and(|p| p.loading);
+        back_and(ui, &pal, accent_text, action, !busy && code.is_some() && !loading)
+    });
+    match resp.inner {
+        Some(true) => match (known, resolved, code) {
+            (Some(g), ..) => {
+                cx.state.select_guild(Some(g));
+                close(cx);
+            }
+            (_, Some(invite), Some(code)) => {
+                let cmd = AccountCommand::AcceptInvite {
+                    code,
+                    guild_id: invite.guild.as_ref().map(|g| g.id),
+                    channel_id: invite.channel.as_ref().map(|c| c.id),
+                    channel_type: invite.channel.as_ref().map(|c| c.kind),
+                };
+                send_tracked(cx, cmd);
+            }
+            (_, _, Some(code)) => {
+                if cx.state.request_invite(&code, std::time::Instant::now()) {
+                    cx.cmd.send(Command::Account(AccountCommand::ResolveInvite { code: code.clone() }));
+                }
+                let m = &mut cx.view.server_menu_ui;
+                if let Some(op) = m.op.take() {
+                    cx.state.account.ops.remove(&op);
+                }
+                m.code = Some(code);
+            }
+            _ => {}
+        },
+        Some(false) => back_to_start(cx),
+        None if x || resp.should_close() => close(cx),
+        // Another link: a failed join's error no longer applies.
+        None if edited && !busy => {
+            if let Some(op) = cx.view.server_menu_ui.op.take() {
+                cx.state.account.ops.remove(&op);
+            }
+        }
+        None => {}
+    }
+}
+
+/// Resolved invite: server icon, name, online / member counts (or a group DM's name).
+fn invite_card(ui: &mut egui::Ui, pal: &Pal, images: &mut super::images::ImageCache, invite: &crate::model::Invite, online: Color32) {
+    egui::Frame::new().fill(pal.bg).corner_radius(pal.card_radius()).inner_margin(12).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+            let guild = invite.guild.as_ref();
+            let name = guild.map(|g| g.name.clone()).or_else(|| invite.channel.as_ref().and_then(|c| c.name.clone())).unwrap_or_default();
+            let url = guild.and_then(|g| crate::api::cdn::guild_icon_url(g, 96, false));
+            let tex = url.and_then(|u| images.get(ui.ctx(), &u, 96, false));
+            match tex {
+                Some(t) => egui::Image::from_texture(t).corner_radius(14).paint_at(ui, rect),
+                None => super::images::paint_initial(ui.painter(), rect, 14.0, guild.map_or(0, |g| g.id.0), &name, pal.dark),
+            }
+            ui.vertical(|ui| {
+                ui.label(RichText::new(name).font(bold(pal.size + 1.0)).color(pal.text));
+                ui.horizontal(|ui| {
+                    if let Some(n) = invite.approximate_presence_count {
+                        stat(ui, pal, online, &format!("{n} Online"));
+                    }
+                    if let Some(n) = invite.approximate_member_count {
+                        stat(ui, pal, pal.muted, &format!("{n} Members"));
+                    }
+                });
+            });
+        });
+    });
+}
+
+fn stat(ui: &mut egui::Ui, pal: &Pal, dot: Color32, text: &str) {
+    let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+    ui.painter().circle_filled(r.center(), 4.0, dot);
+    ui.label(RichText::new(text).size(pal.meta()).color(pal.muted));
+}
+
+/// `Modal::Moderate`: kick or ban with a reason (ban: delete-messages preset). The dialog is
+/// the confirmation; it closes once the server answered.
+pub fn moderate_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, ban: bool) {
+    let status = op_state(cx.state, cx.view.server_menu_ui.op).cloned();
+    if let Some(OpState::Done(_)) = status {
+        return close(cx);
+    }
+    let who = user_name(cx.state, guild_id, user_id);
+    let busy = matches!(status, Some(OpState::Pending));
+    let theme = &*cx.theme;
+    let m = &mut cx.view.server_menu_ui;
+    let reason = Some(m.text.trim().to_owned()).filter(|r| !r.is_empty());
+    let cmd = if ban {
+        AccountCommand::BanMember { guild_id, user_id, reason, delete_message_seconds: m.delete_secs }
+    } else {
+        AccountCommand::KickMember { guild_id, user_id, reason }
+    };
+    let allowed = cx.state.account_check(&cmd);
+    let (action, body) = if ban {
+        ("Ban", format!("Are you sure you want to ban @{who}? They can't rejoin until the ban is revoked."))
+    } else {
+        ("Kick", format!("Are you sure you want to kick @{who}? They can rejoin with a new invite."))
+    };
+    let resp = dialog(ctx, theme, "rc_moderate", 442.0, &format!("{action} '{who}'"), |ui| {
+        dialog_text(ui, theme, &body);
+        if ban {
+            field_label(ui, theme, "Delete Message History");
+            choice(ui, "rc_ban_delete", &mut m.delete_secs, &BAN_DELETE);
+        }
+        field_label(ui, theme, &format!("Reason for {action}"));
+        ui.add_enabled(!busy, TextEdit::multiline(&mut m.text).char_limit(512).desired_rows(3).desired_width(f32::INFINITY));
+        if let Err(why) = allowed {
+            error_text(ui, theme, why);
+        }
+        if let Some(OpState::Failed(e)) = &status {
+            error_text(ui, theme, e);
+        }
+        dialog_buttons(ui, theme, if busy { "…" } else { action }, true, allowed.is_ok() && !busy)
+    });
+    match resp.inner {
+        Some(true) => send_tracked(cx, cmd),
+        Some(false) => close(cx),
+        None if resp.should_close() => close(cx),
+        None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Guild, User};
+
+    #[test]
+    fn privacy_lists_add_and_remove_the_guild() {
+        assert_eq!(privacy_list(vec![1, 5], 5, true), [1]);
+        assert_eq!(privacy_list(vec![1], 5, false), [1, 5]);
+        // Off twice never lists it twice.
+        assert_eq!(privacy_list(vec![5], 5, false), [5]);
+    }
+
+    #[test]
+    fn leave_asks_first_and_never_for_the_owner() {
+        let (mut view, mut state) = (ViewState::default(), AppState::default());
+        state.me = Some(User { id: Id(1), ..Default::default() });
+        state.guilds.push(Guild { id: Id(5), name: "Den".into(), owner_id: Id(2), ..Default::default() });
+        ask_leave(&mut view, &state, Id(5));
+        let c = view.confirm.take().expect("a question, nothing sent yet");
+        assert!(c.danger && c.button == "Leave Server");
+        assert!(matches!(c.then, Command::Account(AccountCommand::LeaveGuild { guild_id: Id(5) })));
+        state.guilds[0].owner_id = Id(1);
+        ask_leave(&mut view, &state, Id(5));
+        assert!(view.confirm.is_none() && view.toasts.len() == 1);
+    }
+
+    #[test]
+    fn invite_codes_from_links_and_bare_codes() {
+        assert_eq!(parse_code(" https://discord.gg/cool-people ").as_deref(), Some("cool-people"));
+        assert_eq!(parse_code("discord.com/invite/hTKzmak").as_deref(), Some("hTKzmak"));
+        assert_eq!(parse_code("hTKzmak").as_deref(), Some("hTKzmak"));
+        assert_eq!(parse_code("not a code"), None);
+        assert_eq!(parse_code("x"), None);
+    }
+
+    #[test]
+    fn timed_mutes_end() {
+        let at = |t: &str| Some(MuteConfig { end_time: Some(t.into()) });
+        assert!(mute_active(true, &None), "until unmuted");
+        assert!(mute_active(true, &at("2999-01-01T00:00:00+00:00")));
+        assert!(!mute_active(true, &at("2001-01-01T00:00:00+00:00")));
+        assert!(!mute_active(false, &None));
+    }
+}
