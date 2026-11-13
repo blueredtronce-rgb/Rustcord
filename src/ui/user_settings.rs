@@ -5,10 +5,12 @@
 //! and one page on the right; Log Out at the bottom. Esc or the × closes it.
 //! - User Settings: My Account, Profiles, Profile Cosmetics, Content & Social, Data & Privacy,
 //!   Family Center, Authorized Apps, Devices, Connections, Friend Requests.
-//! - Billing Settings: one "not available" page. App Settings: Appearance, Accessibility, Voice
-//!   & Video, Chat, Notifications, Keybinds, Language, Windows Settings, Streamer Mode, Advanced.
-//!   Activity Settings: Activity Privacy, Registered Games, Game Overlay. Rustcord: Plugins,
-//!   Local Profile.
+//! - Billing Settings: one page linking to discord.com. App Settings: Appearance, Accessibility,
+//!   Voice & Video, Clips, Chat, Notifications, Keybinds, Language, Windows Settings, Streamer
+//!   Mode, Advanced. Activity Settings: Activity Privacy, Registered Games, Game Overlay.
+//!   Rustcord: Plugins, Local Profile, Theme Editor.
+//! - What Rustcord can't do (billing, game detection, overlay, clip recording, Family Center
+//!   linking) is a Discord-like empty state (`empty_state`) above the page's synced rows.
 //!
 //! Where options live: Discord's settings proto for synced ones (synced.rs, one table per page),
 //! REST lists (lists.rs: devices, authorized apps, consents), `config::Settings` for this
@@ -121,20 +123,15 @@ impl Page {
         ("Rustcord", &[Page::Plugins, Page::LocalProfile, Page::ThemeEditor]),
     ];
 
-    /// Stubs for what Rustcord can't do: greyed out in the nav, the reason as its tooltip.
-    fn unavailable(self) -> Option<&'static str> {
-        match self {
-            Page::RegisteredGames => Some("Not available in Rustcord: it does not detect running games."),
-            Page::GameOverlay => Some("Not available in Rustcord: an overlay needs code injected into games."),
-            _ => None,
-        }
-    }
-
     /// Title, `RUSTCORD_OPEN=settings:<name>` name, extra search words (lowercase).
     fn info(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Page::MyAccount => ("My Account", "my-account", "display name username password avatar banner"),
-            Page::Profiles => ("Profiles", "profiles", "pronouns about me bio banner colour color"),
+            Page::MyAccount => (
+                "My Account",
+                "my-account",
+                "display name username email phone password two-factor 2fa authenticator sms backup codes security keys account standing disable delete",
+            ),
+            Page::Profiles => ("Profiles", "profiles", "pronouns about me bio avatar banner colour color"),
             Page::Cosmetics => ("Profile Cosmetics", "cosmetics", "avatar decoration profile effect nameplate frame"),
             Page::ContentSocial => ("Content & Social", "content", "messaging permissions dms spam sensitive explicit filter"),
             Page::Privacy => ("Data & Privacy", "privacy", "data consent personalize statistics read receipts"),
@@ -236,6 +233,9 @@ pub struct UserSettingsUi {
     cosmetics: cosmetics::Form,
     /// The sidebar's search text (per opening).
     search: String,
+    /// The page open when the search moved away from it (it matched nothing): shown again once
+    /// the search is cleared, unless a result was clicked meanwhile.
+    before_search: Option<Page>,
     /// Pages whose one fetch went out in this opening (lists.rs).
     fetched: Vec<Page>,
     /// Profiles > Server Profiles: the server and its nickname draft (None until first shown);
@@ -270,6 +270,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let before = cx.view.settings_page;
     // Esc while the Log Out question is open closes only the question.
     let asking = cx.view.user_settings_ui.ask_logout;
+    // The 2FA re-check of a waiting action, on any page; before the layer so its Esc wins.
+    account::security::mfa_dialog(ui, cx);
     let close = settings_layer(
         ui,
         cx,
@@ -323,12 +325,7 @@ fn nav(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     ui.add(search);
     ui.add_space(6.0);
     let q = cx.view.user_settings_ui.search.trim().to_lowercase();
-    // The open page is not a result: show the first one instead (the search then visibly acts).
-    if !cx.view.settings_page.matches(&q)
-        && let Some(first) = Page::GROUPS.iter().flat_map(|g| g.1.iter().copied()).find(|p| p.unavailable().is_none() && p.matches(&q))
-    {
-        cx.view.settings_page = first;
-    }
+    cx.view.settings_page = search_page(cx.view.settings_page, &mut cx.view.user_settings_ui.before_search, &q);
     let mut any = false;
     for (heading, pages) in Page::GROUPS {
         let mut shown = pages.iter().copied().filter(|p| p.matches(&q)).peekable();
@@ -338,10 +335,9 @@ fn nav(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         any = true;
         nav_heading(ui, cx.theme, heading);
         for p in shown {
-            if let Some(why) = p.unavailable() {
-                greyed_item(ui, cx.theme, p.title(), why);
-            } else if nav_item(ui, cx.theme, p.title(), cx.view.settings_page == p, false) {
+            if nav_item(ui, cx.theme, p.title(), cx.view.settings_page == p, false) {
                 cx.view.settings_page = p;
+                cx.view.user_settings_ui.before_search = None;
             }
         }
         ui.separator();
@@ -353,14 +349,19 @@ fn nav(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     nav_item(ui, cx.theme, "Log Out", false, true)
 }
 
-/// A nav row that can't be opened: dimmed label, `why` on hover.
-fn greyed_item(ui: &mut egui::Ui, theme: &Theme, label: &str, why: &str) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-    let color = theme.colors.text_muted.to_color32().gamma_multiply(0.5);
-    let g = super::one_line(ui, label, egui::FontId::proportional(theme.font.size), color, rect.width() - 20.0);
-    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, color);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, false, label));
-    resp.on_hover_text(why);
+/// The page to show for the search `q` (lowercase, trimmed): the open one while it matches,
+/// else the first match (the nav highlights it), remembering the open one in `before`; once
+/// `q` is empty again, the remembered page.
+fn search_page(open: Page, before: &mut Option<Page>, q: &str) -> Page {
+    if q.is_empty() {
+        return before.take().unwrap_or(open);
+    }
+    if open.matches(q) {
+        return open;
+    }
+    let Some(first) = Page::GROUPS.iter().flat_map(|g| g.1.iter().copied()).find(|p| p.matches(q)) else { return open };
+    before.get_or_insert(open);
+    first
 }
 
 /// `RUSTCORD_OPEN=settings-search:<q>`: the sidebar search filled in (applied when the layer
@@ -380,6 +381,7 @@ fn opened(cx: &mut UiCx<'_>) {
     u.account = Default::default();
     u.voice.opened();
     u.search.clear();
+    u.before_search = None;
     u.fetched.clear();
     if let Some(p) = &mut u.profile {
         // A save answered while the layer was closed is kept, not reset to the old base.
@@ -424,11 +426,11 @@ fn page(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         }
         Page::Devices => lists::devices(ui, cx),
         Page::AuthorizedApps => lists::authorized_apps(ui, cx),
-        Page::FamilyCenter => hint(ui, cx.theme, "Linking a teen's account happens in the Discord mobile app."),
-        Page::Billing => empty_state(ui, cx, "💳", "Nitro, boosts, subscriptions, gifts and payments are managed by Discord.", Some("premium")),
-        Page::RegisteredGames => empty_state(ui, cx, "🎮", "Rustcord does not detect running games.", None),
-        Page::GameOverlay => empty_state(ui, cx, "🖥", "An overlay needs code injected into games, so Rustcord has none.", None),
-        Page::Clips => hint(ui, cx.theme, "Rustcord does not record clips; this is about clips others record in the official app."),
+        Page::FamilyCenter => empty_state(ui, cx, "👪", "Set up in the mobile app", "Linking a teen's account happens in the Discord mobile app.", None),
+        Page::Billing => empty_state(ui, cx, "💳", "Managed on discord.com", "Nitro, boosts, subscriptions, gifts and payments.", Some("premium")),
+        Page::RegisteredGames => empty_state(ui, cx, "🎮", "No game detection", "Rustcord doesn't scan for running games.", None),
+        Page::GameOverlay => empty_state(ui, cx, "🖥", "No in-game overlay", "An overlay needs code injected into games.", None),
+        Page::Clips => empty_state(ui, cx, "🎬", "No clip recording", "Rustcord doesn't record clips. The switch below is about clips others record.", None),
         Page::LocalProfile => local_profile::show(ui, cx),
         Page::Plugins => plugins::show(ui, cx),
         Page::ThemeEditor => changed |= theme_editor::show(ui, cx),
@@ -484,21 +486,25 @@ fn open_in_browser(ui: &mut egui::Ui, section: &str) {
     }
 }
 
-/// A page Rustcord can't offer: a large muted icon, one line why, and the browser link if any.
-fn empty_state(ui: &mut egui::Ui, cx: &UiCx<'_>, icon: &str, text: &str, section: Option<&str>) {
+/// What Rustcord can't offer on a page (Discord's empty state): a large muted icon in a disc,
+/// a title, one line why, and the browser link if any. Synced rows may follow under it.
+fn empty_state(ui: &mut egui::Ui, cx: &UiCx<'_>, icon: &str, title: &str, text: &str, section: Option<&str>) {
     let pal = Pal::new(cx.theme);
-    ui.add_space(40.0);
+    ui.add_space(32.0);
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 48.0, pal.surface);
         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::new(44.0, crate::theme::icon_family()), pal.muted);
         ui.add_space(16.0);
-        ui.label(RichText::new(text).color(pal.muted));
+        ui.label(RichText::new(title).font(super::bold(pal.size + 4.0)).color(pal.text));
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(text).color(pal.muted)).wrap());
         if let Some(section) = section {
-            ui.add_space(12.0);
+            ui.add_space(16.0);
             open_in_browser(ui, section);
         }
     });
+    ui.add_space(16.0);
 }
 
 /// Theme picker: round swatches (tooltip = name) of the flat themes and of the gradient themes
@@ -793,7 +799,22 @@ mod tests {
         assert!(hits("open inbox").contains(&Page::Keybinds), "a keybind action");
         assert!(hits("spoiler").contains(&Page::Chat), "a synced option's label");
         assert!(hits("developer").contains(&Page::Advanced));
+        assert_eq!(hits("authenticator"), [Page::MyAccount]);
+        assert_eq!(hits("avatar").first(), Some(&Page::Profiles), "the upload rows moved to Profiles");
         assert_eq!(hits("").len(), all.len());
         assert!(hits("no such setting").is_empty());
+    }
+
+    #[test]
+    fn search_moves_to_a_match_and_back() {
+        use super::search_page;
+        let mut before = None;
+        assert_eq!(search_page(Page::Chat, &mut before, "zoom"), Page::Accessibility);
+        // Still a match while typing on: stays; the first page left is kept.
+        assert_eq!(search_page(Page::Accessibility, &mut before, "zoo"), Page::Accessibility);
+        assert_eq!(search_page(Page::Accessibility, &mut before, "developer"), Page::Advanced);
+        assert_eq!(search_page(Page::Advanced, &mut before, "no such setting"), Page::Advanced);
+        assert_eq!(search_page(Page::Advanced, &mut before, ""), Page::Chat);
+        assert_eq!((search_page(Page::Chat, &mut before, ""), before), (Page::Chat, None));
     }
 }
