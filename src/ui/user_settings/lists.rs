@@ -63,19 +63,29 @@ pub(super) fn demo(a: &mut AccountState) {
     }
 }
 
-/// Spinner while `None`, the error text for `Err`; the list for `Ok`.
-fn loaded<'a, T>(ui: &mut egui::Ui, pal: &Pal, v: Option<&'a Result<T, String>>) -> Option<&'a T> {
+/// Spinner while `None`; for `Err` the settings' empty state ("Couldn't load `what`", the
+/// reason, Retry: `retry` set on its click); the list for `Ok`.
+fn loaded<'a, T>(ui: &mut egui::Ui, cx: &UiCx<'_>, icon: &str, what: &str, v: Option<&'a Result<T, String>>, retry: &mut bool) -> Option<&'a T> {
     match v {
         None => {
-            ui.add(egui::Spinner::new().size(18.0).color(pal.muted));
+            ui.add(egui::Spinner::new().size(18.0).color(Pal::new(cx.theme).muted));
             None
         }
         Some(Err(e)) => {
-            ui.add(egui::Label::new(RichText::new(e).color(pal.danger)).wrap().selectable(true));
+            // The backend's "Could not load your …: <reason>": the title says the first part.
+            let reason = e.split_once(": ").map_or(e.as_str(), |(_, r)| r);
+            super::empty_state(ui, cx, icon, &format!("Couldn't load {what}"), reason, None);
+            *retry = ui.vertical_centered(|ui| ui.button("Retry").clicked()).inner;
             None
         }
         Some(Ok(v)) => Some(v),
     }
+}
+
+/// Retry: the page's fetch is forgotten, so `fetch_once` sends it again (one request per click).
+fn retry(ui: &egui::Ui, cx: &mut UiCx<'_>, page: Page) {
+    cx.view.user_settings_ui.fetched.retain(|p| *p != page);
+    ui.ctx().request_repaint();
 }
 
 /// "2026-11-13" from an ISO time (empty when unparsable).
@@ -114,7 +124,13 @@ pub(super) fn devices(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let pal = Pal::new(cx.theme);
     hint(ui, cx.theme, "Devices logged in to your account. Log out of any you don't recognise.");
     let me = cx.state.account.session_hash.clone();
-    let Some(list) = loaded(ui, &pal, cx.state.account.sessions.as_ref()) else { return };
+    let mut again = false;
+    let Some(list) = loaded(ui, cx, "🖥", "devices", cx.state.account.sessions.as_ref(), &mut again) else {
+        if again {
+            retry(ui, cx, Page::Devices);
+        }
+        return;
+    };
     let line = |s: &crate::model::AuthSession| {
         let c = &s.client_info;
         let title = [c.os.as_deref(), c.platform.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
@@ -162,7 +178,13 @@ pub(super) fn authorized_apps(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     demo(&mut cx.state.account);
     let pal = Pal::new(cx.theme);
     hint(ui, cx.theme, "Apps you allowed to use your account.");
-    let Some(list) = loaded(ui, &pal, cx.state.account.authorized_apps.as_ref()) else { return };
+    let mut again = false;
+    let Some(list) = loaded(ui, cx, "🔑", "authorized apps", cx.state.account.authorized_apps.as_ref(), &mut again) else {
+        if again {
+            retry(ui, cx, Page::AuthorizedApps);
+        }
+        return;
+    };
     if list.is_empty() {
         hint(ui, cx.theme, "No authorized apps.");
     }
@@ -187,9 +209,14 @@ pub(super) fn authorized_apps(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 pub(super) fn consents(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     fetch_once(cx, Page::Privacy, AccountCommand::FetchConsents, |a| a.consents = None);
     demo(&mut cx.state.account);
-    let pal = Pal::new(cx.theme);
     section(ui, cx.theme, "How we use your data");
-    let Some(c) = loaded(ui, &pal, cx.state.account.consents.as_ref()) else { return };
+    let mut again = false;
+    let Some(c) = loaded(ui, cx, "🔒", "privacy settings", cx.state.account.consents.as_ref(), &mut again) else {
+        if again {
+            retry(ui, cx, Page::Privacy);
+        }
+        return;
+    };
     let (mut usage, mut personal) = (c.usage_statistics.consented, c.personalization.consented);
     let theme = &*cx.theme;
     let change = if switch_row(ui, theme, "Use data to improve Discord", None, &mut usage) {

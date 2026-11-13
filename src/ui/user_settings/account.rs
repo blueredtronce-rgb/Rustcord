@@ -1,17 +1,21 @@
-//! My Account in Discord's order: the profile card (avatar and banner, display name, username
-//! with the password, email and phone masked with Reveal, avatar / banner upload and removal),
-//! Password and Authentication, Account Standing (`FetchStanding`, read-only) and Account
-//! Removal; what needs Discord's verification flows (email, phone, password, 2FA, disable /
-//! delete) opens discord.com/settings in the browser. And Profiles (pronouns, About Me, banner
-//! colour, live preview card). Each change is one `AccountCommand` on a click, progress from
-//! `AccountState::ops`; USER_UPDATE then refreshes `state.me`.
+//! My Account in Discord's order: the account card (banner, avatar, name, Edit User Profile;
+//! Display Name, Username with the password, Email and Phone masked with Reveal), then
+//! Password and Authentication, Account Standing and Account Removal (security.rs). Email and
+//! phone changes need Discord's verification flows, so they open discord.com in the browser.
+//! And Profiles (avatar and banner upload, pronouns, About Me, banner colour, live preview
+//! card). Each change is one `AccountCommand` on a click, progress from `AccountState::ops`;
+//! USER_UPDATE then refreshes `state.me`.
 //! OWNERSHIP: user-settings engineer (docs/SOCIAL_UI_DESIGN.md).
+
+/// Password and Authentication, Account Standing, Account Removal and the 2FA dialogs.
+#[path = "security.rs"]
+pub(super) mod security;
 
 use super::{Page, field_label, finish_op, my_op, op_line, op_state, primary_button};
 use crate::api::cdn;
 use crate::auth::Secret;
 use crate::backend::{AccountCommand, Command, OpKind};
-use crate::model::{Presence, User};
+use crate::model::User;
 use crate::state::account::{AccountState, OpState};
 use crate::ui::messages::Pal;
 use crate::ui::{UiCx, bold, cosmetics, images, profile::cover_uv, rgb, sidebar::user_avatar_at};
@@ -33,15 +37,23 @@ enum Field {
     Username,
 }
 
-/// My Account inline editor (one field at a time). Dropped when the layer closes.
+/// My Account forms. Dropped (typed secrets wiped) when the layer opens or closes.
 #[derive(Default)]
 pub(super) struct AccountForm {
+    /// The inline editor (one field at a time).
+    editor: Editor,
+    /// Email / phone shown unmasked (Reveal; this opening only).
+    reveal: (bool, bool),
+    /// Password and Authentication dialogs and the 2FA prompt.
+    sec: security::Form,
+}
+
+#[derive(Default)]
+struct Editor {
     edit: Option<Field>,
     draft: String,
     /// Current password for a username change; pre-sized so typing never leaves unwiped copies.
     password: Zeroizing<String>,
-    /// Email / phone shown unmasked (Reveal; this opening only).
-    reveal: (bool, bool),
 }
 
 /// Profiles page: what was loaded / last saved, the edits, and what Save sent.
@@ -93,7 +105,8 @@ pub(super) fn my_account(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let pal = Pal::new(cx.theme);
     let c = cx.theme.colors.clone();
     // Esc closes an open editor first, not the whole layer (a dialog or popup above goes first).
-    if cx.view.user_settings_ui.account.edit.is_some()
+    if cx.view.user_settings_ui.account.editor.edit.is_some()
+        && !security::dialog_open(cx)
         && !cx.view.dialog_open()
         && !egui::Popup::is_any_open(ui.ctx())
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -134,25 +147,22 @@ pub(super) fn my_account(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             let online = cx.state.conn == crate::backend::ConnState::Connected && !crate::config::offline_mode();
             let none = |missing| if hide { "Hidden by Streamer Mode" } else if online { missing } else { "Shown once connected" };
             let reveal = &mut cx.view.user_settings_ui.account.reveal;
+            // Discord's Edit / Add, only once it is known whether there is one.
+            let button = |v: Option<&str>| if v.is_some() { Some("Edit") } else { online.then_some("Add") };
             let email = me.email.as_deref().map(String::as_str);
-            secret_row(ui, &pal, "Email", email.filter(|_| !hide), mask_email, &mut reveal.0, none("No email added"));
+            secret_row(ui, &pal, "Email", email.filter(|_| !hide), mask_email, &mut reveal.0, none("You haven't added an email yet."), button(email));
             ui.add_space(14.0);
             let phone = me.phone.as_deref().map(String::as_str);
-            secret_row(ui, &pal, "Phone Number", phone.filter(|_| !hide), mask_phone, &mut reveal.1, none("No phone number added"));
-            ui.add_space(14.0);
-            image_row(ui, cx, &pal, OpKind::UpdateAvatar, me.avatar.is_some(), Ok(()));
-            ui.add_space(8.0);
-            // Uploading a banner needs Nitro (§3.2); removing one never does.
-            let banner_ok = if me.premium_type != 0 { Ok(()) } else { Err("Profile banners need Nitro") };
-            image_row(ui, cx, &pal, OpKind::UpdateBanner, me.banner.is_some(), banner_ok);
+            secret_row(ui, &pal, "Phone Number", phone.filter(|_| !hide), mask_phone, &mut reveal.1, none("You haven't added a phone number yet."), button(phone));
         });
     });
-    security(ui, cx, &pal, me.mfa_enabled);
+    security::show(ui, cx, &pal, &me);
 }
 
 /// Email / phone in the account card: masked, Reveal shows it here (nothing is sent); changing
 /// it needs Discord's verification, so Edit opens the browser.
-fn secret_row(ui: &mut egui::Ui, pal: &Pal, label: &str, value: Option<&str>, mask: fn(&str) -> String, reveal: &mut bool, none: &str) {
+#[allow(clippy::too_many_arguments, reason = "one row's texts and state")]
+fn secret_row(ui: &mut egui::Ui, pal: &Pal, label: &str, value: Option<&str>, mask: fn(&str) -> String, reveal: &mut bool, none: &str, button: Option<&str>) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             field_label(ui, pal, label);
@@ -169,8 +179,9 @@ fn secret_row(ui: &mut egui::Ui, pal: &Pal, label: &str, value: Option<&str>, ma
                 }
             });
         });
+        let Some(button) = button else { return };
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let edit = ui.add(egui::Button::new(if value.is_some() { "Edit" } else { "Add" }).min_size(vec2(64.0, 32.0)));
+            let edit = ui.add(egui::Button::new(button).min_size(vec2(64.0, 32.0)));
             if edit.on_hover_text("Opens discord.com: changing it needs a verification code").clicked() {
                 open_account_page(ui);
             }
@@ -197,106 +208,9 @@ fn mask_phone(p: &str) -> String {
     p.chars().enumerate().map(|(i, c)| if i + 4 < n { '*' } else { c }).collect()
 }
 
-/// Password and Authentication, Account Standing, Account Removal (Discord's order under the
-/// card). The flows that need Discord's verification open the browser.
-fn security(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mfa: bool) {
-    let (ok, warn) = (crate::ui::presence_color(Presence::Online, &cx.theme.colors), crate::ui::presence_color(Presence::Idle, &cx.theme.colors));
-    crate::ui::section(ui, cx.theme, "Password and Authentication");
-    if mfa {
-        chip(ui, pal, Some("✔"), "Multi-factor authentication enabled", ok);
-        ui.add_space(4.0);
-    }
-    if ui.add(super::primary(cx.theme, "Change Password")).on_hover_text("Opens discord.com").clicked() {
-        open_account_page(ui);
-    }
-    let rows: &[(&str, &str, &str)] = if mfa {
-        &[
-            ("SMS Backup Authentication", "A text message to your phone can stand in for the app.", "Manage"),
-            ("Security Keys", "Sign in with a hardware key or passkey.", "Manage"),
-            ("Backup Codes", "One-time codes for when you can't use the app.", "View Backup Codes"),
-            ("Authenticator App", "Your account asks for an app code when you sign in.", "Remove Authenticator App"),
-        ]
-    } else {
-        &[
-            ("Authenticator App", "Protect your account with a code from an app when you sign in.", "Enable Authenticator App"),
-            ("Security Keys", "Sign in with a hardware key or passkey.", "Register a Security Key"),
-        ]
-    };
-    for &(title, text, button) in rows {
-        link_row(ui, pal, title, text, button);
-    }
-
-    crate::ui::section(ui, cx.theme, "Account Standing");
-    super::lists::demo(&mut cx.state.account);
-    super::lists::fetch_once(cx, Page::MyAccount, AccountCommand::FetchStanding, |a| a.standing = None);
-    match &cx.state.account.standing {
-        None => {
-            ui.add(egui::Spinner::new().size(16.0).color(pal.muted));
-        }
-        Some(Err(e)) => {
-            ui.add(egui::Label::new(RichText::new(e).size(pal.meta()).color(pal.danger)).wrap().selectable(true));
-        }
-        Some(Ok(state)) => {
-            let (text, color) = match *state {
-                0..=100 => ("All good: your account is in good standing", ok),
-                101..=200 => ("Limited: some features are restricted", warn),
-                201..=300 => ("Very limited: many features are restricted", warn),
-                301..=400 => ("At risk: further violations may suspend it", pal.danger),
-                _ => ("Suspended", pal.danger),
-            };
-            chip(ui, pal, (*state <= 100).then_some("✔"), text, color);
-        }
-    }
-
-    crate::ui::section(ui, cx.theme, "Account Removal");
-    crate::ui::hint(ui, cx.theme, "Disabling your account means you can recover it at any time after taking this action.");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let disable = egui::Button::new(RichText::new("Disable Account").color(egui::Color32::WHITE)).fill(pal.danger).min_size(vec2(80.0, 32.0));
-        let mut open = ui.add(disable).on_hover_text("Opens discord.com").clicked();
-        let delete = egui::Button::new(RichText::new("Delete Account").color(pal.danger)).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, pal.danger)).min_size(vec2(80.0, 32.0));
-        open |= ui.add(delete).on_hover_text("Opens discord.com").clicked();
-        if open {
-            open_account_page(ui);
-        }
-    });
-}
-
-/// A rounded status chip: `color` text (after a monochrome `icon`) on a tint of it.
-fn chip(ui: &mut egui::Ui, pal: &Pal, icon: Option<&str>, text: &str, color: egui::Color32) {
-    Frame::new().fill(color.gamma_multiply(0.15)).corner_radius(pal.radius).inner_margin(Margin::symmetric(10, 5)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if let Some(icon) = icon {
-                ui.label(RichText::new(icon).family(crate::theme::icon_family()).color(color));
-            }
-            ui.label(RichText::new(text).color(color));
-        });
-    });
-}
-
-/// Title and one muted line on the left, a button on the right that opens the browser.
-fn link_row(ui: &mut egui::Ui, pal: &Pal, title: &str, text: &str, button: &str) {
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        crate::ui::button_row(ui);
-        let w = (ui.available_width() - 220.0).max(120.0);
-        ui.allocate_ui_with_layout(vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(title).font(bold(pal.size)).color(pal.text));
-            ui.add(egui::Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.add(egui::Button::new(button).min_size(vec2(64.0, 32.0))).on_hover_text("Opens discord.com").clicked() {
-                open_account_page(ui);
-            }
-        });
-    });
-}
-
 /// One row of the account panel: label and value with Edit, or its inline editor.
 fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &str, value: &str, me: &User) {
-    let editing = cx.view.user_settings_ui.account.edit == Some(which);
+    let editing = cx.view.user_settings_ui.account.editor.edit == Some(which);
     if !editing {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -319,7 +233,7 @@ fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &
     }
     let pending = state == Some(OpState::Pending);
     field_label(ui, pal, label);
-    let f = &mut cx.view.user_settings_ui.account;
+    let f = &mut cx.view.user_settings_ui.account.editor;
     let mut enter = false;
     ui.add_enabled_ui(!pending, |ui| {
         let hint = if which == Field::DisplayName { me.username.as_str() } else { "new_username" };
@@ -350,7 +264,7 @@ fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &
     if !save || !cx.state.account.begin(my_op(kind)) {
         return;
     }
-    let f = &mut cx.view.user_settings_ui.account;
+    let f = &mut cx.view.user_settings_ui.account.editor;
     let text = f.draft.trim().to_owned();
     let cmd = match which {
         Field::DisplayName => AccountCommand::UpdateGlobalName { name: Some(text).filter(|t| !t.is_empty()) },
@@ -373,7 +287,7 @@ fn op_kind(which: Field) -> OpKind {
 fn open_editor(cx: &mut UiCx<'_>, which: Field, me: &User) {
     close_editor(cx);
     finish_op(cx, op_kind(which));
-    let f = &mut cx.view.user_settings_ui.account;
+    let f = &mut cx.view.user_settings_ui.account.editor;
     f.edit = Some(which);
     f.draft = match which {
         Field::DisplayName => me.global_name.clone().unwrap_or_default(),
@@ -383,11 +297,11 @@ fn open_editor(cx: &mut UiCx<'_>, which: Field, me: &User) {
 }
 
 fn close_editor(cx: &mut UiCx<'_>) {
-    if let Some(which) = cx.view.user_settings_ui.account.edit.take() {
+    if let Some(which) = cx.view.user_settings_ui.account.editor.edit.take() {
         finish_op(cx, op_kind(which));
     }
     // Dropping the old buffer wipes the typed password.
-    cx.view.user_settings_ui.account = Default::default();
+    cx.view.user_settings_ui.account.editor = Editor::default();
 }
 
 /// Avatar or banner row: Change (file picker, uploaded right away) and Remove (asks first).
@@ -457,6 +371,11 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
     let pal = Pal::new(cx.theme);
     prefill(cx, &me);
+    image_row(ui, cx, &pal, OpKind::UpdateAvatar, me.avatar.is_some(), Ok(()));
+    // Uploading a banner needs Nitro (§3.2); removing one never does.
+    let banner_ok = if me.premium_type != 0 { Ok(()) } else { Err("Profile banners need Nitro") };
+    image_row(ui, cx, &pal, OpKind::UpdateBanner, me.banner.is_some(), banner_ok);
+    ui.add_space(12.0);
     // My account's own profile theme for the preview (never my local one).
     let theme = crate::ui::profile_modal::loaded(cx, me.id, None).and_then(|p| p.theme_colors());
     let Some(form) = cx.view.user_settings_ui.profile.as_mut() else { return };
@@ -559,19 +478,16 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 
 /// User Profile | Server Profiles (Discord's tabs). True while User Profile is shown.
 fn profile_tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
-    let pal = Pal::new(cx.theme);
     let first = cx.state.selected_guild.or_else(|| cx.state.guilds.first().map(|g| g.id));
     let tab = &mut cx.view.user_settings_ui.server_tab;
-    ui.horizontal(|ui| {
-        for (server, label) in [(false, "User Profile"), (true, "Server Profiles")] {
-            let on = tab.is_some() == server;
-            let text = RichText::new(label).color(if on { pal.text } else { pal.muted });
-            let enabled = !server || first.is_some();
-            if ui.add_enabled(enabled, egui::Button::new(text).selected(on).frame_when_inactive(false)).clicked() && !on {
-                *tab = if server { first.map(|g| (g, None)) } else { None };
-            }
-        }
+    let (was, mut server) = (tab.is_some(), tab.is_some());
+    let w = ui.available_width().min(320.0);
+    ui.allocate_ui(vec2(w, 36.0), |ui| {
+        ui.add_enabled_ui(first.is_some(), |ui| crate::ui::login::segmented(ui, cx.theme, &mut server, &[(false, "User Profile"), (true, "Server Profiles")]));
     });
+    if server != was {
+        *tab = if server { first.map(|g| (g, None)) } else { None };
+    }
     ui.add_space(8.0);
     tab.is_none()
 }
@@ -712,6 +628,7 @@ mod tests {
     #[test]
     fn masks_keep_only_the_domain_and_last_digits() {
         assert_eq!(mask_email("ferris@rust-lang.org"), "******@rust-lang.org");
+        assert_eq!(mask_email("john.doe@gmail.com"), "********@gmail.com");
         assert_eq!(mask_email("nodomain"), "********");
         assert_eq!(mask_phone("+491701234567"), "*********4567");
         assert_eq!(mask_phone("123"), "123");
