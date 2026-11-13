@@ -1,0 +1,404 @@
+//! Native plugins: Vencord's useful plugins re-implemented as plain Rust (docs/PLUGINS_NOTES.md).
+//! No runtime, no scripting: every plugin is an entry in `META` (id, description, Vencord's
+//! default of off, options) plus hook functions that the UI / state code calls at its existing
+//! render and event points, each guarded by `enabled(Plugin::X)`. On/off and options live in
+//! `<config>/plugins.toml` (one table per plugin, only what differs from the defaults).
+//!
+//! Rules every plugin keeps (ARCHITECTURE "Normal user client behaviour"): no automation, no
+//! background sending, every request user-triggered or what the official client sends for
+//! the same action; never fake Nitro or any paid feature; local data stays local and bounded.
+//! OWNERSHIP: plugins engineer (`src/plugins/*`, `src/ui/user_settings/plugins.rs`).
+
+pub mod clear_urls;
+pub mod message_logger;
+pub mod notifier;
+pub mod people;
+pub mod media;
+pub mod menus;
+pub mod sidebar;
+pub mod chat;
+pub mod windows;
+pub mod voice_messages;
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{OnceLock, RwLock};
+
+/// Every plugin, in the order of `META`. A plugin's index is its bit in `ENABLED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Plugin {
+    ShowHiddenChannels,
+    PlatformIndicators,
+    MoreUserTags,
+    BetterRoleDot,
+    ImageZoom,
+    ReverseImageSearch,
+    CopyUserUrls,
+    FriendsSince,
+    MutualGroupDms,
+    PermissionsViewer,
+    ServerInfo,
+    ShowConnections,
+    ShowMeYourName,
+    TypingIndicator,
+    TypingTweaks,
+    UserVoiceShow,
+    WhoReacted,
+    CallTimer,
+    ClearUrls,
+    NoBlockedMessages,
+    NoReplyMention,
+    ReadAllNotificationsButton,
+    RelationshipNotifier,
+    SilentTyping,
+    SilentMessageToggle,
+    MessageLogger,
+    Translate,
+    FavoriteEmojiFirst,
+    ViewIcons,
+    ValidUser,
+    VoiceMessages,
+    BetterFolders,
+    IrcColors,
+    ReplyTimestamp,
+    MemberCount,
+    ShowTimeoutDuration,
+    OpenInApp,
+    ViewRaw,
+}
+
+/// One option of a plugin (the settings page draws it from this).
+#[derive(Debug, Clone, Copy)]
+pub struct Opt {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub kind: OptKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum OptKind {
+    Bool(bool),
+    /// Choices, default index.
+    Choice(&'static [&'static str], usize),
+    /// min, max, default.
+    Int(i64, i64, i64),
+    /// Default text; `hint` shown in the empty field.
+    Text(&'static str, &'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Meta {
+    pub id: Plugin,
+    /// Vencord's name: the key in plugins.toml and the card title.
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Vencord turns user plugins off until enabled; so does Rustcord.
+    pub default_on: bool,
+    pub opts: &'static [Opt],
+}
+
+const fn opt(key: &'static str, label: &'static str, kind: OptKind) -> Opt {
+    Opt { key, label, kind }
+}
+
+const fn meta(id: Plugin, name: &'static str, description: &'static str, opts: &'static [Opt]) -> Meta {
+    Meta { id, name, description, default_on: false, opts }
+}
+
+use OptKind::{Bool, Choice, Int, Text};
+use Plugin as P;
+
+pub const META: &[Meta] = &[
+    meta(P::ShowHiddenChannels, "ShowHiddenChannels", "Lists channels you can't view, with a lock. Hover shows their topic and last activity; nothing is loaded.", &[]),
+    meta(P::PlatformIndicators, "PlatformIndicators", "Shows whether people are on desktop, mobile, web or a console.", &[
+        opt("list", "Member list", Bool(true)),
+        opt("messages", "Messages", Bool(true)),
+        opt("badges", "Profiles", Bool(true)),
+    ]),
+    meta(P::MoreUserTags, "MoreUserTags", "Owner, Admin and Mod tags next to names.", &[opt("messages", "In messages", Bool(true)), opt("list", "In the member list", Bool(true))]),
+    meta(P::BetterRoleDot, "BetterRoleDot", "Click a role's dot to copy its colour.", &[]),
+    meta(P::ImageZoom, "ImageZoom", "Hold the mouse on an image for a magnifier; scroll to zoom.", &[
+        opt("zoom", "Zoom", Int(1, 10, 2)),
+        opt("size", "Lens size", Int(50, 600, 100)),
+        opt("square", "Square lens", Bool(false)),
+    ]),
+    meta(P::ReverseImageSearch, "ReverseImageSearch", "Search an image with Google Lens, Yandex, SauceNAO and more (message menu).", &[]),
+    meta(P::CopyUserUrls, "CopyUserURLs", "Copy a link to someone's profile from their menu.", &[]),
+    meta(P::FriendsSince, "FriendsSince", "Shows since when you are friends.", &[]),
+    meta(P::MutualGroupDms, "MutualGroupDMs", "Lists the group DMs you share in profiles.", &[]),
+    meta(P::PermissionsViewer, "PermissionsViewer", "See anyone's server permissions and where they come from.", &[]),
+    meta(P::ServerInfo, "ServerInfo", "Server info from the server menu: owner, dates, counts.", &[]),
+    meta(P::ShowConnections, "ShowConnections", "Connected accounts in the profile popout.", &[]),
+    meta(P::ShowMeYourName, "ShowMeYourName", "Shows the username next to nicknames.", &[opt("displayNames", "Also next to display names", Bool(false))]),
+    meta(P::TypingIndicator, "TypingIndicator", "Typing dots in the channel and DM list.", &[
+        opt("includeCurrentChannel", "Include the open channel", Bool(true)),
+        opt("includeMutedChannels", "Include muted channels", Bool(false)),
+    ]),
+    meta(P::TypingTweaks, "TypingTweaks", "Avatars and role colours in the typing line.", &[
+        opt("showAvatars", "Avatars", Bool(true)),
+        opt("showRoleColors", "Role colours", Bool(true)),
+    ]),
+    meta(P::UserVoiceShow, "UserVoiceShow", "A speaker next to people who are in a voice channel.", &[
+        opt("showInMemberList", "Member list", Bool(true)),
+        opt("showInMessages", "Messages", Bool(true)),
+        opt("showInUserProfile", "Profiles", Bool(true)),
+    ]),
+    meta(P::WhoReacted, "WhoReacted", "Avatars of who reacted, after hovering a reaction.", &[]),
+    meta(P::CallTimer, "CallTimer", "How long you've been in the call.", &[opt("format", "Format", Choice(&["Stopwatch", "Human"], 0))]),
+    meta(P::ClearUrls, "ClearURLs", "Removes tracking parameters from links you send and open.", &[]),
+    meta(P::NoBlockedMessages, "NoBlockedMessages", "Hides messages from people you blocked.", &[opt("ignored", "Also ignored users", Bool(true))]),
+    meta(P::NoReplyMention, "NoReplyMention", "Replies don't ping by default.", &[opt("userList", "Still ping these user IDs", Text("", "IDs, comma separated"))]),
+    meta(P::ReadAllNotificationsButton, "ReadAllNotificationsButton", "A button above the server list that marks every server read.", &[]),
+    meta(P::RelationshipNotifier, "RelationshipNotifier", "Tells you when you're unfriended, removed from a server or a group.", &[
+        opt("friends", "Friends", Bool(true)),
+        opt("servers", "Servers", Bool(true)),
+        opt("groups", "Groups", Bool(true)),
+        opt("notify", "Desktop notification", Bool(true)),
+    ]),
+    meta(P::SilentTyping, "SilentTyping", "Others don't see you typing.", &[]),
+    meta(P::SilentMessageToggle, "SilentMessageToggle", "A composer button to send without notifications.", &[opt("autoDisable", "Turn off after sending", Bool(true))]),
+    meta(P::MessageLogger, "MessageLogger", "Keeps deleted and edited messages visible, greyed. Only in memory, only on this device.", &[
+        opt("logDeletes", "Deleted messages", Bool(true)),
+        opt("logEdits", "Edit history", Bool(true)),
+        opt("ignoreBots", "Ignore bots", Bool(true)),
+        opt("ignoreSelf", "Ignore my messages", Bool(false)),
+    ]),
+    meta(P::Translate, "Translate", "Translate a message in your browser (message menu).", &[
+        opt("target", "Language", Text("", "e.g. de, en; empty = system")),
+        opt("service", "Service", Choice(&["Google", "DeepL", "Bing"], 0)),
+    ]),
+    meta(P::FavoriteEmojiFirst, "FavoriteEmojiFirst", "Your most used emoji first in : suggestions.", &[]),
+    meta(P::ViewIcons, "ViewIcons", "Open avatars, banners and server icons in full size.", &[
+        opt("format", "Format", Choice(&["webp", "png"], 0)),
+        opt("size", "Size", Choice(&["1024", "4096"], 0)),
+    ]),
+    meta(P::ValidUser, "ValidUser", "Loads unknown mentioned users when you click them.", &[]),
+    meta(P::VoiceMessages, "VoiceMessages", "Play voice messages right in the chat.", &[opt("volume", "Volume %", Int(0, 200, 100))]),
+    meta(P::BetterFolders, "BetterFolders", "Server folder tweaks.", &[
+        opt("closeOthers", "Opening a folder closes the others", Bool(true)),
+        opt("forceOpen", "Keep the open server's folder open", Bool(false)),
+    ]),
+    meta(P::IrcColors, "IrcColors", "Colourful names for people without a role colour.", &[opt("onlyDms", "Only in DMs", Bool(false))]),
+    meta(P::ReplyTimestamp, "ReplyTimestamp", "The time of the replied-to message.", &[]),
+    meta(P::MemberCount, "MemberCount", "Online and total members above the member list.", &[]),
+    meta(P::ShowTimeoutDuration, "ShowTimeoutDuration", "How long someone is still timed out.", &[]),
+    meta(P::OpenInApp, "OpenInApp", "Opens Spotify and Steam links in their apps.", &[opt("spotify", "Spotify", Bool(true)), opt("steam", "Steam", Bool(true))]),
+    meta(P::ViewRaw, "ViewRaw", "Copy a message as raw JSON (message menu).", &[]),
+];
+
+pub fn meta_of(p: Plugin) -> &'static Meta {
+    &META[p as usize]
+}
+
+// ---------------------------------------------------------------------------
+// Settings store (plugins.toml)
+// ---------------------------------------------------------------------------
+
+/// On/off and option values: one TOML table per plugin, keyed by `Meta::name`. Missing keys
+/// take the defaults from `META`, unknown ones are kept (newer versions, typos).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Store {
+    table: toml::Table,
+}
+
+impl Store {
+    pub fn parse(text: &str) -> Self {
+        Self { table: text.parse::<toml::Table>().unwrap_or_default() }
+    }
+
+    pub fn to_text(&self) -> String {
+        toml::to_string_pretty(&self.table).unwrap_or_default()
+    }
+
+    fn value(&self, p: Plugin, key: &str) -> Option<&toml::Value> {
+        self.table.get(meta_of(p).name)?.as_table()?.get(key)
+    }
+
+    pub fn is_on(&self, p: Plugin) -> bool {
+        self.value(p, "enabled").and_then(toml::Value::as_bool).unwrap_or(meta_of(p).default_on)
+    }
+
+    /// `ENABLED` bits.
+    pub fn bits(&self) -> u64 {
+        META.iter().filter(|m| self.is_on(m.id)).fold(0, |b, m| b | 1 << m.id as u8)
+    }
+
+    pub fn set(&mut self, p: Plugin, key: &str, v: toml::Value) {
+        let t = self.table.entry(meta_of(p).name).or_insert_with(|| toml::Value::Table(Default::default()));
+        if let Some(t) = t.as_table_mut() {
+            t.insert(key.to_owned(), v);
+        }
+    }
+
+    fn opt(p: Plugin, key: &str) -> OptKind {
+        let o = meta_of(p).opts.iter().find(|o| o.key == key);
+        debug_assert!(o.is_some(), "{key} is not an option of {p:?}");
+        o.map_or(Bool(false), |o| o.kind)
+    }
+
+    pub fn bool(&self, p: Plugin, key: &str) -> bool {
+        let d = matches!(Self::opt(p, key), Bool(true));
+        self.value(p, key).and_then(toml::Value::as_bool).unwrap_or(d)
+    }
+
+    pub fn int(&self, p: Plugin, key: &str) -> i64 {
+        let (lo, hi, d) = if let Int(lo, hi, d) = Self::opt(p, key) { (lo, hi, d) } else { (0, 0, 0) };
+        self.value(p, key).and_then(toml::Value::as_integer).map_or(d, |v| v.clamp(lo, hi))
+    }
+
+    pub fn choice(&self, p: Plugin, key: &str) -> usize {
+        let (n, d) = if let Choice(list, d) = Self::opt(p, key) { (list.len(), d) } else { (1, 0) };
+        self.value(p, key).and_then(toml::Value::as_integer).map_or(d, |v| (v.max(0) as usize).min(n - 1))
+    }
+
+    pub fn text(&self, p: Plugin, key: &str) -> String {
+        let d = if let Text(d, _) = Self::opt(p, key) { d } else { "" };
+        self.value(p, key).and_then(toml::Value::as_str).unwrap_or(d).to_owned()
+    }
+}
+
+/// Bit `p as u8` set = plugin on. Read on every hook call, so it is an atomic, not the lock.
+static ENABLED: AtomicU64 = AtomicU64::new(0);
+
+fn store() -> &'static RwLock<Store> {
+    static STORE: OnceLock<RwLock<Store>> = OnceLock::new();
+    STORE.get_or_init(|| {
+        // Unit tests never read the real config: every plugin at its default.
+        let s = if cfg!(test) { Store::default() } else { std::fs::read_to_string(file()).map(|t| Store::parse(&t)).unwrap_or_default() };
+        ENABLED.store(s.bits(), Ordering::Relaxed);
+        RwLock::new(s)
+    })
+}
+
+fn file() -> std::path::PathBuf {
+    crate::config::paths().config_dir.join("plugins.toml")
+}
+
+/// The hook guard.
+pub fn enabled(p: Plugin) -> bool {
+    store();
+    ENABLED.load(Ordering::Relaxed) & (1 << p as u8) != 0
+}
+
+fn read<R>(f: impl FnOnce(&Store) -> R) -> R {
+    f(&store().read().unwrap_or_else(|e| e.into_inner()))
+}
+
+pub fn opt_bool(p: Plugin, key: &str) -> bool {
+    read(|s| s.bool(p, key))
+}
+
+pub fn opt_int(p: Plugin, key: &str) -> i64 {
+    read(|s| s.int(p, key))
+}
+
+pub fn opt_choice(p: Plugin, key: &str) -> usize {
+    read(|s| s.choice(p, key))
+}
+
+pub fn opt_text(p: Plugin, key: &str) -> String {
+    read(|s| s.text(p, key))
+}
+
+/// Changes a value (the settings page) and writes plugins.toml. "enabled" switches the plugin.
+pub fn set(p: Plugin, key: &str, v: toml::Value) -> Result<(), String> {
+    put(p, key, v);
+    save()
+}
+
+/// Changes a value in memory only (a slider while it is dragged); `save` writes it.
+pub fn put(p: Plugin, key: &str, v: toml::Value) {
+    let mut s = store().write().unwrap_or_else(|e| e.into_inner());
+    s.set(p, key, v);
+    ENABLED.store(s.bits(), Ordering::Relaxed);
+    drop(s);
+    if p == Plugin::MessageLogger && !enabled(p) {
+        message_logger::clear();
+    }
+}
+
+/// Writes plugins.toml (not in offline test runs without their own RUSTCORD_HOME).
+pub fn save() -> Result<(), String> {
+    if crate::config::offline_mode() && std::env::var_os("RUSTCORD_HOME").is_none() {
+        return Ok(());
+    }
+    let text = read(Store::to_text);
+    crate::config::write_atomic(&file(), text.as_bytes())
+}
+
+/// Test hook `RUSTCORD_PLUGINS=all|<Name>,<Name>`: switches plugins on for this run only
+/// (screenshots), without touching plugins.toml.
+pub fn apply_env() {
+    let Ok(list) = std::env::var("RUSTCORD_PLUGINS") else { return };
+    let mut s = store().write().unwrap_or_else(|e| e.into_inner());
+    for m in META.iter().filter(|m| list == "all" || list.split(',').any(|n| n.trim().eq_ignore_ascii_case(m.name))) {
+        s.set(m.id, "enabled", toml::Value::Boolean(true));
+    }
+    ENABLED.store(s.bits(), Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Event and frame hooks (called once from ui/mod.rs)
+// ---------------------------------------------------------------------------
+
+/// Before a gateway event reaches the state: MessageLogger keeps deleted messages (the event is
+/// swallowed) and edit history; RelationshipNotifier reads names that the event removes.
+pub fn on_gateway(state: &mut crate::state::AppState, view: &mut crate::ui::ViewState, settings: &crate::config::Settings, ev: crate::model::GatewayEvent) -> Option<crate::model::GatewayEvent> {
+    notifier::on_gateway(state, view, settings, &ev);
+    message_logger::on_gateway(state, ev)
+}
+
+/// Once per frame on the main screen, after the page and its modals: plugin windows, link
+/// rewriting (ClearURLs, OpenInApp) for every link opened this frame.
+pub fn frame(ctx: &egui::Context, cx: &mut crate::ui::UiCx<'_>) {
+    windows::show(ctx, cx);
+    chat::sync_reactions(cx.state);
+    notifier::watch_confirm(cx.view);
+    if enabled(Plugin::ClearUrls) || enabled(Plugin::OpenInApp) {
+        ctx.output_mut(|o| {
+            for c in &mut o.commands {
+                if let egui::OutputCommand::OpenUrl(u) = c {
+                    u.url = media::rewrite_link(&u.url);
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meta_is_in_enum_order_and_fits_the_bitmask() {
+        assert!(META.len() <= 64);
+        for (i, m) in META.iter().enumerate() {
+            assert_eq!(m.id as usize, i, "{}", m.name);
+            assert!(!m.default_on, "{} defaults to off like Vencord", m.name);
+        }
+        assert!(META.len() >= 25);
+    }
+
+    #[test]
+    fn settings_persist_through_toml() {
+        let mut s = Store::default();
+        assert!(!s.is_on(P::ClearUrls));
+        assert!(s.bool(P::TypingIndicator, "includeCurrentChannel"));
+        assert_eq!(s.int(P::ImageZoom, "zoom"), 2);
+        s.set(P::ClearUrls, "enabled", toml::Value::Boolean(true));
+        s.set(P::ImageZoom, "zoom", toml::Value::Integer(99));
+        s.set(P::CallTimer, "format", toml::Value::Integer(1));
+        s.set(P::Translate, "target", toml::Value::String("de".into()));
+        let back = Store::parse(&s.to_text());
+        assert_eq!(back, s);
+        assert!(back.is_on(P::ClearUrls));
+        assert_eq!(back.bits(), 1 << P::ClearUrls as u8);
+        // Out of range values are clamped, not trusted.
+        assert_eq!(back.int(P::ImageZoom, "zoom"), 10);
+        assert_eq!(back.choice(P::CallTimer, "format"), 1);
+        assert_eq!(back.text(P::Translate, "target"), "de");
+        // Unknown tables and a broken file never fail the load.
+        assert!(!Store::parse("[Foo]\nenabled = true\n").is_on(P::ClearUrls));
+        assert_eq!(Store::parse("not toml ["), Store::default());
+    }
+}
