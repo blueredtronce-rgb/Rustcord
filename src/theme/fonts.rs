@@ -45,12 +45,92 @@ pub(super) fn gg() -> MutexGuard<'static, Gg> {
     GG.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Startup (before the first `ThemeApplier::apply`): the system fallback chain, and gg sans
-/// when `discord_font`.
+/// Startup (before the first `ThemeApplier::apply`): the system fallback chain, the box rules,
+/// and gg sans when `discord_font`.
 pub fn init_fonts(ctx: &egui::Context, discord_font: bool) {
     #[cfg(windows)]
     ctx.add_font_provider(std::sync::Arc::new(system_fallback));
+    ctx.add_glyph_rasterizer(egui::GlyphRasterizer::new("rustcord::box_rules", box_rule).with_priority(egui::FontPriority::Highest));
     set_discord_font(ctx, discord_font);
+}
+
+/// Horizontal box-drawing characters as (left half, right half, dashes per cell); weights
+/// 1 light, 2 heavy, 3 double, 0 none.
+fn rule_parts(c: char) -> Option<(u8, u8, u8)> {
+    Some(match c {
+        '─' => (1, 1, 0),
+        '━' => (2, 2, 0),
+        '═' => (3, 3, 0),
+        '╌' => (1, 1, 2),
+        '╍' => (2, 2, 2),
+        '┄' => (1, 1, 3),
+        '┅' => (2, 2, 3),
+        '┈' => (1, 1, 4),
+        '┉' => (2, 2, 4),
+        '╴' => (1, 0, 0),
+        '╶' => (0, 1, 0),
+        '╸' => (2, 0, 0),
+        '╺' => (0, 2, 0),
+        '╼' => (1, 2, 0),
+        '╾' => (2, 1, 0),
+        _ => return None,
+    })
+}
+
+/// Draws horizontal box rules (`━━» TEAM «━━`) in every proportional family, before any font:
+/// gg sans' rules are dashes 10 % short of their advance, and epaint snaps each glyph to the
+/// pixel, so a run of them shows gaps (Chromium's are continuous). Each cell is as wide as the
+/// largest rounded step between two of them, so a run never has a seam. Segoe UI Symbol's
+/// geometry (0.5 em cell, axis 0.26 em up), so its corners (`╭ ╮`, `append_boxed`) still meet
+/// them. Monospace keeps the font's own cells (code-block trees stay aligned).
+fn box_rule(req: &egui::GlyphRasterizerRequest<'_>) -> Option<egui::RasterizedGlyph> {
+    let mut chars = req.cluster.chars();
+    let (left, right, dashes) = chars.next().and_then(rule_parts).filter(|_| chars.next().is_none())?;
+    if *req.family == egui::FontFamily::Monospace {
+        return None;
+    }
+    let size = req.font_size_px;
+    let advance = size * 0.5;
+    let w = advance.ceil().max(1.0) as usize;
+    let light = (size * 0.065).round().max(1.0);
+    let heavy = (size * 0.105).round().max(light + 1.0);
+    let axis = -size * 0.26;
+    // Rows (top, height) of one half's weight, relative to the baseline.
+    let bands = |weight: u8| -> Vec<(f32, f32)> {
+        match weight {
+            0 => vec![],
+            2 => vec![((axis - heavy / 2.0).round(), heavy)],
+            3 => {
+                let top = (axis - 1.5 * light).round();
+                vec![(top, light), (top + 2.0 * light, light)]
+            }
+            _ => vec![((axis - light / 2.0).round(), light)],
+        }
+    };
+    let (lb, rb) = (bands(left), bands(right));
+    let top = lb.iter().chain(&rb).map(|b| b.0).fold(f32::INFINITY, f32::min);
+    let bottom = lb.iter().chain(&rb).map(|b| b.0 + b.1).fold(f32::NEG_INFINITY, f32::max);
+    let h = (bottom - top) as usize;
+    let mid = w / 2;
+    let seg = w as f32 / f32::from(dashes.max(1));
+    let gap = if dashes > 0 { (seg * 0.35).round().max(1.0) } else { 0.0 };
+    let mut image = egui::ColorImage::filled([w, h], egui::Color32::TRANSPARENT);
+    for (halves, x_range) in [(&lb, 0..mid), (&rb, mid..w)] {
+        for &(band_top, band_h) in halves.iter() {
+            let y0 = (band_top - top) as usize;
+            for x in x_range.clone() {
+                // Dashed rules: a gap at the end of each segment.
+                if gap > 0.0 && (x as f32 % seg) >= seg - gap {
+                    continue;
+                }
+                for y in y0..y0 + band_h as usize {
+                    image[(x, y)] = egui::Color32::WHITE;
+                }
+            }
+        }
+    }
+    let bitmap = egui::GlyphBitmap { image, offset_px: egui::vec2(0.0, top), is_color: false };
+    Some(egui::RasterizedGlyph { bitmap, advance_px: advance })
 }
 
 /// The "Discord font" switch: on uses the cached faces at once and fetches missing ones in the
@@ -284,4 +364,36 @@ mod tests {
             assert!(has_glyph(hit.data.bytes(), hit.data.index, c), "{c}: {}", hit.name);
         }
     }
+
+    #[test]
+    fn box_rules_draw_continuous_runs() {
+        use egui::epaint::text::{FontDefinitions, Fonts, LayoutJob, TextFormat, TextOptions};
+        let rules = egui::GlyphRasterizer::new("test::box_rules", box_rule).with_priority(egui::FontPriority::Highest);
+        let mut fonts = Fonts::new(TextOptions::default(), FontDefinitions::default()).with_glyph_rasterizer(rules);
+        for ppp in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for size in [11.0, 12.5, 14.0, 16.0] {
+                let mut job = LayoutJob::default();
+                job.append("\u{bb}\u{2501}\u{2501}\u{2501}\u{2500}\u{2500}\u{2550}\u{2550}", 0.0, TextFormat::simple(egui::FontId::proportional(size), egui::Color32::WHITE));
+                let g = fonts.with_pixels_per_point(ppp).layout_job(job);
+                let ink: Vec<(f32, f32)> = g.rows[0].glyphs[1..].iter().map(|gl| (gl.pos.x + gl.uv_rect.offset.x, gl.pos.x + gl.uv_rect.offset.x + gl.uv_rect.size.x)).collect();
+                for pair in ink.windows(2) {
+                    assert!(pair[0].1 >= pair[1].0 - 1e-3, "gap at ppp {ppp}, size {size}: {ink:?}");
+                }
+            }
+        }
+        // Not a rule, more than one character, or monospace (code-block trees): the fonts draw it.
+        let req = |cluster: &'static str, family: &'static egui::FontFamily| egui::GlyphRasterizerRequest { cluster, family, font_size_px: 17.5, subpixel_offset_px: 0.0 };
+        assert!(box_rule(&req("a", &egui::FontFamily::Proportional)).is_none());
+        assert!(box_rule(&req("\u{2502}", &egui::FontFamily::Proportional)).is_none());
+        assert!(box_rule(&req("\u{2500}\u{301}", &egui::FontFamily::Proportional)).is_none());
+        assert!(box_rule(&req("\u{2500}", &egui::FontFamily::Monospace)).is_none());
+        // Heavy is thicker than light; the double rule is two lines.
+        let rows = |c: &'static str| {
+            let g = box_rule(&req(c, &egui::FontFamily::Proportional)).unwrap().bitmap.image;
+            (0..g.size[1]).filter(|&y| g[(0, y)].a() > 0).count()
+        };
+        assert!(rows("\u{2501}") > rows("\u{2500}"));
+        assert_eq!(rows("\u{2550}"), 2 * rows("\u{2500}"));
+    }
 }
+

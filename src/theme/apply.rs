@@ -221,7 +221,8 @@ pub fn medium_family() -> FontFamily {
 }
 
 /// Box drawing (U+2500-257F) in decorated names (`append_boxed`): the text faces without gg sans,
-/// whose rules are dashes shorter than their advance, so `━━━` would draw gapped.
+/// whose box glyphs are shorter than their advance, so Segoe UI Symbol's corners and bars draw
+/// them. (Horizontal rules like `━━━` are drawn in every family by `fonts::box_rule`.)
 pub fn box_family() -> FontFamily {
     FontFamily::Name("rc-box".into())
 }
