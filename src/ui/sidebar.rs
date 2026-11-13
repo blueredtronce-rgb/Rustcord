@@ -1507,8 +1507,9 @@ fn dm_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
     if let Some(np) = &fx.nameplate {
         let (radius, plate_rect, end) = (cx.theme.layout.corner_radius.round() as u8, row.shrink2(vec2(ROW_INSET, 0.0)), text_end.max(name_rect.right() + chip_w));
         let shape = super::cosmetics::nameplate(ui, cx.images, plate_rect, np, fx_anim, muted, radius, end);
-        // Dark themes: a scrim keeps the status line off the art's bright spots.
-        let scrim = (ui.visuals().dark_mode && !muted).then(|| super::cosmetics::plate_scrim(plate_rect, radius, chip_under, end, crate::theme::is_high_contrast(&cx.theme.colors)));
+        // A scrim keeps the name and status line off the plate: the art's bright spots (dark
+        // themes), the palette tint under coloured names (light themes).
+        let scrim = (!muted).then(|| super::cosmetics::plate_scrim(plate_rect, radius, chip_under, end, crate::theme::is_high_contrast(&cx.theme.colors)));
         ui.painter().set(plate, Shape::Vec(std::iter::once(shape).chain(scrim).collect()));
     }
     if let Some(pg) = &tag {
@@ -1808,7 +1809,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
         let end = name_end.max(sub.right());
         let shape = super::cosmetics::nameplate_cover(ui, cx.images, rect, np, fx_anim, corners, base, end);
         // High Contrast: the panel colour stays opaque behind the text.
-        let strong = (crate::theme::is_high_contrast(&c) && !matches!(shape, Shape::Noop)).then(|| super::cosmetics::plate_scrim(rect, PANEL_R, base, end, true));
+        let strong = (crate::theme::is_high_contrast(&c) && !matches!(shape, Shape::Noop)).then(|| super::cosmetics::plate_scrim(rect, corners, base, end, true));
         ui.painter().set(cover, Shape::Vec(std::iter::once(shape).chain(strong).collect()));
     }
 
@@ -1834,6 +1835,12 @@ pub(super) fn toggle_voice(mute: bool, deaf: bool, mic: bool) -> (bool, bool) {
     }
 }
 
+/// Hover pill of the user panel's buttons: on the plain panel a 6 % text tint; mostly opaque
+/// panel colour, so on a bright nameplate it still shows and keeps the glyph readable.
+pub(crate) fn pill_fill(c: &ThemeColors) -> Color32 {
+    user_panel_fill(c).lerp_to_gamma(c.text.to_color32(), 0.08).gamma_multiply(0.75)
+}
+
 /// Resting glyph colour of the user panel's buttons: near the text colour like Discord's, so the
 /// icons stay readable on a bright nameplate.
 fn panel_icon_rest(c: &ThemeColors) -> Color32 {
@@ -1848,7 +1855,10 @@ fn panel_button(ui: &mut egui::Ui, theme: &Theme, rect: Rect, icon: Icon, tip: &
     let resp = ui.interact(rect, ui.make_persistent_id(("panel_button", icon as u8)), Sense::click());
     let hot = on || resp.hovered() || resp.has_focus();
     if hot {
-        ui.painter().rect_filled(rect, CornerRadius::from(theme.layout.corner_radius), c.text.to_color32().gamma_multiply(0.08));
+        // As bright as a hovered half of the microphone / headphones pill.
+        let r = CornerRadius::from(theme.layout.corner_radius.clamp(0.0, 16.0));
+        ui.painter().rect_filled(rect, r, pill_fill(c));
+        ui.painter().rect_filled(rect, r, c.text.to_color32().gamma_multiply(0.06));
     }
     let color = if slashed {
         c.danger.to_color32()
@@ -1881,7 +1891,7 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
     }
     // Discord: one pill around icon and ∨ while either is hovered, the hovered half brighter.
     if hot || more_hot {
-        p.rect_filled(group, r, c.text.to_color32().gamma_multiply(0.06));
+        p.rect_filled(group, r, pill_fill(&c));
         let (half, corners) = if hot { (button, CornerRadius { nw: r, sw: r, ..CornerRadius::ZERO }) } else { (chevron, CornerRadius { ne: r, se: r, ..CornerRadius::ZERO }) };
         p.rect_filled(half, corners, c.text.to_color32().gamma_multiply(0.06));
     }

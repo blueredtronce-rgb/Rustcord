@@ -196,29 +196,31 @@ fn faded_tex(tex: SizedTexture, r: Rect, uv: Rect, corners: CornerRadius, text_e
     Shape::mesh(mesh)
 }
 
-/// Discord's scrim between a dark row's nameplate art and its text: `bg` (the row's colour) at
+/// Discord's scrim between a row's nameplate and its text: `bg` (the row's colour) at
 /// 70 % (`strong`, High Contrast: opaque) under the text, up to 8 px past its end (`text_end`),
 /// clear 40 px later (at least over the left 60 %), so lit spots of the art never sit under the
-/// status line. One strip mesh over `row` with `radius` corners.
-pub fn plate_scrim(row: Rect, radius: u8, bg: Color32, text_end: f32, strong: bool) -> Shape {
+/// status line. One strip mesh over `row` with `corners` (one radius, or per corner: the user
+/// panel under the voice section).
+pub fn plate_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, text_end: f32, strong: bool) -> Shape {
+    let c: CornerRadius = corners.into();
     let x0 = text_end + 8.0;
     let x1 = (x0 + 40.0).max(row.left() + row.width() * 0.6);
     let peak = if strong { 1.0 } else { 0.7 };
-    let rad = f32::from(radius).min(row.height() / 2.0);
-    // How far the rounded corners cut into the top / bottom edge at `x`.
-    let inset = |x: f32| {
-        let d = (row.left() + rad - x).max(x - (row.right() - rad));
-        if d > 0.0 { rad - (rad * rad - d * d).max(0.0).sqrt() } else { 0.0 }
-    };
-    let arc = (0..=8).map(|i| rad * (1.0 - (i as f32 * std::f32::consts::FRAC_PI_2 / 8.0).cos()));
-    let mut xs: Vec<f32> = arc.clone().map(|d| row.left() + d).chain(arc.map(|d| row.right() - d)).chain([x0, x1]).filter(|x| row.x_range().contains(*x)).collect();
+    let rad = |v: u8| f32::from(v).min(row.height() / 2.0);
+    // How far a corner of radius `r` cuts into the edge `d` px inside its quarter.
+    let cut = |r: f32, d: f32| if d > 0.0 { r - (r * r - d * d).max(0.0).sqrt() } else { 0.0 };
+    let inset = |x: f32, left: u8, right: u8| cut(rad(left), row.left() + rad(left) - x).max(cut(rad(right), x - (row.right() - rad(right))));
+    let arc = |v: u8| (0..=8).map(move |i| rad(v) * (1.0 - (i as f32 * std::f32::consts::FRAC_PI_2 / 8.0).cos()));
+    let lefts = arc(c.nw).chain(arc(c.sw)).map(|d| row.left() + d);
+    let rights = arc(c.ne).chain(arc(c.se)).map(|d| row.right() - d);
+    let mut xs: Vec<f32> = lefts.chain(rights).chain([x0, x1]).filter(|x| row.x_range().contains(*x)).collect();
     xs.sort_by(f32::total_cmp);
     xs.dedup();
     let mut mesh = egui::Mesh::default();
     for (i, &x) in xs.iter().enumerate() {
         let color = bg.gamma_multiply(peak * (1.0 - egui::remap_clamp(x, x0..=x1.max(x0 + 1.0), 0.0..=1.0)));
-        mesh.colored_vertex(pos2(x, row.top() + inset(x)), color);
-        mesh.colored_vertex(pos2(x, row.bottom() - inset(x)), color);
+        mesh.colored_vertex(pos2(x, row.top() + inset(x, c.nw, c.ne)), color);
+        mesh.colored_vertex(pos2(x, row.bottom() - inset(x, c.sw, c.se)), color);
         if i > 0 {
             let k = 2 * i as u32;
             mesh.add_triangle(k - 2, k - 1, k);
@@ -245,9 +247,10 @@ fn h_gradient(rect: Rect, radius: CornerRadius, left: Color32, right: Color32) -
 
 /// My nameplate as the background of the whole user panel (`rect`, `radius` corners), like
 /// Discord's, as a shape for a slot over the panel's fill: the 16:3 art cover-cropped, animated
-/// while `animate`. Dark themes: under a veil of the panel colour `veil` (strong behind the name
-/// on the left, light on the right). Light themes: faded in after the text (`text_end`), at 42 %
-/// so the dark buttons on it keep ≥ 3:1. Noop while the art is not loaded (plain fill).
+/// while `animate`. Dark themes: under a light veil of the panel colour `veil` (20 %, for the
+/// buttons on the right) and the rows' scrim behind the name and status (`plate_scrim`). Light
+/// themes: faded in after the text (`text_end`), at 42 % so the dark buttons on it keep ≥ 3:1.
+/// Noop while the art is not loaded (plain fill).
 #[allow(clippy::too_many_arguments, reason = "the panel's geometry and state")]
 pub fn nameplate_cover(ui: &egui::Ui, images: &mut ImageCache, rect: Rect, np: &Nameplate, animate: bool, radius: CornerRadius, veil: Color32, text_end: f32) -> Shape {
     let Some(url) = cdn::nameplate_url(&np.asset, animate) else { return Shape::Noop };
@@ -257,7 +260,8 @@ pub fn nameplate_cover(ui: &egui::Ui, images: &mut ImageCache, rect: Rect, np: &
         return faded_tex(tex, rect, uv, radius, text_end, 0.42);
     }
     let art = RectShape::filled(rect, radius, Color32::WHITE).with_texture(tex.id, uv);
-    Shape::Vec(vec![art.into(), h_gradient(rect, radius, veil.gamma_multiply(0.72), veil.gamma_multiply(0.2)).into()])
+    let light = RectShape::filled(rect, radius, veil.gamma_multiply(0.2));
+    Shape::Vec(vec![art.into(), light.into(), plate_scrim(rect, radius, veil, text_end, false)])
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,6 +1081,23 @@ mod tests {
         // No text (a shop tile): the whole art.
         let Shape::Mesh(m) = faded_tex(tex, r, full, CornerRadius::ZERO, f32::NEG_INFINITY, 1.0) else { panic!() };
         assert!(m.vertices.iter().all(|v| v.color.a() == 255));
+    }
+
+    #[test]
+    fn scrim_follows_each_corner_and_clears_after_the_text() {
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 44.0));
+        // The user panel under the voice section: square top, rounded bottom corners.
+        let Shape::Mesh(m) = plate_scrim(r, CornerRadius { sw: 8, se: 8, ..CornerRadius::ZERO }, Color32::BLACK, 100.0, false) else { panic!() };
+        let left: Vec<f32> = m.vertices.iter().filter(|v| v.pos.x == 0.0).map(|v| v.pos.y).collect();
+        assert_eq!(left, [0.0, 36.0]);
+        for v in &m.vertices {
+            assert!(r.expand(0.01).contains(v.pos), "{:?}", v.pos);
+            if v.pos.x <= 108.0 {
+                assert_eq!(v.color.a(), Color32::BLACK.gamma_multiply(0.7).a(), "under the text");
+            } else if v.pos.x >= 148.0 {
+                assert_eq!(v.color.a(), 0, "clear past the fade");
+            }
+        }
     }
 
     #[test]
