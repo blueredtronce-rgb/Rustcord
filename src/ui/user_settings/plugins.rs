@@ -142,16 +142,31 @@ fn text_rules(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
     use crate::plugins::compose::{Rule, rules, rules_value};
     let mut list = rules();
     let (mut changed, mut store, mut remove) = (false, false, None);
+    let gap = ui.spacing().item_spacing.x;
+    let w = ((ui.available_width() - 48.0 - 3.0 * gap) / 2.0).max(60.0);
+    if !list.is_empty() {
+        // Column labels over the two fields.
+        let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), egui::Sense::hover());
+        for (k, t) in ["FIND", "REPLACE WITH"].into_iter().enumerate() {
+            ui.painter().text(egui::pos2(head.left() + k as f32 * (w + gap), head.center().y), egui::Align2::LEFT_CENTER, t, bold(pal.size - 2.5), pal.muted);
+        }
+    }
+    let on_text = cx.theme.colors.accent_text.to_color32();
     for (i, r) in list.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            let w = ((ui.available_width() - 48.0 - 3.0 * ui.spacing().item_spacing.x) / 2.0).max(60.0);
             for (k, (text, hint_text)) in [(&mut r.find, "Find"), (&mut r.replace, "Replace with")].into_iter().enumerate() {
                 let resp = ui.add(TextEdit::singleline(text).id_salt(("rc_text_rule", i, k)).hint_text(hint_text).desired_width(w));
                 changed |= resp.changed();
                 store |= resp.lost_focus();
             }
-            let tip = if r.case { "Case-sensitive" } else { "Ignores case" };
-            if icon_button(ui, pal, "Aa", tip, 24.0, r.case, pal.text).clicked() {
+            let tip = if r.case { "Match case: on" } else { "Match case: off" };
+            let aa = icon_button(ui, pal, "Aa", tip, 24.0, r.case, pal.text);
+            if r.case {
+                // On: an accent chip, so on and off read apart at a glance.
+                ui.painter().rect_filled(aa.rect, pal.radius, pal.accent);
+                ui.painter().text(aa.rect.center(), egui::Align2::CENTER_CENTER, "Aa", egui::FontId::new(16.0, crate::theme::icon_family()), on_text);
+            }
+            if aa.clicked() {
                 r.case = !r.case;
                 (changed, store) = (true, true);
             }
