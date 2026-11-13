@@ -38,10 +38,11 @@ pub enum GatewayCommand {
     /// through the send limiter, and a pending one survives a reconnect.
     UpdateVoiceState { guild_id: Option<Id>, channel_id: Option<Id>, self_mute: bool, self_deaf: bool, self_video: bool },
     /// Op 3 for this session (FEATURES_NOTES §1.3): `status`, `since` 0 (idle: unix ms now),
-    /// `afk` false, and the **full** activity list, i.e. the current custom status (type 4)
+    /// `afk` (true only for an automatic idle, like the official auto-idle, so mobile pushes go
+    /// on), and the **full** activity list, i.e. the current custom status (type 4)
     /// that the gateway keeps from READY / USER_SETTINGS_UPDATE, so op 3 never wipes it.
     /// Max 5 per 20 s: debounced, newest wins, through the send limiter; survives a reconnect.
-    UpdatePresence { status: UserStatus },
+    UpdatePresence { status: UserStatus, afk: bool },
     /// Op 8 with `query` (§1.7): `{"guild_id":["<g>"],"query","limit","presences":false,
     /// "nonce"}` (nonce ≤ 32 bytes, kept with (guild, query) in a small bounded map). Debounced
     /// per guild (~600 ms, newest query wins). GUILD_MEMBERS_CHUNK with that nonce ->
@@ -52,6 +53,12 @@ pub enum GatewayCommand {
     /// `MAX_STREAM_OPS`, oldest dropped), sent through the send limiter, dropped on a re-identify.
     /// STREAM_* answers go to the voice module.
     Stream(StreamOp),
+    /// A token-rotating request (password / 2FA change) is on its way: a close 4004 within the
+    /// next `TOKEN_WAIT` waits for `SetToken` instead of logging out.
+    ExpectToken,
+    /// The rotated token: kept for every later IDENTIFY / RESUME; a live connection closes and
+    /// re-identifies with it at once.
+    SetToken(Token),
     /// Close the connection (code 1000) and end the task.
     Shutdown,
 }

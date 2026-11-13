@@ -271,8 +271,9 @@ struct Gateway {
     /// from SESSIONS_REPLACE or our own op 3: the baseline for "changed on another client".
     settings_status: Option<UserStatus>,
     settings_custom: Option<Option<CustomStatus>>,
-    /// Op 3 not sent yet (newest wins).
+    /// Op 3 not sent yet (newest wins), and its `afk`.
     want_presence: Option<UserStatus>,
+    afk: bool,
     presence_limiter: SendLimiter,
     /// Op 8 not sent yet (newest wins), and sent ones awaiting their chunks (oldest first).
     want_members: Option<MemberQuery>,
@@ -280,7 +281,12 @@ struct Gateway {
     next_nonce: u32,
     /// Go Live op payloads not sent yet, in order.
     want_stream: VecDeque<String>,
+    /// `ExpectToken`: until then a close 4004 waits for the rotated token (`SetToken`).
+    token_due: Option<Instant>,
 }
+
+/// How long after `ExpectToken` a 4004 waits for the new token (the REST timeout plus slack).
+const TOKEN_WAIT: Duration = Duration::from_secs(40);
 
 pub(super) async fn run(
     token: Token,
@@ -292,7 +298,16 @@ pub(super) async fn run(
     let mut gw = Gateway::new(token, props, sink, voice, cmds);
     loop {
         gw.sink.send(BackendEvent::Conn(ConnState::Connecting));
-        let min_wait = match gw.connect_once().await.limit_identifies(gw.identifies_without_ready) {
+        let end = match gw.connect_once().await.limit_identifies(gw.identifies_without_ready) {
+            // A password / 2FA change ended the old token before its successor arrived.
+            End::AuthFailed if gw.token_due.is_some() => match gw.await_token().await {
+                Some(true) => End::Reconnect { resume: false, min_wait: Duration::ZERO },
+                Some(false) => End::AuthFailed,
+                None => End::Shutdown,
+            },
+            end => end,
+        };
+        let min_wait = match end {
             End::Shutdown => return,
             End::AuthFailed => {
                 gw.sink.send(BackendEvent::Conn(ConnState::Offline));
@@ -350,11 +365,29 @@ impl Gateway {
             settings_status: None,
             settings_custom: None,
             want_presence: None,
+            afk: false,
             presence_limiter: SendLimiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
             want_members: None,
             member_requests: VecDeque::new(),
             next_nonce: 0,
             want_stream: VecDeque::new(),
+            token_due: None,
+        }
+    }
+
+    /// After a 4004 while a rotated token is expected: Some(true) once `SetToken` arrived,
+    /// Some(false) if it did not in time, None on shutdown.
+    async fn await_token(&mut self) -> Option<bool> {
+        let until = self.token_due.take()?;
+        let old = self.token.clone();
+        loop {
+            if self.token != old {
+                return Some(true);
+            }
+            tokio::select! {
+                _ = sleep_until(until) => return Some(false),
+                cmd = self.cmds.recv() => if !self.note_cmd(cmd) { return None },
+            }
         }
     }
 
@@ -380,8 +413,8 @@ impl Gateway {
                 self.want_voice = Some(voice_state_payload(guild_id, channel_id, self_mute, self_deaf, self_video));
                 true
             }
-            Some(GatewayCommand::UpdatePresence { status }) => {
-                self.want_presence = Some(status);
+            Some(GatewayCommand::UpdatePresence { status, afk }) => {
+                (self.want_presence, self.afk) = (Some(status), afk);
                 true
             }
             Some(GatewayCommand::RequestMembers { guild_id, query, limit }) => {
@@ -400,6 +433,14 @@ impl Gateway {
                     self.want_stream.pop_front();
                 }
                 self.want_stream.push_back(super::stream::payload(&op));
+                true
+            }
+            Some(GatewayCommand::ExpectToken) => {
+                self.token_due = Some(Instant::now() + TOKEN_WAIT);
+                true
+            }
+            Some(GatewayCommand::SetToken(token)) => {
+                (self.token, self.token_due) = (token, None);
                 true
             }
             Some(GatewayCommand::Shutdown) | None => false,
@@ -542,7 +583,13 @@ impl Gateway {
                         Some(GatewayCommand::UpdateVoiceState { .. }) => VOICE_DEBOUNCE,
                         Some(GatewayCommand::UpdatePresence { .. }) => PRESENCE_DEBOUNCE,
                         Some(GatewayCommand::RequestMembers { .. }) => MEMBERS_DEBOUNCE,
-                        Some(GatewayCommand::Stream(_)) => Duration::ZERO,
+                        Some(GatewayCommand::Stream(_) | GatewayCommand::ExpectToken) => Duration::ZERO,
+                        Some(GatewayCommand::SetToken(_)) => {
+                            // The old token is void: a fresh IDENTIFY with the new one.
+                            self.note_cmd(cmd);
+                            link.close(1000).await;
+                            return End::Reconnect { resume: false, min_wait: Duration::ZERO };
+                        }
                         Some(GatewayCommand::Shutdown) | None => {
                             link.close(1000).await;
                             return End::Shutdown;
@@ -765,7 +812,7 @@ impl Gateway {
         }
         self.emit_status();
         (follow && changed).then(|| {
-            self.want_presence = Some(self.my_status);
+            (self.want_presence, self.afk) = (Some(self.my_status), false);
             Instant::now() + PRESENCE_DEBOUNCE
         })
     }
@@ -826,7 +873,7 @@ impl Gateway {
         }
         // The UI hears of a dropped custom status with the `emit_status` after the send.
         self.drop_expired_custom(chrono::Utc::now());
-        match link.send(presence_payload(status, self.my_custom.as_ref(), unix_ms()), false).await {
+        match link.send(presence_payload(status, self.afk, self.my_custom.as_ref(), unix_ms()), false).await {
             Ok(()) => {
                 self.want_presence = None;
                 self.my_status = status;
@@ -962,7 +1009,7 @@ fn voice_state_payload(guild_id: Option<Id>, channel_id: Option<Id>, self_mute: 
 
 /// Op 3 (FEATURES_NOTES §1.3). It replaces the session's activity list, so the custom status
 /// (type 4) goes along. `since` = when idle started (unix ms), else 0.
-fn presence_payload(status: UserStatus, custom: Option<&CustomStatus>, now_ms: u64) -> String {
+fn presence_payload(status: UserStatus, afk: bool, custom: Option<&CustomStatus>, now_ms: u64) -> String {
     let activities: Vec<serde_json::Value> = custom
         .map(|c| {
             let mut a = json!({"type": 4, "name": "Custom Status"});
@@ -980,7 +1027,7 @@ fn presence_payload(status: UserStatus, custom: Option<&CustomStatus>, now_ms: u
         .into_iter()
         .collect();
     let since = if status == UserStatus::Idle { now_ms } else { 0 };
-    json!({"op": 3, "d": {"status": status.as_str(), "since": since, "activities": activities, "afk": false}}).to_string()
+    json!({"op": 3, "d": {"status": status.as_str(), "since": since, "activities": activities, "afk": afk}}).to_string()
 }
 
 /// Op 8 with `query` (§1.7); never presences.
@@ -1036,20 +1083,38 @@ mod tests {
         (Gateway::new(token, props, sink, voice, mpsc::unbounded_channel().1), rx)
     }
 
+    #[tokio::test]
+    async fn a_rotated_token_answers_a_4004_while_expected() {
+        let (mut gw, _rx) = gateway();
+        let (tx, cmds) = mpsc::unbounded_channel();
+        gw.cmds = cmds;
+        let new = Token::parse(&"n".repeat(30)).unwrap();
+        assert!(gw.note_cmd(Some(GatewayCommand::ExpectToken)));
+        tx.send(GatewayCommand::SetToken(new.clone())).unwrap();
+        assert_eq!(gw.await_token().await, Some(true));
+        assert!(gw.token == new && gw.token_due.is_none());
+        // Expected but never sent in time: the 4004 stands.
+        gw.token_due = Some(Instant::now());
+        assert_eq!(gw.await_token().await, Some(false));
+        gw.token_due = Some(Instant::now() + TOKEN_WAIT);
+        tx.send(GatewayCommand::Shutdown).unwrap();
+        assert_eq!(gw.await_token().await, None);
+    }
+
     #[test]
     fn presence_and_members_payloads() {
         let v = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap();
         let custom = CustomStatus { text: Some("brb".into()), emoji: Some(crate::model::Emoji { name: Some("🍕".into()), ..Default::default() }) };
         assert_eq!(
-            v(presence_payload(UserStatus::Dnd, Some(&custom), 5)),
+            v(presence_payload(UserStatus::Dnd, false, Some(&custom), 5)),
             json!({"op":3,"d":{"status":"dnd","since":0,"afk":false,"activities":[
                 {"type":4,"name":"Custom Status","state":"brb","emoji":{"name":"🍕"}}]}})
         );
         let custom = CustomStatus { text: None, emoji: Some(crate::model::Emoji { id: Some(Id(9)), name: Some("pepe".into()), animated: true }) };
-        let idle = v(presence_payload(UserStatus::Idle, Some(&custom), 1_700_000_000_000));
-        assert_eq!((&idle["d"]["since"], &idle["d"]["status"]), (&json!(1_700_000_000_000u64), &json!("idle")));
+        let idle = v(presence_payload(UserStatus::Idle, true, Some(&custom), 1_700_000_000_000));
+        assert_eq!((&idle["d"]["since"], &idle["d"]["status"], &idle["d"]["afk"]), (&json!(1_700_000_000_000u64), &json!("idle"), &json!(true)));
         assert_eq!(idle["d"]["activities"][0], json!({"type":4,"name":"Custom Status","emoji":{"id":"9","name":"pepe","animated":true}}));
-        assert_eq!(v(presence_payload(UserStatus::Invisible, None, 5))["d"]["activities"], json!([]));
+        assert_eq!(v(presence_payload(UserStatus::Invisible, false, None, 5))["d"]["activities"], json!([]));
 
         let q = MemberQuery { guild_id: Id(10), query: "ab".into(), limit: 50, due: Instant::now(), retried: false };
         assert_eq!(
@@ -1155,7 +1220,12 @@ mod tests {
         assert!(gw.on_status(settings(Some(UserStatus::Dnd), None), true).is_some());
         assert_eq!(gw.want_presence, Some(UserStatus::Dnd));
         // The user's choice is kept until sent.
-        gw.note_cmd(Some(GatewayCommand::UpdatePresence { status: UserStatus::Invisible }));
+        gw.note_cmd(Some(GatewayCommand::UpdatePresence { status: UserStatus::Idle, afk: true }));
+        assert_eq!((gw.want_presence, gw.afk), (Some(UserStatus::Idle), true));
+        // A follow is never afk.
+        assert!(gw.on_status(settings(Some(UserStatus::Online), None), true).is_some());
+        assert!(!gw.afk);
+        gw.note_cmd(Some(GatewayCommand::UpdatePresence { status: UserStatus::Invisible, afk: false }));
         assert_eq!(gw.want_presence, Some(UserStatus::Invisible));
     }
 
