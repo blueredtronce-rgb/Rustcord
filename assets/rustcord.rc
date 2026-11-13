@@ -1,0 +1,2 @@
+// Icon resource id 1: exe icon in Explorer and the tray icon (notify.rs loads id 1).
+1 ICON "rustcord.ico"

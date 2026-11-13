@@ -1,0 +1,55 @@
+//! Renders the logo SVG to PNGs and a multi-size Windows .ico.
+//!
+//!     cargo run --example export_icons [-- path/to/logo.svg [out_dir]]
+//!
+//! Sizes <= 32 px use `logo-small.svg` when it exists next to the main SVG (a simplified mark
+//! that stays legible at tiny sizes).
+
+use resvg::{tiny_skia, usvg};
+use std::path::{Path, PathBuf};
+
+const PNG_SIZES: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
+const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let svg = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("assets/logo.svg"));
+    let out = PathBuf::from(args.get(2).map(String::as_str).unwrap_or("assets"));
+    let small = svg.with_file_name("logo-small.svg");
+
+    let big_tree = load(&svg)?;
+    let small_tree = if small.exists() { Some(load(&small)?) } else { None };
+    let tree_for = |size: u32| if size <= 32 { small_tree.as_ref().unwrap_or(&big_tree) } else { &big_tree };
+
+    std::fs::create_dir_all(out.join("icons"))?;
+    for size in PNG_SIZES {
+        let rgba = render(tree_for(size), size)?;
+        let path = out.join("icons").join(format!("rustcord-{size}.png"));
+        image::save_buffer(&path, &rgba, size, size, image::ExtendedColorType::Rgba8)?;
+        println!("wrote {}", path.display());
+    }
+
+    let mut frames = Vec::new();
+    for size in ICO_SIZES {
+        let rgba = render(tree_for(size), size)?;
+        frames.push(image::codecs::ico::IcoFrame::as_png(&rgba, size, size, image::ExtendedColorType::Rgba8)?);
+    }
+    let ico_path = out.join("rustcord.ico");
+    image::codecs::ico::IcoEncoder::new(std::fs::File::create(&ico_path)?).encode_images(&frames)?;
+    println!("wrote {}", ico_path.display());
+    Ok(())
+}
+
+fn load(path: &Path) -> Result<usvg::Tree, Box<dyn std::error::Error>> {
+    let data = std::fs::read(path)?;
+    Ok(usvg::Tree::from_data(&data, &usvg::Options::default())?)
+}
+
+/// Straight (non-premultiplied) RGBA, `size` x `size`.
+fn render(tree: &usvg::Tree, size: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut pixmap = tiny_skia::Pixmap::new(size, size).ok_or("bad size")?;
+    let s = tree.size();
+    let scale = size as f32 / s.width().max(s.height());
+    resvg::render(tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    Ok(pixmap.take_demultiplied())
+}

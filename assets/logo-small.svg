@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+<linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="512">
+<stop offset="0" stop-color="#3B2E28"/><stop offset="1" stop-color="#241C18"/>
+</linearGradient>
+<linearGradient id="ember" gradientUnits="userSpaceOnUse" x1="101" y1="91" x2="399" y2="412">
+<stop offset="0" stop-color="#FFA24A"/><stop offset="0.55" stop-color="#FF5A2E"/><stop offset="1" stop-color="#E8403F"/>
+</linearGradient>
+</defs>
+<rect width="512" height="512" rx="112.64" fill="url(#tile)"/>
+<rect x="16" y="16" width="480" height="480" rx="96.64" fill="none" stroke="#000000" stroke-opacity="0.35" stroke-width="32"/>
+<path fill="url(#ember)" fill-rule="evenodd" d="M180.56 90.88H301.49A79.07 79.07 0 0 1 380.56 169.95V204.84A79.07 79.07 0 0 1 360.25 257.75A270.26 270.26 0 0 0 397.29 394.31A11.63 11.63 0 0 1 387.26 411.81H385.21A127.91 127.91 0 0 1 257.3 283.91H224.74A25.58 25.58 0 0 0 199.16 309.49V386.23A25.58 25.58 0 0 1 173.58 411.81H127.07A25.58 25.58 0 0 1 101.49 386.23V169.95A79.07 79.07 0 0 1 180.56 90.88ZM224.74 153.67A25.58 25.58 0 0 0 199.16 179.26V252L234.16 221.12H271.26A25.58 25.58 0 0 0 296.84 195.53V179.26A25.58 25.58 0 0 0 271.26 153.67Z"/>
+</svg>
