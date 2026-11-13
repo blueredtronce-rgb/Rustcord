@@ -123,7 +123,7 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>) {
         }
         ui.add_space(8.0);
         let close = egui::Button::new("Close").min_size(egui::vec2(96.0, 36.0));
-        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.add(close).clicked()).inner
+        crate::ui::dialog_footer(ui, |ui| ui.add(close).clicked())
     });
     if resp.inner || resp.should_close() {
         ctx.data_mut(|d| d.remove::<Option<Window>>(slot()));

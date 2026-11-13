@@ -1093,23 +1093,43 @@ fn confirm_dialog(ctx: &egui::Context, cx: &mut UiCx<'_>) {
 }
 
 /// Shared modal look (FEATURES_NOTES §4.9 generic modal: 442 / 602 / 800 wide, 24 px padding,
-/// dark backdrop): a bold title, then `add`. Esc or a click on the backdrop make
-/// `should_close()` true; the caller then clears its `ViewState` field. Narrow windows shrink it;
-/// short ones cap it 16 px off the window edges and scroll its contents.
+/// dark backdrop): a bold title and a × ("Close"), then `add`. Esc, the × or a click on the
+/// backdrop make `should_close()` true; the caller then clears its `ViewState` field. Narrow
+/// windows shrink it; it sits under the title bar, centred in the room left and at most that
+/// tall, `add` scrolling under the title and above `dialog_footer` / `dialog_buttons`.
 pub fn dialog<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width: f32, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+    dialog_closable(ctx, theme, salt, width, title, true, add)
+}
+
+/// `dialog` without the × while `closable` is false (busy, and Esc would not cancel it either).
+pub fn dialog_closable<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width: f32, title: &str, closable: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
     let pal = messages::Pal::new(theme);
     let frame = egui::Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(egui::Margin::same(24));
     let width = width.min(ctx.content_rect().width() - 80.0).max(200.0);
-    // shortcut: the buttons scroll with the body (they sit inside `add`); pinning them needs a split API.
-    let max_h = (ctx.content_rect().height() - 32.0 - 48.0).max(120.0);
-    egui::Modal::new(egui::Id::unique(salt)).frame(frame).show(ctx, |ui| {
+    // 12 px under the title bar and above the window bottom (as the profile modal), centred there.
+    let max_h = (ctx.content_rect().height() - TITLE_BAR_H - 24.0 - 48.0).max(120.0);
+    let id = egui::Id::unique(salt);
+    let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, TITLE_BAR_H / 2.0));
+    egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
         ui.set_width(width);
         // An area's ui is only as tall as last frame's contents; the scroll area takes its height
         // from it, so without this the dialog could never grow.
         ui.set_max_height(max_h);
-        egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
+        ui.spacing_mut().item_spacing.y = 8.0;
+        let corner = ui.max_rect().right_top();
+        ui.scope(|ui| {
+            ui.set_max_width(width - 36.0);
             ui.label(egui::RichText::new(title).font(bold(pal.size + 5.0)).color(pal.text));
+        });
+        let x = egui::Rect::from_min_size(corner - egui::vec2(28.0, 0.0), egui::Vec2::splat(28.0));
+        if closable && messages::icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(x)), &pal, "×", "Close", 28.0, false, pal.text).clicked() {
+            ui.close_kind(egui::UiKind::Modal);
+        }
+        // No fade: it would dim the pinned buttons. Scroll areas inside `add` keep theirs.
+        let fade = ui.spacing().scroll.fade;
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+        egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().scroll.fade = fade;
             add(ui)
         })
         .inner
@@ -1127,8 +1147,7 @@ pub fn dialog_buttons(ui: &mut egui::Ui, theme: &Theme, action: &str, danger: bo
     let c = &theme.colors;
     let (fill, text) = if danger { (c.danger.to_color32(), egui::Color32::WHITE) } else { (c.accent.to_color32(), c.accent_text.to_color32()) };
     ui.add_space(8.0);
-    // Fixed height: `with_layout` would take all the height left, and a modal keeps its largest size.
-    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    dialog_footer(ui, |ui| {
         let go = egui::Button::new(egui::RichText::new(action).color(text)).fill(fill).min_size(egui::vec2(96.0, 36.0));
         if ui.add_enabled(enabled, go).clicked() {
             return Some(true);
@@ -1136,7 +1155,23 @@ pub fn dialog_buttons(ui: &mut egui::Ui, theme: &Theme, action: &str, danger: bo
         let cancel = egui::Button::new("Cancel").frame(false).min_size(egui::vec2(72.0, 36.0));
         ui.add(cancel).clicked().then_some(false)
     })
-    .inner
+}
+
+/// A dialog's last row, 36 px, right to left. While the body scrolls it stays at the dialog's
+/// bottom (sticky), over the body scrolled under it, so its buttons are always in sight.
+pub fn dialog_footer<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let (natural, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+    let rect = natural.translate(egui::vec2(0.0, (ui.clip_rect().bottom() - natural.bottom()).min(0.0)));
+    if rect != natural {
+        let cover = rect.with_min_y(rect.top() - 8.0);
+        ui.painter().rect_filled(cover, 0.0, ui.stack().bg_color());
+        // Discord marks an overflowing body with a line above the footer, so the cut reads as scrollable.
+        ui.painter().hline(cover.x_range(), cover.top(), ui.visuals().widgets.noninteractive.bg_stroke);
+        // Clicks there must not reach the body under it.
+        ui.interact(cover, ui.scope_id().with("rc_dialog_footer"), egui::Sense::click());
+    }
+    // A child at that spot: the cursor (and the scrolled content's size) stay as allocated above.
+    add(&mut ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center))))
 }
 
 /// Nav column width of the settings layers (192 px content + 26 px padding).

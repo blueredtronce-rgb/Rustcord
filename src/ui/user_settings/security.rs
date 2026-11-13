@@ -18,7 +18,7 @@ use crate::backend::{AccountCommand, Command, MfaPrompt, OpKind};
 use crate::model::{Id, Presence, User};
 use crate::state::account::OpState;
 use crate::ui::messages::{Pal, icon_button};
-use crate::ui::{UiCx, bold, dialog, dialog_buttons, dialog_text};
+use crate::ui::{UiCx, bold, dialog, dialog_buttons, dialog_closable, dialog_footer, dialog_text};
 use egui::emath::GuiRounding as _;
 use egui::{Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, TextEdit, Vec2, vec2};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -507,10 +507,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                 });
                 ui.add_space(8.0);
                 // Shown once: nothing to cancel, only Done.
-                ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::right_to_left(Align::Center), |ui| {
-                    ui.add(primary(&theme, "Done").min_size(vec2(96.0, 36.0))).clicked().then_some(true)
-                })
-                .inner
+                dialog_footer(ui, |ui| ui.add(primary(&theme, "Done").min_size(vec2(96.0, 36.0))).clicked().then_some(true))
             });
             if ask_regen && let Some((key, nonce)) = regen {
                 let cmd = AccountCommand::ViewBackupCodes { key: key.clone(), nonce: nonce.clone(), regenerate: true };
@@ -526,7 +523,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             let resp = dialog(&ctx, &theme, "rc_removal", 440.0, title, |ui| {
                 let what = if *delete { "Deleting your account can't be undone." } else { "A disabled account can be recovered by logging in again." };
                 dialog_text(ui, &theme, what);
-                dialog_text(ui, &theme, "Discord does this on discord.com or in its own app, after asking for your password. Rustcord opens it in your browser and sends nothing itself.");
+                dialog_text(ui, &theme, "This is done on discord.com – we'll open it in your browser.");
                 dialog_buttons(ui, &theme, "Open discord.com ↗", *delete, true)
             });
             if resp.inner == Some(true) {
@@ -649,7 +646,8 @@ pub(in crate::ui::user_settings) fn mfa_dialog(ui: &mut egui::Ui, cx: &mut UiCx<
         MfaKind::Totp | MfaKind::Sms => code.chars().filter(char::is_ascii_digit).count() == 6,
     };
     let need_sms = kind == MfaKind::Sms && prompt.sms_phone.is_none();
-    let resp = dialog(&ctx, &theme, "rc_mfa_prompt", 440.0, "Confirm it's you", |ui| {
+    // No × while busy: in flight it can't be cancelled (see below).
+    let resp = dialog_closable(&ctx, &theme, "rc_mfa_prompt", 440.0, "Confirm it's you", !prompt.busy, |ui| {
         let text = match kind {
             MfaKind::Totp => "Enter the 6-digit code from your authenticator app.".to_owned(),
             MfaKind::Backup => "Enter one of your 8-character backup codes.".to_owned(),

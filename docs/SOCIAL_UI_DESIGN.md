@@ -60,9 +60,10 @@ additive change.
   an accent button, e.g. the 80013 "accept a stranger" question. Use it for every destructive
   action: delete channel / role / emoji / invite, kick, ban (or the Moderate modal), leave
   server, remove friend, block, close / leave group.
-- Dialog look: `dialog(ctx, theme, salt, width, title, add)` (442 / 602 / 800 wide, Esc and the
-  backdrop make `should_close()` true), `dialog_text`, `dialog_buttons(ui, theme, action, danger,
-  enabled) -> Option<bool>`.
+- Dialog look: `dialog(ctx, theme, salt, width, title, add)` (442 / 602 / 800 wide, under the
+  title bar; Esc, its × and the backdrop make `should_close()` true; `dialog_closable(.., false, ..)`
+  hides the × while busy), `dialog_text`, `dialog_buttons(ui, theme, action, danger,
+  enabled) -> Option<bool>`, `dialog_footer(ui, add)` (own last row, pinned while the body scrolls).
 - Settings layers: `settings_layer(ui, cx, salt, nav, page) -> close?` (nav column, ≤ 740 px page,
   60 px tools column with the round ×), `nav_heading`, `nav_item`, `page_title`, `section`,
   `hint`.

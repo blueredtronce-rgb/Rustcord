@@ -399,11 +399,10 @@ pub fn privacy_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id) {
         }
         // Each switch is saved on its click: Done only closes (no Cancel that could not undo).
         ui.add_space(8.0);
-        ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        super::dialog_footer(ui, |ui| {
             let done = Button::new(RichText::new("Done").color(theme.colors.accent_text.to_color32())).fill(pal.accent).min_size(vec2(96.0, 36.0));
             ui.add(done).clicked()
         })
-        .inner
     });
     if let Some((top, path, value)) = write {
         let values = vec![(path, value)];
@@ -782,13 +781,6 @@ pub(super) fn error_text(ui: &mut egui::Ui, theme: &crate::theme::Theme, text: &
     ui.add(egui::Label::new(RichText::new(text).color(theme.colors.danger.to_color32()).size(theme.font.size - 1.0)).wrap().selectable(true));
 }
 
-/// Round × in a dialog's top-right corner (dialogs without a Cancel button). True when clicked.
-fn corner_close(ui: &mut egui::Ui, pal: &Pal) -> bool {
-    // Inside the dialog's scroll area: within its clip, level with the title.
-    let r = Rect::from_min_size(pos2(ui.max_rect().right() - 28.0, ui.max_rect().top()), Vec2::splat(28.0));
-    ui.scope_builder(UiBuilder::new().max_rect(r), |ui| icon_button(ui, pal, "×", "Close", 28.0, false, pal.text)).inner.clicked()
-}
-
 /// `Modal::CreateChannel`: kind (channels only), name, Private. Private sends the @everyone
 /// View Channel deny once the channel exists; the dialog waits for that.
 pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, parent_id: Option<Id>, category: bool) {
@@ -826,9 +818,7 @@ pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id
     let noun = if category { "Category" } else { "Channel" };
     let title = format!("Create {noun}");
     let short = ctx.content_rect().height() < 600.0;
-    let mut x = false;
     let resp = dialog(ctx, theme, "rc_create_channel", 460.0, &title, |ui| {
-        x = corner_close(ui, &pal);
         if let Some(p) = parent_id {
             dialog_text(ui, theme, &format!("in {}", state.channel_name(p)));
         }
@@ -882,7 +872,7 @@ pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id
     match resp.inner {
         Some(true) => send_tracked(cx, cmd),
         Some(false) if !keep => close(cx),
-        None if (x || resp.should_close()) && !keep => close(cx),
+        None if resp.should_close() && !keep => close(cx),
         _ => {}
     }
 }
@@ -965,9 +955,8 @@ pub fn invite_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, channe
     let now = ctx.input(|i| i.time);
     let m = &mut cx.view.server_menu_ui;
     let copied = m.copied.is_some_and(|t| now - t < 1.5);
-    let (mut generate, mut x) = (false, false);
+    let mut generate = false;
     let resp = dialog(ctx, theme, "rc_invite", 442.0, &format!("Invite friends to {name}"), |ui| {
-        x = corner_close(ui, &pal);
         ui.label(RichText::new(format!("# {ch}")).color(pal.muted));
         field_label(ui, theme, "Send a server invite link to a friend");
         egui::Frame::new().fill(pal.bg).corner_radius(pal.radius).inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 }).show(ui, |ui| {
@@ -1028,7 +1017,7 @@ pub fn invite_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, channe
     if generate {
         create_invite(cx, channel_id);
     }
-    if x || resp.should_close() {
+    if resp.should_close() {
         close(cx);
     }
 }
@@ -1070,9 +1059,8 @@ pub fn join_server_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
 fn start_screen(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let pal = Pal::new(cx.theme);
     let theme = &*cx.theme;
-    let (mut next, mut x) = (None, false);
+    let mut next = None;
     let resp = dialog(ctx, theme, "rc_add_server", 442.0, "Create Your Server", |ui| {
-        x = corner_close(ui, &pal);
         dialog_text(ui, theme, "Your server is where you and your friends hang out.");
         ui.add_space(8.0);
         if big_choice(ui, &pal, "🏠", "Create My Own").clicked() {
@@ -1092,7 +1080,7 @@ fn start_screen(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             m.text = cx.state.me.as_ref().map(|u| format!("{}'s server", u.display_name())).unwrap_or_default();
         }
     }
-    if x || resp.should_close() {
+    if resp.should_close() {
         close(cx);
     }
 }
@@ -1112,16 +1100,18 @@ fn big_choice(ui: &mut egui::Ui, pal: &Pal, glyph: &str, label: &str) -> egui::R
 /// Back (left) and the action (right). Some(true) = action, Some(false) = Back.
 fn back_and(ui: &mut egui::Ui, pal: &Pal, accent_text: Color32, action: &str, enabled: bool) -> Option<bool> {
     ui.add_space(8.0);
-    // A fixed-height row: a right-to-left layout would otherwise centre in all remaining height.
-    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        let back = ui.add(Button::new(RichText::new("Back").color(pal.text)).frame(false).min_size(vec2(64.0, 36.0))).clicked();
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let go = Button::new(RichText::new(action).color(accent_text)).fill(pal.accent).min_size(vec2(96.0, 36.0));
-            if ui.add_enabled(enabled, go).clicked() { Some(true) } else { back.then_some(false) }
+    // The dialog's pinned last row; Back first (left), so it comes first in the Tab order.
+    super::dialog_footer(ui, |ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let back = ui.add(Button::new(RichText::new("Back").color(pal.text)).frame(false).min_size(vec2(64.0, 36.0))).clicked();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let go = Button::new(RichText::new(action).color(accent_text)).fill(pal.accent).min_size(vec2(96.0, 36.0));
+                if ui.add_enabled(enabled, go).clicked() { Some(true) } else { back.then_some(false) }
+            })
+            .inner
         })
         .inner
     })
-    .inner
 }
 
 fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>) {
@@ -1130,9 +1120,7 @@ fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>
     let theme = &*cx.theme;
     let m = &mut cx.view.server_menu_ui;
     let busy = matches!(status, Some(OpState::Pending));
-    let mut x = false;
     let resp = dialog(ctx, theme, "rc_create_server", 442.0, "Customize Your Server", |ui| {
-        x = corner_close(ui, &pal);
         dialog_text(ui, theme, "Give it a name and an icon. You can change both later.");
         ui.add_space(8.0);
         ui.vertical_centered(|ui| {
@@ -1177,7 +1165,7 @@ fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>
             send_tracked(cx, cmd);
         }
         Some(false) => back_to_start(cx),
-        None if x || resp.should_close() => close(cx),
+        None if resp.should_close() => close(cx),
         None => {}
     }
 }
@@ -1203,9 +1191,8 @@ fn join_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>) 
     let theme = &*cx.theme;
     let images = &mut *cx.images;
     let m = &mut cx.view.server_menu_ui;
-    let (mut x, mut edited) = (false, false);
+    let mut edited = false;
     let resp = dialog(ctx, theme, "rc_join_server", 442.0, "Join a Server", |ui| {
-        x = corner_close(ui, &pal);
         dialog_text(ui, theme, "Enter an invite below to join an existing server.");
         field_label(ui, theme, "Invite Link");
         let field = ui.add_enabled(!busy, TextEdit::singleline(&mut m.text).hint_text("https://discord.gg/hTKzmak").desired_width(f32::INFINITY));
@@ -1260,7 +1247,7 @@ fn join_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>) 
             _ => {}
         },
         Some(false) => back_to_start(cx),
-        None if x || resp.should_close() => close(cx),
+        None if resp.should_close() => close(cx),
         // Another link: a failed join's error no longer applies.
         None if edited && !busy => {
             if let Some(op) = cx.view.server_menu_ui.op.take() {
