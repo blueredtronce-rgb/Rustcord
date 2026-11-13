@@ -1,0 +1,287 @@
+//! Fonts beyond the theme's own files (docs/FONTS_NOTES.md):
+//! - gg sans, Discord's UI face: fetched at runtime from discord.com into the cache dir
+//!   (`fonts/gg-sans/<hash>.woff2`, content-hashed, so a deploy's new files sit beside the old)
+//!   and decoded in memory at every start. Never bundled, converted on disk or shared (§1.4).
+//!   The first frame uses what is cached; a background thread fetches the rest once per run
+//!   and re-applies the fonts. Off (`Settings::use_discord_font`) or unavailable: Segoe UI.
+//! - the Windows fallback chain: stock fonts, memory-mapped, asked for characters no configured
+//!   face has (decorated channel / role names: box drawing, `・`, Yi, Canadian syllabics …).
+
+use super::ThemeFont;
+use egui::FontData;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+/// (weight, asset hash): regular, medium, semibold, bold. The seed of `manifest.json`, which a
+/// rediscovery rewrites when a hash stops working.
+const SEED: [(u16, &str); 4] = [(400, "66d715454104d24e"), (500, "b272b33815319bae"), (600, "2df2c3ff74408972"), (700, "189422196a4f8b53")];
+const ORIGIN: &str = "https://discord.com";
+/// A gg sans woff2 is ~40 KB.
+const MAX_WOFF2: usize = 512 * 1024;
+
+pub(super) struct Gg {
+    /// The setting.
+    on: bool,
+    /// Decoded faces by weight.
+    faces: Vec<(u16, FontData)>,
+    fetching: bool,
+    /// Bumped whenever `faces()` changes (part of `ThemeApplier`'s font key).
+    pub generation: u32,
+    /// The theme font last applied: re-applied with the faces when the download finishes.
+    pub applied: Option<ThemeFont>,
+}
+
+impl Gg {
+    /// The faces to use: none while the setting is off.
+    pub fn faces(&self) -> &[(u16, FontData)] {
+        if self.on { &self.faces } else { &[] }
+    }
+}
+
+static GG: Mutex<Gg> = Mutex::new(Gg { on: false, faces: Vec::new(), fetching: false, generation: 0, applied: None });
+
+pub(super) fn gg() -> MutexGuard<'static, Gg> {
+    GG.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Startup (before the first `ThemeApplier::apply`): the system fallback chain, and gg sans
+/// when `discord_font`.
+pub fn init_fonts(ctx: &egui::Context, discord_font: bool) {
+    #[cfg(windows)]
+    ctx.add_font_provider(std::sync::Arc::new(system_fallback));
+    set_discord_font(ctx, discord_font);
+}
+
+/// The "Discord font" switch: on uses the cached faces at once and fetches missing ones in the
+/// background (not in offline mode); off goes back to Segoe UI.
+pub fn set_discord_font(ctx: &egui::Context, on: bool) {
+    let mut gg = gg();
+    if gg.on == on {
+        return;
+    }
+    gg.on = on;
+    if on && gg.faces.is_empty() {
+        let (list, dir) = (manifest(), dir());
+        gg.faces = list.iter().filter_map(|(w, hash)| Some((*w, decode(&std::fs::read(dir.join(file(hash))).ok()?)?))).collect();
+        if gg.faces.len() < list.len() && !gg.fetching && !crate::config::offline_mode() {
+            gg.fetching = spawn_fetch(ctx.clone(), list, dir);
+        }
+    }
+    gg.generation += 1;
+    reapply(ctx, &gg);
+}
+
+/// Installs the fonts again with the current faces (no-op before the first apply).
+fn reapply(ctx: &egui::Context, gg: &Gg) {
+    if let Some(font) = &gg.applied {
+        ctx.set_fonts(super::apply::build_fonts(font, gg.faces()));
+    }
+}
+
+fn dir() -> PathBuf {
+    crate::config::paths().cache_dir.join("fonts").join("gg-sans")
+}
+
+fn file(hash: &str) -> String {
+    format!("{hash}.woff2")
+}
+
+/// An asset hash fit for a URL and a file name.
+fn plain_hash(h: &str) -> bool {
+    (8..=64).contains(&h.len()) && h.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// The cached manifest (after a rediscovery), else the seed.
+fn manifest() -> Vec<(u16, String)> {
+    let saved: Option<Vec<(u16, String)>> = std::fs::read(dir().join("manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    saved
+        .filter(|l| !l.is_empty() && l.iter().all(|(_, h)| plain_hash(h)))
+        .unwrap_or_else(|| SEED.iter().map(|&(w, h)| (w, h.to_owned())).collect())
+}
+
+/// woff2 → sfnt in memory; only a sane font named "gg sans" passes (epaint must never get a
+/// font it cannot parse).
+fn decode(woff2: &[u8]) -> Option<FontData> {
+    use skrifa::MetadataProvider;
+    if !woff2.starts_with(b"wOF2") {
+        return None;
+    }
+    let ttf = wuff::decompress_woff2(woff2).ok()?;
+    let font = skrifa::FontRef::new(&ttf).ok()?;
+    let family = font.localized_strings(skrifa::string::StringId::FAMILY_NAME).english_or_first()?.chars().collect::<String>();
+    (family.starts_with("gg sans") && super::apply::looks_like_font(&ttf)).then(|| FontData::from_owned(ttf))
+}
+
+/// Fetches the missing faces on a thread of its own, then installs them. False if it could not start.
+fn spawn_fetch(ctx: egui::Context, list: Vec<(u16, String)>, dir: PathBuf) -> bool {
+    let run = move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+        let faces = rt.ok().and_then(|rt| rt.block_on(fetch(&list, &dir)));
+        let mut gg = gg();
+        gg.fetching = false;
+        let Some(faces) = faces.filter(|f| f.len() > gg.faces.len()) else { return };
+        gg.faces = faces;
+        gg.generation += 1;
+        if gg.on {
+            reapply(&ctx, &gg);
+            ctx.request_repaint();
+        }
+    };
+    std::thread::Builder::new().name("rc-fonts".into()).spawn(run).is_ok()
+}
+
+/// All faces of `list` (cached or downloaded); after a miss (404, a file that does not decode)
+/// one rediscovery from the web app's CSS, saved as the manifest. One try per run.
+async fn fetch(list: &[(u16, String)], dir: &Path) -> Option<Vec<(u16, FontData)>> {
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().ok()?;
+    let mut faces = get_all(&http, dir, list).await;
+    if faces.len() < list.len()
+        && let Some(found) = rediscover(&http).await
+    {
+        if let Ok(json) = serde_json::to_vec(&found)
+            && let Err(e) = crate::config::write_atomic(&dir.join("manifest.json"), &json)
+        {
+            eprintln!("rustcord: font manifest not saved: {e}");
+        }
+        faces = get_all(&http, dir, &found).await;
+    }
+    (!faces.is_empty()).then_some(faces)
+}
+
+async fn get_all(http: &reqwest::Client, dir: &Path, list: &[(u16, String)]) -> Vec<(u16, FontData)> {
+    let mut out = Vec::new();
+    for (w, hash) in list {
+        let cached = std::fs::read(dir.join(file(hash))).ok().and_then(|b| decode(&b));
+        let face = match cached {
+            Some(f) => Some(f),
+            None => download(http, dir, hash).await,
+        };
+        out.extend(face.map(|f| (*w, f)));
+    }
+    out
+}
+
+/// `GET https://discord.com/assets/<hash>.woff2`, kept as is (the original file) once it decodes.
+async fn download(http: &reqwest::Client, dir: &Path, hash: &str) -> Option<FontData> {
+    let resp = http.get(format!("{ORIGIN}/assets/{}", file(hash))).send().await.ok()?;
+    if !resp.status().is_success() || resp.content_length().is_some_and(|l| l > MAX_WOFF2 as u64) {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok().filter(|b| b.len() <= MAX_WOFF2)?;
+    let face = decode(&bytes)?;
+    if let Err(e) = crate::config::write_atomic(&dir.join(file(hash)), &bytes) {
+        eprintln!("rustcord: font cache write failed: {e}");
+    }
+    Some(face)
+}
+
+/// The current gg sans hashes from the web app: its stylesheets, newest last (the font sheet
+/// is second-to-last today, so ~2 requests).
+async fn rediscover(http: &reqwest::Client) -> Option<Vec<(u16, String)>> {
+    let html = http.get(format!("{ORIGIN}/app")).send().await.ok()?.text().await.ok()?;
+    let sheets: Vec<&str> = html.split("<link href=\"").skip(1).filter_map(|s| s.split('"').next()).filter(|h| h.starts_with("/assets/") && h.ends_with(".css")).collect();
+    for css in sheets.iter().rev().take(6) {
+        let body = http.get(format!("{ORIGIN}{css}")).send().await.ok()?.text().await.ok()?;
+        if body.contains("font-family:gg sans;") {
+            let found = faces_in_css(&body);
+            return (!found.is_empty()).then_some(found);
+        }
+    }
+    None
+}
+
+/// (weight, hash) of the upright gg sans `@font-face` rules we use.
+fn faces_in_css(css: &str) -> Vec<(u16, String)> {
+    let mut out: Vec<(u16, String)> = css
+        .split("@font-face{")
+        .skip(1)
+        .filter_map(|r| {
+            let r = r.split('}').next()?;
+            let val = |k: &str| r.split(k).nth(1)?.split([';', '}']).next();
+            (val("font-family:")? == "gg sans" && val("font-style:")? == "normal").then_some(())?;
+            let weight: u16 = val("font-weight:")?.parse().ok()?;
+            let hash = r.split("url(\"/assets/").nth(1)?.split(".woff2").next()?;
+            (SEED.iter().any(|&(w, _)| w == weight) && plain_hash(hash)).then(|| (weight, hash.to_owned()))
+        })
+        .collect();
+    out.sort();
+    out.dedup_by_key(|f| f.0);
+    out
+}
+
+/// Stock Windows fonts, in cmap-scan order (FONTS_NOTES §2.2), for characters no configured
+/// font has.
+#[cfg(windows)]
+const FALLBACK: &[(&str, u32)] = &[
+    ("seguisym.ttf", 0), ("YuGothM.ttc", 1), ("malgun.ttf", 0), ("msyh.ttc", 1), ("msjh.ttc", 1),
+    ("Nirmala.ttc", 0), ("Nirmala.ttf", 0), ("LeelawUI.ttf", 0), ("ebrima.ttf", 0), ("gadugi.ttf", 0),
+    ("seguihis.ttf", 0), ("msyi.ttf", 0), ("javatext.ttf", 0), ("himalaya.ttf", 0), ("mmrtext.ttf", 0),
+    ("monbaiti.ttf", 0), ("taile.ttf", 0), ("ntailu.ttf", 0), ("phagspa.ttf", 0), ("sylfaen.ttf", 0),
+    ("simsunb.ttf", 0), ("SimsunExtG.ttf", 0), ("SansSerifCollection.ttf", 0), ("cambria.ttc", 1),
+    ("l_10646.ttf", 0), ("micross.ttf", 0), ("tahoma.ttf", 0),
+];
+
+/// egui font provider: the first stock font whose cmap has the character (asked once per family
+/// and character; the files are mapped once per process and shared).
+#[cfg(windows)]
+fn system_fallback(req: &egui::FallbackRequest<'_>) -> Option<egui::FontInsert> {
+    let c = req.cluster.chars().next()?;
+    let hit = FALLBACK.iter().find_map(|&(file, index)| {
+        let mut data = super::apply::system_font(file)?;
+        has_glyph(data.bytes(), index, c).then_some(())?;
+        data.index = index;
+        Some(egui::FontInsert::new(&format!("sys:{file}#{index}"), data, vec![]))
+    });
+    #[cfg(debug_assertions)]
+    if hit.is_none() {
+        eprintln!("rustcord: no system font for U+{:04X}", c as u32);
+    }
+    hit
+}
+
+#[cfg(windows)]
+fn has_glyph(font: &[u8], index: u32, c: char) -> bool {
+    use skrifa::MetadataProvider;
+    skrifa::FontRef::from_index(font, index).is_ok_and(|f| f.charmap().map(c).is_some_and(|g| g.to_u32() != 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_upright_faces_in_minified_css() {
+        let css = concat!(
+            "a{}@font-face{font-display:swap;font-family:gg sans;font-style:normal;font-weight:400;src:url(\"/assets/66d715454104d24e.woff2\") format(\"woff2\")}",
+            "@font-face{font-display:swap;font-family:gg sans;font-style:italic;font-weight:400;src:url(\"/assets/dd24010f3cf7def7.woff2\") format(\"woff2\")}",
+            "@font-face{font-family:gg sans;font-style:normal;font-weight:700;src:url(\"/assets/189422196a4f8b53.woff2\") format(\"woff2\")}",
+            "@font-face{font-family:gg sans;font-style:normal;font-weight:800;src:url(\"/assets/b2fdbe507d6ce9ef.woff2\") format(\"woff2\")}",
+            "@font-face{font-family:gg mono;font-style:normal;font-weight:400;src:url(\"/assets/249d0a057895c668.woff2\") format(\"woff2\")}",
+            "@font-face{font-family:gg sans;font-style:normal;font-weight:500;src:url(\"/assets/../../evil.woff2\") format(\"woff2\")}",
+        );
+        assert_eq!(faces_in_css(css), vec![(400, "66d715454104d24e".to_owned()), (700, "189422196a4f8b53".to_owned())]);
+    }
+
+    #[test]
+    fn rejects_what_is_not_gg_sans() {
+        assert!(decode(b"").is_none());
+        assert!(decode(b"wOF2 not really").is_none());
+        // A real font that is not gg sans (Segoe UI) is refused too.
+        #[cfg(windows)]
+        if let Some(f) = super::super::apply::system_font("segoeui.ttf") {
+            assert!(decode(f.bytes()).is_none());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fallback_covers_decorated_names() {
+        // Box drawing, katakana middle dot, CJK vertical bar, Yi, Canadian syllabics, math bold.
+        for c in ['┊', '・', '︱', '꒰', 'ᘏ', '𝐛', '〢'] {
+            let req = egui::FallbackRequest { cluster: &c.to_string(), family: &egui::FontFamily::Proportional };
+            let hit = system_fallback(&req).unwrap_or_else(|| panic!("no font for {c}"));
+            assert!(has_glyph(hit.data.bytes(), hit.data.index, c), "{c}: {}", hit.name);
+        }
+    }
+}
