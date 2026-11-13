@@ -79,14 +79,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for m in pair {
-                ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Min), |ui| card(ui, cx, &pal, m, min_h));
+                ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Min), |ui| card(ui, cx, &pal, m, pair, min_h));
             }
         });
         ui.add_space(gap - ui.spacing().item_spacing.y);
     }
 }
 
-fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, min_h: f32) {
+fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, row: &[&Meta], min_h: f32) {
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id(m))).unwrap_or(false);
     let mut on = plugins::enabled(m.id);
     Frame::new()
@@ -117,7 +117,12 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, min_h: f32) {
                     });
                 });
             });
-            ui.add(Label::new(RichText::new(m.description).size(pal.meta()).color(pal.muted)).wrap());
+            let desc = |m: &Meta| RichText::new(m.description).size(pal.meta()).color(pal.muted);
+            let h = ui.add(Label::new(desc(m)).wrap()).rect.height();
+            // As tall as the row's longest description, so the cards of a row end level.
+            let wrap = Some(egui::TextWrapMode::Wrap);
+            let row_h = row.iter().map(|o| egui::WidgetText::from(desc(o)).into_galley(ui, wrap, ui.available_width(), egui::FontSelection::Default).size().y);
+            ui.add_space(row_h.fold(h, f32::max) - h);
             if open {
                 ui.separator();
                 for o in m.opts {
