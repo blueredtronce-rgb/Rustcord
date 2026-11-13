@@ -10,7 +10,7 @@ use crate::plugins::{self, META, Meta, Opt, OptKind};
 use crate::ui::{UiCx, bold, hint};
 use egui::{Align, ComboBox, Frame, Label, Layout, Margin, RichText, Slider, Stroke, TextEdit, vec2};
 
-const FILTERS: [&str; 3] = ["All", "Enabled", "Disabled"];
+const FILTERS: [(usize, &str); 3] = [(0, "All"), (1, "Enabled"), (2, "Disabled")];
 
 fn query_id() -> egui::Id {
     egui::Id::unique("rc_plugins_query")
@@ -34,21 +34,18 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let pal = Pal::new(cx.theme);
     hint(ui, cx.theme, "Vencord's plugins, rebuilt into Rustcord. They only change this app; none sends anything on its own.");
     ui.add_space(8.0);
-    let mut q: String = ui.data(|d| d.get_temp(query_id())).unwrap_or_default();
+    // Test hook RUSTCORD_PLUGIN_SEARCH=<text>: the search filled in (screenshots).
+    let mut q: String = ui.data(|d| d.get_temp(query_id())).unwrap_or_else(|| std::env::var("RUSTCORD_PLUGIN_SEARCH").unwrap_or_default());
     let mut filter: usize = ui.data(|d| d.get_temp(filter_id())).unwrap_or(0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let search_w = (ui.available_width() - 240.0).max(160.0);
-        Frame::new().fill(pal.surface).corner_radius(pal.radius).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+        let seg_w = ui.available_width().min(480.0) / 2.0;
+        let search_w = (ui.available_width() - seg_w - 8.0).max(120.0);
+        Frame::new().fill(pal.surface).corner_radius(pal.radius).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
             ui.add(TextEdit::singleline(&mut q).hint_text("Search plugins").frame(Frame::NONE).desired_width(search_w - 20.0));
         });
-        for (i, label) in FILTERS.iter().enumerate() {
-            let selected = filter == i;
-            let text = RichText::new(*label).color(if selected { pal.text } else { pal.muted });
-            if ui.add(egui::Button::new(text).selected(selected).frame_when_inactive(false)).clicked() {
-                filter = i;
-            }
-        }
+        // The login screen's segmented control, like every one-of-a-few choice in settings.
+        ui.allocate_ui(vec2(seg_w, 36.0), |ui| crate::ui::login::segmented(ui, cx.theme, &mut filter, &FILTERS));
     });
     ui.data_mut(|d| {
         d.insert_temp(query_id(), q.clone());
@@ -65,28 +62,31 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         })
         .collect();
     ui.add_space(4.0);
-    hint(ui, cx.theme, &format!("{on_count} of {} on", META.len()));
+    let counter = if list.len() == META.len() { format!("{on_count} of {} on", META.len()) } else { format!("{} shown · {on_count} on", list.len()) };
+    hint(ui, cx.theme, &counter);
     ui.add_space(8.0);
     if list.is_empty() {
         ui.label(RichText::new("No plugin matches.").color(pal.muted));
         return;
     }
     let gap = 12.0;
-    // One column once two would make cards narrower than ~270 px.
-    let cols = if ui.available_width() < 560.0 { 1 } else { 2 };
+    // Two columns while each gets 250 px (Vencord's minmax(250px, 1fr)).
+    let cols = if ui.available_width() >= 2.0 * 250.0 + gap { 2 } else { 1 };
+    // Two columns: a common minimum height; one: each card as tall as its text.
+    let min_h = if cols > 1 { 72.0 } else { 0.0 };
     let col_w = ((ui.available_width() - gap * (cols - 1) as f32) / cols as f32).floor();
     for pair in list.chunks(cols) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for m in pair {
-                ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Min), |ui| card(ui, cx, &pal, m));
+                ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Min), |ui| card(ui, cx, &pal, m, min_h));
             }
         });
         ui.add_space(gap - ui.spacing().item_spacing.y);
     }
 }
 
-fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta) {
+fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, min_h: f32) {
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id(m))).unwrap_or(false);
     let mut on = plugins::enabled(m.id);
     Frame::new()
@@ -96,7 +96,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta) {
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.set_min_height(72.0);
+            ui.set_min_height(min_h);
             ui.spacing_mut().item_spacing.y = 6.0;
             // Switch and gear first (right to left), the name gets what is left (elided, the full
             // name on hover), so narrow cards never draw controls over it.
