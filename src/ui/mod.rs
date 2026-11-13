@@ -1166,16 +1166,32 @@ pub fn settings_layer(
             });
         })
     });
-    // Scroll fades across the whole sidebar, in its own fill.
-    let (card, fade) = (cx.theme.panel_fills().card.to_color32(), 20.0);
+    // Scroll fades across the whole sidebar, ramping to the colour it shows: its fill over the
+    // page's, for a gradient theme over the window gradient (sampled per vertex).
+    let fills = cx.theme.panel_fills();
+    let (chat, card, fade) = (fills.chat.to_color32(), fills.card.to_color32(), 20.0);
     let below = out.inner.content_size.y - out.inner.inner_rect.height() - out.inner.state.clamped_offset().y;
-    for (t, rect, dir) in [
-        (out.inner.state.clamped_offset().y, Rect::from_min_max(left.min, pos2(left.right(), left.top() + fade)), egui::Direction::TopDown),
-        (below, Rect::from_min_max(pos2(left.left(), left.bottom() - fade), left.max), egui::Direction::BottomUp),
+    for (t, rect, top) in [
+        (out.inner.state.clamped_offset().y, Rect::from_min_max(left.min, pos2(left.right(), left.top() + fade)), true),
+        (below, Rect::from_min_max(pos2(left.left(), left.bottom() - fade), left.max), false),
     ] {
-        if t > 0.0 {
-            ui.painter().add(egui::Shape::gradient_rect(rect, dir, [card.gamma_multiply((t / fade).min(1.0)), egui::Color32::TRANSPARENT]));
+        if t <= 0.0 {
+            continue;
         }
+        let mut mesh = match &cx.theme.gradient {
+            Some(g) => g.mesh(ui.ctx().viewport_rect(), &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()]),
+            None => {
+                let mut m = egui::Mesh::default();
+                m.add_colored_rect(rect, egui::Color32::BLACK);
+                m
+            }
+        };
+        for v in &mut mesh.vertices {
+            // Full at the sidebar's edge (once scrolled `fade` px), nothing `fade` px in.
+            let edge = (if top { rect.bottom() - v.pos.y } else { v.pos.y - rect.top() }) / fade;
+            v.color = v.color.blend(chat).blend(card).gamma_multiply(((t / fade).min(1.0) * edge).clamp(0.0, 1.0));
+        }
+        ui.painter().add(mesh);
     }
     let right = Rect::from_min_max(pos2(left.right(), full.top()), full.max);
     let col_w = (right.width() - 40.0 - 60.0).clamp(160.0, LAYER_PAGE_W);
