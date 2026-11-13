@@ -65,6 +65,9 @@ pub fn message_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, m: &Message, item: It
 
 /// Entries of a user's menu (member list, voice users, mentions), before "Copy User ID".
 pub fn user_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user_id: Id, guild_id: Option<Id>, item: Item<'_>) {
+    if let Err(e) = super::voice::volume_slider(ui, cx.state, user_id, true) {
+        cx.view.toast(format!("Could not save plugin settings: {e}"), true);
+    }
     if enabled(Plugin::CopyUserUrls) && item(ui, "Copy User URL", "👤") {
         ui.ctx().copy_text(user_url(user_id));
     }

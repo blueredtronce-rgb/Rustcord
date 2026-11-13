@@ -176,6 +176,52 @@ pub fn force_open(open: bool, holds_selected: bool) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// PinDMs
+// ---------------------------------------------------------------------------
+
+/// Pinned DM channels (plugins.toml `[PinDMs] pinned = ["<channel id>", …]`), newest pin last.
+fn pinned() -> Vec<Id> {
+    let Some(toml::Value::Array(list)) = super::opt_raw(Plugin::PinDms, "pinned") else { return Vec::new() };
+    list.iter().filter_map(|v| v.as_str()?.parse().ok().map(Id)).collect()
+}
+
+/// The DM list (`sidebar.rs` dm_list): pinned DMs on top, both groups in their own order.
+/// Returns how many are pinned (they get their own "Pinned" header).
+pub fn pins_first(ids: &mut [Id]) -> usize {
+    if !enabled(Plugin::PinDms) {
+        return 0;
+    }
+    let pins = pinned();
+    order(ids, &pins);
+    ids.iter().take_while(|id| pins.contains(id)).count()
+}
+
+fn order(ids: &mut [Id], pins: &[Id]) {
+    ids.sort_by_key(|id| !pins.contains(id));
+}
+
+/// "Pin DM" / "Unpin DM" in the DM menu (`item` draws the caller's menu row).
+pub fn pin_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, item: super::menus::Item<'_>) {
+    if !enabled(Plugin::PinDms) {
+        return;
+    }
+    let mut pins = pinned();
+    let pinned = pins.contains(&id);
+    if !item(ui, if pinned { "Unpin DM" } else { "Pin DM" }, "📌") {
+        return;
+    }
+    if pinned {
+        pins.retain(|p| *p != id);
+    } else {
+        pins.push(id);
+    }
+    let list = pins.iter().map(|p| toml::Value::String(p.0.to_string())).collect();
+    if let Err(e) = super::set(Plugin::PinDms, "pinned", toml::Value::Array(list)) {
+        cx.view.toast(format!("Could not save plugin settings: {e}"), true);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CallTimer
 // ---------------------------------------------------------------------------
 
@@ -226,5 +272,17 @@ mod tests {
         // Off by default: nothing changes.
         assert!(!show_hidden());
         assert!(!force_open(false, true));
+    }
+
+    #[test]
+    fn pinned_dms_on_top() {
+        let mut ids = [Id(1), Id(2), Id(3), Id(4), Id(5)];
+        order(&mut ids, &[Id(4), Id(2), Id(9)]);
+        // Pinned first, each group keeps the list's (most recent) order.
+        assert_eq!(ids, [Id(2), Id(4), Id(1), Id(3), Id(5)]);
+        // Off by default: untouched.
+        let mut ids = [Id(3), Id(1)];
+        assert_eq!(pins_first(&mut ids), 0);
+        assert_eq!(ids, [Id(3), Id(1)]);
     }
 }

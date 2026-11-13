@@ -108,7 +108,8 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, min_h: f32) {
                         }
                         save(cx, plugins::set(m.id, "enabled", toml::Value::Boolean(on)));
                     }
-                    if !m.opts.is_empty() && icon_button(ui, pal, "⚙", "Options", 24.0, open, pal.text).clicked() {
+                    let has_opts = !m.opts.is_empty() || m.id == plugins::Plugin::TextReplace;
+                    if has_opts && icon_button(ui, pal, "⚙", "Options", 24.0, open, pal.text).clicked() {
                         open = !open;
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -122,9 +123,53 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, min_h: f32) {
                 for o in m.opts {
                     option(ui, cx, pal, m, o);
                 }
+                if m.id == plugins::Plugin::TextReplace {
+                    text_rules(ui, cx, pal);
+                }
             }
         });
     ui.data_mut(|d| d.insert_temp(open_id(m), open));
+}
+
+/// TextReplace's rules: find, replacement, "Aa" (case-sensitive) and remove per row, then "Add
+/// rule". Typing changes them in memory; leaving a field, a toggle, add or remove saves.
+fn text_rules(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
+    use crate::plugins::compose::{Rule, rules, rules_value};
+    let mut list = rules();
+    let (mut changed, mut store, mut remove) = (false, false, None);
+    for (i, r) in list.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let w = ((ui.available_width() - 48.0 - 3.0 * ui.spacing().item_spacing.x) / 2.0).max(60.0);
+            for (k, (text, hint_text)) in [(&mut r.find, "Find"), (&mut r.replace, "Replace with")].into_iter().enumerate() {
+                let resp = ui.add(TextEdit::singleline(text).id_salt(("rc_text_rule", i, k)).hint_text(hint_text).desired_width(w));
+                changed |= resp.changed();
+                store |= resp.lost_focus();
+            }
+            let tip = if r.case { "Case-sensitive" } else { "Ignores case" };
+            if icon_button(ui, pal, "Aa", tip, 24.0, r.case, pal.text).clicked() {
+                r.case = !r.case;
+                (changed, store) = (true, true);
+            }
+            if icon_button(ui, pal, "×", "Remove rule", 24.0, false, pal.danger).clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        list.remove(i);
+        (changed, store) = (true, true);
+    }
+    if ui.button("Add rule").clicked() {
+        list.push(Rule::default());
+        (changed, store) = (true, true);
+    }
+    if changed {
+        plugins::put(plugins::Plugin::TextReplace, "rules", rules_value(&list));
+    }
+    if store {
+        save(cx, plugins::save());
+    }
+    hint(ui, cx.theme, "Plain text, applied once to each message you send. \\n in a replacement is a new line.");
 }
 
 fn save(cx: &mut UiCx<'_>, r: Result<(), String>) {

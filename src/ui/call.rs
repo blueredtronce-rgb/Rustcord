@@ -528,6 +528,8 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         t.name.clone()
     };
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, focused, &what));
+    // Plugins (VolumeBooster): the user's volume on right-click.
+    crate::plugins::voice::tile_menu(&resp, cx, t.user);
     if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
         cx.view.call_ui.focus = if focused { None } else { Some(t.key.clone()) };
     }

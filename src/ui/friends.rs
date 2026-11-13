@@ -294,7 +294,7 @@ fn friend_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
     let resp = ui.interact(row.with_max_x(right + 4.0), ui.make_persistent_id(("rc_friend_row", id)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
     let anchor = pos2(row.center().x - 150.0, row.top());
-    resp.context_menu(|ui| sidebar::user_menu(ui, cx, id, None, anchor));
+    sidebar::user_context_menu(&resp, cx, id, None, anchor);
     if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() && !clicked_action {
         if kind == FRIEND {
             message_user(cx, id);

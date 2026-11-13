@@ -13,7 +13,7 @@
 //! OWNERSHIP: composer engineer.
 
 use super::autocomplete::{self, Row};
-use super::messages::{channel_prefix, demo, icon_button, menu_item, menu_setup, message_member, overlay_open, small_button, status_chip, MenuIcon, Pal, COUNTER_FROM, MAX_LEN};
+use super::messages::{channel_prefix, demo, icon_button, menu_item, menu_setup, message_member, overlay_open, small_button, status_chip, MenuIcon, Pal, COUNTER_FROM};
 use super::pickers::{self, Pick, Tab};
 use super::{images, one_line, sidebar, UiCx};
 use crate::api::{cdn, upload::MAX_FILES};
@@ -217,9 +217,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
     }
 
     let len_before = cx.view.drafts.get(&ch).map_or(0, |d| d.chars().count());
+    // Plugins (CharacterCounter): a counter on every non-empty draft. Nitro's limit is 4000.
+    let counting = crate::plugins::compose::counting();
+    let max_len = crate::plugins::compose::max_len(cx.state.me.as_ref().map_or(0, |u| u.premium_type));
     // The chip counts what the send checks: mentions and custom emoji expanded.
     let shown_len = match cx.view.drafts.get(&ch) {
-        Some(d) if len_before > COUNTER_FROM => autocomplete::expand(d, &mentions(&ctx, ch)).chars().count(),
+        Some(d) if len_before > COUNTER_FROM || counting => autocomplete::expand(d, &mentions(&ctx, ch)).chars().count(),
         _ => len_before,
     };
     let picker_tab = pickers::open_tab(&ctx);
@@ -266,9 +269,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
                     } else if gif.clicked() {
                         toggle = Some(Tab::Gif);
                     }
-                    if shown_len > COUNTER_FROM {
-                        let color = if shown_len > MAX_LEN { pal.danger } else { pal.muted };
-                        status_chip(ui, &pal, None, &format!("{shown_len}/{MAX_LEN}"), color).on_hover_text("Message length limit");
+                    let counter = crate::plugins::compose::counter(shown_len, max_len).filter(|_| counting || shown_len > COUNTER_FROM);
+                    if let Some((text, over)) = counter {
+                        status_chip(ui, &pal, None, &text, if over { pal.danger } else { pal.muted }).on_hover_text("Message length limit");
                     }
                     if offline {
                         status_chip(ui, &pal, Some(pal.muted), "Offline", pal.muted).on_hover_text("Offline – sending disabled until reconnected");
@@ -365,7 +368,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
         cx.cmd.send(Command::Chat(ChatCommand::Typing { channel_id: ch }));
     }
     // The counter chip was drawn before this frame's typing.
-    if (len > COUNTER_FROM || len_before > COUNTER_FROM) && len != len_before {
+    if (counting || len > COUNTER_FROM || len_before > COUNTER_FROM) && len != len_before {
         ctx.request_repaint();
     }
     if empty {
@@ -379,12 +382,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
     let overlay = editing_here || overlay_open(&ctx, cx);
     if resp.has_focus() && enter {
         let text = autocomplete::expand(cx.view.drafts.get(&ch).map_or("", |d| d), &mentions(&ctx, ch));
-        let content = prepare_send(&text, !tray.files.is_empty());
+        // Plugins (TextReplace): the user's rules, once, on this send.
+        let text = crate::plugins::compose::text_replace(text);
+        let content = prepare_send(&text, !tray.files.is_empty(), max_len);
         // Files still being prepared belong to this message: wait for them (the draft stays).
         let refused = if tray.loading > 0 {
             Some("Still preparing files…".to_owned())
         } else if content.is_none() && !text.trim().is_empty() {
-            Some(format!("Message is over {MAX_LEN} characters"))
+            Some(format!("Message is over {max_len} characters"))
         } else {
             None
         };
@@ -1147,10 +1152,10 @@ fn edit_last(cx: &mut UiCx<'_>, ch: Id) {
     }
 }
 
-/// Trimmed content, or None if over the length limit or empty without files.
-fn prepare_send(draft: &str, with_files: bool) -> Option<String> {
+/// Trimmed content, or None if over the length limit `max` or empty without files.
+fn prepare_send(draft: &str, with_files: bool, max: usize) -> Option<String> {
     let t = draft.trim();
-    ((with_files || !t.is_empty()) && t.chars().count() <= MAX_LEN).then(|| t.to_string())
+    ((with_files || !t.is_empty()) && t.chars().count() <= max).then(|| t.to_string())
 }
 
 fn snowflake_from_unix_ms(ms: u64) -> u64 {
@@ -1249,11 +1254,14 @@ mod tests {
 
     #[test]
     fn send_text_is_trimmed_and_limited() {
-        assert_eq!(prepare_send("  hi\n", false), Some("hi".to_string()));
-        assert_eq!(prepare_send(" \n\t", false), None);
-        assert_eq!(prepare_send(" \n\t", true), Some(String::new()), "files may go without text");
-        assert_eq!(prepare_send(&"ä".repeat(MAX_LEN), false).map(|s| s.chars().count()), Some(MAX_LEN));
-        assert_eq!(prepare_send(&"a".repeat(MAX_LEN + 1), true), None);
+        const MAX_LEN: usize = 2000;
+        assert_eq!(prepare_send("  hi\n", false, MAX_LEN), Some("hi".to_string()));
+        assert_eq!(prepare_send(" \n\t", false, MAX_LEN), None);
+        assert_eq!(prepare_send(" \n\t", true, MAX_LEN), Some(String::new()), "files may go without text");
+        assert_eq!(prepare_send(&"ä".repeat(MAX_LEN), false, MAX_LEN).map(|s| s.chars().count()), Some(MAX_LEN));
+        assert_eq!(prepare_send(&"a".repeat(MAX_LEN + 1), true, MAX_LEN), None);
+        // Nitro: 4000.
+        assert!(prepare_send(&"a".repeat(MAX_LEN + 1), true, 4000).is_some());
     }
 
     #[test]

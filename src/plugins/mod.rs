@@ -19,6 +19,11 @@ pub mod sidebar;
 pub mod chat;
 pub mod windows;
 pub mod voice_messages;
+pub mod compose;
+pub mod link_embeds;
+pub mod panel;
+pub mod idle;
+pub mod voice;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
@@ -65,6 +70,16 @@ pub enum Plugin {
     ShowTimeoutDuration,
     OpenInApp,
     ViewRaw,
+    TextReplace,
+    CharacterCounter,
+    MessageLinkEmbeds,
+    GameActivityToggle,
+    AccountPanelServerProfile,
+    CustomIdle,
+    VcNarrator,
+    VolumeBooster,
+    OnePingPerDm,
+    PinDms,
 }
 
 /// One option of a plugin (the settings page draws it from this).
@@ -184,6 +199,16 @@ pub const META: &[Meta] = &[
     meta(P::ShowTimeoutDuration, "ShowTimeoutDuration", "How long someone is still timed out.", &[]),
     meta(P::OpenInApp, "OpenInApp", "Opens Spotify and Steam links in their apps.", &[opt("spotify", "Spotify", Bool(true)), opt("steam", "Steam", Bool(true))]),
     meta(P::ViewRaw, "ViewRaw", "Copy a message as raw JSON (message menu).", &[]),
+    meta(P::TextReplace, "TextReplace", "Your own find-and-replace rules, applied to messages you send.", &[]),
+    meta(P::CharacterCounter, "CharacterCounter", "How long your message is, out of 2000 characters (4000 with Nitro).", &[]),
+    meta(P::MessageLinkEmbeds, "MessageLinkEmbeds", "A preview of linked messages. Ones not loaded yet load when you click.", &[]),
+    meta(P::GameActivityToggle, "GameActivityToggle", "A controller button in your user panel that shares or hides your game.", &[]),
+    meta(P::AccountPanelServerProfile, "AccountPanelServerProfile", "In a server, your user panel shows your server name and avatar; a click opens that profile.", &[]),
+    meta(P::CustomIdle, "CustomIdle", "Idle after a while without input, online again when you're back.", &[opt("idleTimeout", "Minutes until idle (0 = never)", Int(0, 60, 10))]),
+    meta(P::VcNarrator, "VcNarrator", "Reads out who joins, leaves or moves in your voice channel. Silent in Streamer Mode.", &[]),
+    meta(P::VolumeBooster, "VolumeBooster", "Turn someone up to 400 % from their menu while you're in voice together.", &[]),
+    meta(P::OnePingPerDm, "OnePingPerDM", "Only the first notification of a DM until you've read it.", &[]),
+    meta(P::PinDms, "PinDMs", "Pin DMs to the top of the list from their menu.", &[]),
 ];
 
 pub fn meta_of(p: Plugin) -> &'static Meta {
@@ -300,6 +325,11 @@ pub fn opt_text(p: Plugin, key: &str) -> String {
     read(|s| s.text(p, key))
 }
 
+/// A value a plugin keeps itself, outside `opts` (TextReplace rules, pinned DMs, volumes).
+pub fn opt_raw(p: Plugin, key: &str) -> Option<toml::Value> {
+    read(|s| s.value(p, key).cloned())
+}
+
 /// Changes a value (the settings page) and writes plugins.toml. "enabled" switches the plugin.
 pub fn set(p: Plugin, key: &str, v: toml::Value) -> Result<(), String> {
     put(p, key, v);
@@ -345,7 +375,14 @@ pub fn apply_env() {
 /// swallowed) and edit history; RelationshipNotifier reads names that the event removes.
 pub fn on_gateway(state: &mut crate::state::AppState, view: &mut crate::ui::ViewState, settings: &crate::config::Settings, ev: crate::model::GatewayEvent) -> Option<crate::model::GatewayEvent> {
     notifier::on_gateway(state, view, settings, &ev);
+    voice::narrate(state, settings, &ev);
     message_logger::on_gateway(state, ev)
+}
+
+/// Before a chat event reaches the state: MessageLinkEmbeds takes the answer of its own
+/// "Load message" fetch (the jump view would drop it).
+pub fn on_chat(state: &crate::state::AppState, ev: crate::backend::ChatEvent) -> Option<crate::backend::ChatEvent> {
+    link_embeds::on_chat(state, ev)
 }
 
 /// Once per frame on the main screen, after the page and its modals: plugin windows, link
@@ -376,7 +413,7 @@ mod tests {
             assert_eq!(m.id as usize, i, "{}", m.name);
             assert!(!m.default_on, "{} defaults to off like Vencord", m.name);
         }
-        assert!(META.len() >= 25);
+        assert!(META.len() >= 48);
     }
 
     #[test]

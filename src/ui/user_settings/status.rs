@@ -353,7 +353,7 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
     if let Some(status) = picked {
         // Op 3 now, then the settings write (errors: toast); the proto codec is unit-tested
         // against the FEATURES_NOTES §3.1 vectors (api/settings_proto.rs `vectors_*`).
-        cx.cmd.send(Command::Chat(ChatCommand::SetStatus { status }));
+        cx.cmd.send(Command::Chat(ChatCommand::SetStatus { status, afk: false }));
         cx.cmd.send(Command::Account(AccountCommand::SetPersistentStatus { status }));
         cx.view.profile_card = None;
     }

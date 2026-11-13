@@ -424,6 +424,8 @@ impl RustcordApp {
                     // Do Not Disturb: unread state still updates, but no toast or taskbar flash.
                     if let Some(n) = self.state.apply_gateway(ev, focused_channel)
                         && self.state.chat.my_status != Some(crate::model::UserStatus::Dnd)
+                        // Plugins (OnePingPerDM): one per DM until it is read.
+                        && crate::plugins::notifier::one_ping(&self.state, n.channel_id)
                     {
                         // Off, or Streamer Mode: none, or without sender and text.
                         if let Some((title, body)) = self.settings.notification(&n.title, &n.body) {
@@ -463,6 +465,8 @@ impl RustcordApp {
                 }
                 // Chat essentials (pins, search, GIFs, uploads…) live in AppState::chat.
                 BackendEvent::Chat(ev) => {
+                    // Plugins (MessageLinkEmbeds) take the answers to their own fetches.
+                    let Some(ev) = crate::plugins::on_chat(&self.state, ev) else { continue };
                     if let Some(msg) = self.state.apply_chat(ev) {
                         self.view.toast(msg, true);
                     }
@@ -768,6 +772,8 @@ impl eframe::App for RustcordApp {
         self.drain_events(ctx);
         if self.view.screen == Screen::Main {
             self.selection_effects(ctx);
+            // Plugins (CustomIdle): auto-idle, also while minimized.
+            crate::plugins::idle::logic(ctx, &self.state, &self.backend.cmd);
         }
         self.maybe_save_cache(false);
         // My id and Nitro (local cosmetics apply only without it).

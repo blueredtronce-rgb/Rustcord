@@ -24,8 +24,6 @@ use std::time::Duration;
 
 /// History page size for GET /messages.
 pub const PAGE_SIZE: u8 = 50;
-/// Message content limit in characters.
-pub const MAX_LEN: usize = 2000;
 /// The character counter shows from this length on.
 pub const COUNTER_FROM: usize = 1800;
 
@@ -206,7 +204,16 @@ pub(super) fn menu_item(ui: &mut egui::Ui, text: &str, icon: MenuIcon, color: Co
     if let MenuIcon::Check(on) = icon {
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), on, text));
     }
+    if resp.clicked() {
+        // For menus that only close on their own rows (`sidebar::user_context_menu`).
+        ui.ctx().data_mut(|d| d.insert_temp(menu_click_id(), Some(ui.layer_id())));
+    }
     resp.clicked()
+}
+
+/// Where the last `menu_item` click was (its menu's layer).
+pub(super) fn menu_click_id() -> egui::Id {
+    egui::Id::unique("rc_menu_item_click")
 }
 
 /// Whether the emoji font draws every glyph of `emoji` (joiners, variation selectors and skin
@@ -667,7 +674,7 @@ pub(super) fn jump_to(ctx: &egui::Context, cx: &mut UiCx<'_>, ch: Id, mid: Id) {
     }
     if !in_history(cx.state, ch, mid) && !shown(cx.state, ch).iter().any(|m| m.id == mid) {
         cx.state.chat.around = Some(AroundView { channel_id: ch, message_id: mid, result: None });
-        cx.cmd.send(Command::Chat(ChatCommand::FetchAround { channel_id: ch, message_id: mid }));
+        cx.cmd.send(Command::Chat(ChatCommand::FetchAround { channel_id: ch, message_id: mid, limit: PAGE_SIZE }));
     }
     ctx.data_mut(|d| d.insert_temp(jump_id(), (ch, mid)));
     ctx.request_repaint();
@@ -1565,6 +1572,10 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &M
             embed(ui, cx, lc, msg, e, i);
         }
     }
+    // Plugins (MessageLinkEmbeds): previews of linked messages; a click jumps there.
+    if let Some((ch, mid)) = crate::plugins::link_embeds::show(ui, cx, msg) {
+        jump_to(ui.ctx(), cx, ch, mid);
+    }
     if reacts {
         reactions(ui, cx, lc, memo, msg, hovered);
     }
@@ -1596,9 +1607,11 @@ fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
         memo.edit_focus = Some(msg.id);
     }
     let len = cx.view.edit_text.chars().count();
+    // The composer's limit (4000 with full Nitro).
+    let max_len = crate::plugins::compose::max_len(cx.state.me.as_ref().map_or(0, |u| u.premium_type));
     let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter) && !i.modifiers.shift, i.key_pressed(Key::Escape)));
     let mut close = esc && !overlay_open(ui.ctx(), cx);
-    if enter && resp.has_focus() && len <= MAX_LEN {
+    if enter && resp.has_focus() && len <= max_len {
         let new = cx.view.edit_text.trim();
         if !new.is_empty() && new != msg.content {
             cx.cmd.send(Command::EditMessage { channel_id: lc.ch, message_id: msg.id, content: crate::plugins::chat::outgoing(new.to_string()) });
@@ -1608,8 +1621,8 @@ fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
     ui.horizontal(|ui| {
         ui.label(RichText::new("Esc to cancel · Enter to save").size(pal.meta()).color(pal.muted));
         if len > COUNTER_FROM {
-            let color = if len > MAX_LEN { pal.danger } else { pal.muted };
-            ui.label(RichText::new(format!("{len}/{MAX_LEN}")).size(pal.meta()).color(color));
+            let color = if len > max_len { pal.danger } else { pal.muted };
+            ui.label(RichText::new(format!("{len}/{max_len}")).size(pal.meta()).color(color));
         }
     });
     if close {

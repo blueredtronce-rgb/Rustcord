@@ -29,7 +29,7 @@ Verified Rustcord hooks that already exist (by symbol; line numbers drift):
 | Who-reacted fetch | `Cmd::FetchReactionUsers {channel_id, message_id, emoji, burst, after}` in `backend.rs` |
 | Mark all read | `Cmd::MarkAllRead {acks}` (`POST /read-states/ack-bulk`) in `backend.rs` |
 | Suppress embeds | `Cmd::SuppressEmbeds` in `backend.rs` |
-| Fetch around a message | `Cmd::FetchAround {channel_id, message_id}` in `backend.rs`; it has no `limit` |
+| Fetch around a message | `Cmd::FetchAround {channel_id, message_id, limit}` in `backend.rs` |
 | Reply ping | `allowed_mentions.replied_user` in `api/mod.rs::send_body` |
 | Typing | `POST /channels/{c}/typing` in `api/chat.rs` |
 | Online count | `online_count` in `state/memstats.rs` |
@@ -391,7 +391,7 @@ All settings are written `key` = default.
   - a "clear cache" button
 - Pattern: `https?://(\w+\.)?discord(app)?\.com/channels/(\d{17,20}|@me)/(\d{17,20})/(\d{17,20})`. Ignore links in `<…>`.
 - Fetch: `GET /channels/{c}/messages?limit=1&around={m}`, 2 retries; the returned ID must match.
-  - Add `limit` to `FetchAround`.
+  - `FetchAround` with `limit: 1`.
   - Cache by channel:message, failures included.
   - At most 5 links per message, depth at most 2, no self-links.
   - Skip silently without View Channel.

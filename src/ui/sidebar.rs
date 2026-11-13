@@ -420,9 +420,21 @@ pub(super) fn mark_read(cx: &mut UiCx<'_>, channels: impl IntoIterator<Item = Id
     }
 }
 
+/// `user_menu` on right-click. A click on its VolumeBooster slider keeps it open, so it closes
+/// on its own rows only (a submenu's rows keep theirs, as before).
+pub(super) fn user_context_menu(resp: &egui::Response, cx: &mut UiCx<'_>, user: Id, guild_id: Option<Id>, anchor: egui::Pos2) {
+    egui::Popup::context_menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        user_menu(ui, cx, user, guild_id, anchor);
+        let clicked = ui.ctx().data_mut(|d| d.remove_temp::<Option<egui::LayerId>>(super::messages::menu_click_id())).flatten();
+        if clicked == Some(ui.layer_id()) {
+            ui.close();
+        }
+    });
+}
+
 /// A user's menu (member list, voice channel): profile, mention in the open channel, their DM
 /// if one exists, and the id. `anchor` places the profile card.
-pub(super) fn user_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id, guild_id: Option<Id>, anchor: egui::Pos2) {
+fn user_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id, guild_id: Option<Id>, anchor: egui::Pos2) {
     menu_setup(ui);
     let text = cx.theme.colors.text.to_color32();
     if menu_item(ui, "Profile", MenuIcon::Glyph("👤"), text) {
@@ -1242,7 +1254,7 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
     let (live, video) = (if u.live { ", live" } else { "" }, if u.video { ", camera on" } else { "" });
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("{}{state}{live}{video}", u.name)));
     let anchor = pos2(row.right() + 8.0, row.top());
-    resp.context_menu(|ui| user_menu(ui, cx, u.id, Some(guild_id), anchor));
+    user_context_menu(&resp, cx, u.id, Some(guild_id), anchor);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         cx.view.open_profile(u.id, Some(guild_id), anchor);
     }
@@ -1325,7 +1337,7 @@ fn dm_list(ui: &mut egui::Ui, cx: &mut UiCx<'_>, area: egui::ScrollArea) {
         cx.view.hidden_dms.remove(&open);
     }
     let query = cx.view.dm_filter.trim().to_lowercase();
-    let ids: Vec<Id> = cx
+    let mut ids: Vec<Id> = cx
         .state
         .dm_order
         .iter()
@@ -1333,19 +1345,25 @@ fn dm_list(ui: &mut egui::Ui, cx: &mut UiCx<'_>, area: egui::ScrollArea) {
         .filter(|&id| dm_listed(cx.state, &cx.view.hidden_dms, id))
         .filter(|&id| query.is_empty() || cx.state.channel_name(id).to_lowercase().contains(&query))
         .collect();
+    // Plugins (PinDMs): pinned DMs on top, under their own "Pinned" header.
+    let pins = crate::plugins::sidebar::pins_first(&mut ids);
     if ids.is_empty() {
         friends_row(ui, cx);
-        dm_header(ui, cx);
+        dm_header(ui, cx, false);
         empty_state(ui, cx, 24.0, if query.is_empty() { "No direct messages yet" } else { "No matches" });
         return;
     }
-    // Rows are uniform (Friends is row 0, the header row 1): only the visible ones are laid out.
-    area.show_rows(ui, DM_ROW_H, ids.len() + 2, |ui, range| {
+    // Rows are uniform (Friends, ["Pinned", the pinned DMs], "Direct Messages", the rest): only
+    // the visible ones are laid out.
+    let head = usize::from(pins > 0);
+    area.show_rows(ui, DM_ROW_H, ids.len() + 2 + head, |ui, range| {
         for i in range {
             match i {
                 0 => friends_row(ui, cx),
-                1 => dm_header(ui, cx),
-                i => dm_row(ui, cx, ids[i - 2]),
+                1 if head == 1 => dm_header(ui, cx, true),
+                i if i == 1 + head + pins => dm_header(ui, cx, false),
+                i if i <= head + pins => dm_row(ui, cx, ids[i - 1 - head]),
+                i => dm_row(ui, cx, ids[i - 2 - head]),
             }
         }
     });
@@ -1383,14 +1401,19 @@ fn dm_listed(state: &AppState, hidden: &HashMap<Id, Option<Id>>, id: Id) -> bool
     hidden.get(&id).is_none_or(|&closed_at| state.channels.get(&id).and_then(|c| c.last_message_id) > closed_at)
 }
 
-/// "Direct Messages" with a "+" (Create DM: the group picker in friends.rs).
-fn dm_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+/// "Direct Messages" with a "+" (Create DM: the group picker in friends.rs); PinDMs' "Pinned"
+/// above the pinned DMs in the same style, without the "+".
+fn dm_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pinned: bool) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), DM_ROW_H), Sense::hover());
     let color = cx.theme.colors.text_muted.to_color32();
-    let g = one_line(ui, "Direct Messages", bold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD - 24.0);
+    let title = if pinned { "Pinned" } else { "Direct Messages" };
+    let g = one_line(ui, title, bold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD - 24.0);
     let text_y = row.bottom() - g.size().y - 6.0;
     let center_y = text_y + g.size().y / 2.0;
     ui.painter().galley(pos2(row.left() + PAD + 2.0, text_y), g, color);
+    if pinned {
+        return;
+    }
     let pal = Pal::new(cx.theme);
     let r = Rect::from_center_size(pos2(row.right() - PAD - 4.0, center_y), Vec2::splat(24.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
@@ -1560,6 +1583,7 @@ fn dm_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, anchor: egui::Pos2) {
     if user.is_some() && menu_item(ui, "Close DM", MenuIcon::Glyph("✖"), text) {
         close_dm(cx, id);
     }
+    crate::plugins::sidebar::pin_item(ui, cx, id, &mut |ui, label, glyph| menu_item(ui, label, MenuIcon::Glyph(glyph), text));
     super::friends::dm_menu_items(ui, cx, id);
     let dev = cx.state.account.settings.developer_mode();
     if dev {
@@ -1722,9 +1746,13 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let gear = Rect::from_min_size(pos2(rect.right() - 8.0 - 32.0, cy - 16.0), Vec2::splat(32.0));
     let phones = Rect::from_min_size(pos2(gear.left() - 4.0 - GROUP_W, cy - 16.0), vec2(GROUP_W, 32.0));
     let mic = phones.translate(vec2(-GROUP_W - 4.0, 0.0));
+    // Plugins: GameActivityToggle's button left of the microphone; AccountPanelServerProfile's
+    // server (my server name, avatar and profile there).
+    let plug_w = crate::plugins::panel::buttons_width(mic.left() - 4.0 - (rect.left() + 52.0));
+    let guild = crate::plugins::panel::profile_guild(cx.state);
     let avatar = Rect::from_min_size(pos2(rect.left() + 12.0, cy - 16.0), Vec2::splat(32.0));
     // Avatar and name: one button with a hover tint.
-    let area = Rect::from_min_max(avatar.min - Vec2::splat(4.0), pos2(mic.left() - 4.0, avatar.bottom() + 4.0));
+    let area = Rect::from_min_max(avatar.min - Vec2::splat(4.0), pos2(mic.left() - 4.0 - plug_w, avatar.bottom() + 4.0));
     let hot = me.is_some() && ui.rect_contains_pointer(area);
     let base = user_panel_fill(&c);
     let tint = c.text.to_color32().gamma_multiply(0.08);
@@ -1739,7 +1767,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let fill = if hot { base.blend(tint) } else { base };
     match &me {
         Some(me) => {
-            let url = super::images::user_avatar_url(None, me, None, 64, false);
+            let url = super::images::user_avatar_url(guild, me, guild.and_then(|g| cx.state.find_member(g, me.id)), 64, false);
             let animate = crate::overrides::my_avatar_animates(me.id, ui.rect_contains_pointer(avatar)).unwrap_or(false);
             user_avatar_at(ui, cx.images, &url, avatar, animate, 1.0, (me.id, me.display_name()));
             super::images::decoration_at(ui, cx.images, avatar, fx.decoration.as_ref(), fx_anim, 1.0);
@@ -1752,6 +1780,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     status_dot(ui.painter(), avatar, my_presence(cx.state), &c, fill);
 
     let (mute, deaf) = (cx.view.self_mute, cx.view.self_deaf);
+    crate::plugins::panel::game_button(ui, cx, mic.translate(vec2(-plug_w, 0.0)).with_max_x(mic.left() - 4.0), base);
     let mic = voice_button(ui, cx, mic, false, if mute || deaf { "Unmute" } else { "Mute" }, mute || deaf);
     let phones = voice_button(ui, cx, phones, true, if deaf { "Undeafen" } else { "Deafen" }, deaf);
     let open = cx.view.settings_open;
@@ -1771,7 +1800,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
 
     let text_left = avatar.right() + 8.0;
     let max_w = area.right() - 4.0 - text_left;
-    let name = me.as_ref().map_or("Rustcord", |u| u.display_name()).to_owned();
+    let name = me.as_ref().map_or_else(|| "Rustcord".to_owned(), |u| cx.state.member_display_name(guild, u, None));
     let label = format!("{name}, {}", line.1);
     let status = line.clone();
     // My game etc. as my member-list presence carries it.
@@ -1820,7 +1849,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let tip = [activity.map(|a| a.label()), status_tooltip(ui, &status), detail].into_iter().flatten().collect::<Vec<_>>().join("\n");
     let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-        cx.view.open_profile_above(me.id, None, panel - vec2(0.0, 8.0));
+        cx.view.open_profile_above(me.id, guild, panel - vec2(0.0, 8.0));
     }
 }
 

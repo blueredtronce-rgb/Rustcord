@@ -421,7 +421,13 @@ fn mix_frame(streams: &mut HashMap<u32, Remote>, decoded: &mut [f32], mix: &mut 
         };
         // shortcut: only the first 20 ms of a longer packet plays; Discord clients send 20 ms.
         if let Ok(n) = n {
-            dsp::mix_into(mix, &decoded[..n.min(FRAME_SAMPLES) * CHANNELS]);
+            let pcm = &mut decoded[..n.min(FRAME_SAMPLES) * CHANNELS];
+            // Plugins (VolumeBooster): the user's local volume; the mix is clipped below.
+            let gain = crate::plugins::voice::gain(r.user_id);
+            if gain != 1.0 {
+                pcm.iter_mut().for_each(|s| *s *= gain);
+            }
+            dsp::mix_into(mix, pcm);
         }
     }
     dsp::clip(mix);

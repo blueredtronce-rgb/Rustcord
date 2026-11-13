@@ -211,8 +211,9 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
         let end = text_end.max(name_rect.right() + 4.0 + chip_w + plug_w);
         let (plate_rect, radius) = (row.shrink2(vec2(8.0, 1.0)), cx.theme.layout.corner_radius.round() as u8);
         let shape = cosmetics::nameplate(ui, cx.images, plate_rect, np, fx_anim, dim, radius, end);
-        // Dark themes: a scrim keeps the status line off the art's bright spots.
-        let scrim = (ui.visuals().dark_mode && !dim).then(|| cosmetics::plate_scrim(plate_rect, radius, ring, end, crate::theme::is_high_contrast(&cx.theme.colors)));
+        // A scrim keeps the name and status line off the plate: the art's bright spots (dark
+        // themes), the palette tint under coloured names (light themes).
+        let scrim = (!dim).then(|| cosmetics::plate_scrim(plate_rect, radius, ring, end, crate::theme::is_high_contrast(&cx.theme.colors)));
         ui.painter().set(plate, Shape::Vec(std::iter::once(shape).chain(scrim).collect()));
     }
 
@@ -221,7 +222,7 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
     resp.widget_info(|| WidgetInfo::labeled(A11yRole::Button, true, &name));
     // The anchor is the card's top-left; the card (300 wide, profile.rs) opens left of the list.
     let anchor = pos2(row.left() - 8.0 - 300.0, row.top());
-    resp.context_menu(|ui| super::sidebar::user_menu(ui, cx, user.id, guild_id, anchor));
+    super::sidebar::user_context_menu(&resp, cx, user.id, guild_id, anchor);
     let resp = match tip {
         Some(t) => resp.on_hover_text(t),
         None => resp,
