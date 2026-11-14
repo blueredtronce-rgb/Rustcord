@@ -55,11 +55,11 @@ pub fn guild_tag<'a>(user: &'a User, member: Option<&Member>) -> Option<&'a Prim
     (shown && member.is_none_or(|m| m.flags & QUARANTINED == 0)).then_some(pg)
 }
 
-/// "Server Tag", with the guild's name when I am in it (chip tooltip).
+/// "Server tag", with the guild's name when I am in it (chip tooltip).
 pub fn tag_tooltip(state: &crate::state::AppState, pg: &PrimaryGuild) -> String {
     match pg.identity_guild_id.and_then(|g| state.guild(g)) {
         Some(g) => format!("Server Tag · {}", g.name),
-        None => "Server Tag".into(),
+        None => "Server tag".into(),
     }
 }
 
@@ -793,23 +793,19 @@ pub fn badges(user: &User, profile: Option<&UserProfile>) -> Vec<ProfileBadge> {
 }
 
 /// 22 px badge icons on a faint pill: the description as tooltip, a click opens its https link.
+/// Only loaded icons show (no grey placeholder circles, docs/DESIGN.md §12); none loaded yet,
+/// no pill.
 pub(super) fn badge_row(ui: &mut egui::Ui, images: &mut ImageCache, pal: &Pal, badges: &[ProfileBadge]) {
-    if badges.is_empty() {
+    let loaded: Vec<(SizedTexture, &ProfileBadge)> = badges.iter().filter_map(|b| Some((cdn::badge_icon_url(&b.icon).and_then(|u| badge_icon(ui, images, &u))?, b))).collect();
+    if loaded.is_empty() {
         return;
     }
-    egui::Frame::new().fill(pal.tint()).corner_radius(pal.radius).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
+    egui::Frame::new().fill(pal.tk.hover).corner_radius(pal.radius).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            for b in badges {
+            for (tex, b) in loaded {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-                match cdn::badge_icon_url(&b.icon).and_then(|u| badge_icon(ui, images, &u)) {
-                    Some(tex) => {
-                        ui.painter().add(tex_shape(tex, r, 0, Color32::WHITE));
-                    }
-                    None => {
-                        ui.painter().circle_filled(r.center(), 9.0, pal.muted.gamma_multiply(0.3));
-                    }
-                }
+                ui.painter().add(tex_shape(tex, r, 0, Color32::WHITE));
                 let link = b.link.as_deref().filter(|l| l.starts_with("https://"));
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &b.description));
                 let resp = resp.on_hover_text(&b.description);
@@ -934,8 +930,8 @@ pub fn paint_platform_icon(painter: &egui::Painter, rect: Rect, kind: &str) {
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, letter, bold(rect.height() * 0.55), Color32::WHITE);
 }
 
-/// Connected accounts as a two-column grid of tiles: platform icon, name, ✔ when verified, ↗
-/// when it opens a profile page (else a click copies the name).
+/// Connected accounts as a two-column grid of tiles: platform icon, name, Check when verified,
+/// External when it opens a profile page (else a click copies the name).
 pub(super) fn connections_grid(ui: &mut egui::Ui, pal: &Pal, accounts: &[ConnectedAccount]) {
     let list: Vec<&ConnectedAccount> = accounts.iter().filter(|a| shown_connection(&a.kind)).collect();
     let w = ((ui.available_width() - 8.0) / 2.0).floor();
@@ -952,13 +948,13 @@ pub(super) fn connections_grid(ui: &mut egui::Ui, pal: &Pal, accounts: &[Connect
 fn connection_tile(ui: &mut egui::Ui, pal: &Pal, a: &ConnectedAccount, w: f32) {
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 44.0), Sense::click());
     let url = connection_url(&a.kind, &a.id, &a.name);
-    let fill = if resp.hovered() { pal.tint() } else { Color32::TRANSPARENT };
-    ui.painter().rect(rect, pal.radius, fill, egui::Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
+    let fill = if resp.hovered() { pal.tk.hover } else { Color32::TRANSPARENT };
+    ui.painter().rect(rect, pal.radius, fill, egui::Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
     let icon = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - 12.0), Vec2::splat(24.0));
     paint_platform_icon(ui.painter(), icon, &a.kind);
     let right = rect.right() - 10.0 - if url.is_some() { 18.0 } else { 0.0 };
     let check = if a.verified { 18.0 } else { 0.0 };
-    let g = one_line(ui, a.name.as_str(), bold(pal.size), pal.text, right - icon.right() - 10.0 - check);
+    let g = one_line(ui, a.name.as_str(), FontId::new(pal.ui(), crate::theme::medium_family()), pal.text, right - icon.right() - 10.0 - check);
     let gx = icon.right() + 10.0;
     let gw = g.size().x;
     ui.painter().galley(pos2(gx, rect.center().y - g.size().y / 2.0), g, pal.text);
@@ -972,8 +968,8 @@ fn connection_tile(ui: &mut egui::Ui, pal: &Pal, a: &ConnectedAccount, w: f32) {
     let (label, _) = platform(&a.kind);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, format!("{label}: {}", a.name)));
     let tip = match &url {
-        Some(_) => format!("{label}{}", if a.verified { " · Verified" } else { "" }),
-        None => format!("{label} · Copy name"),
+        Some(_) => format!("{label}{}", if a.verified { ", verified" } else { "" }),
+        None => format!("{label}: select to copy the name"),
     };
     let resp = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.clicked() {
@@ -990,10 +986,10 @@ fn connection_tile(ui: &mut egui::Ui, pal: &Pal, a: &ConnectedAccount, w: f32) {
 
 fn widget_title(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "favorite_games" => "Favorite Game",
-        "current_games" => "Games in Rotation",
-        "played_games" => "Games I Like",
-        "want_to_play_games" => "Want to Play",
+        "favorite_games" => "Favorite game",
+        "current_games" => "Games in rotation",
+        "played_games" => "Games I like",
+        "want_to_play_games" => "Want to play",
         _ => return None,
     })
 }
@@ -1015,8 +1011,9 @@ pub(super) fn game_collection(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, w
         cx.cmd.send(Command::Social(SocialCommand::FetchGames { ids }));
     }
     for w in shown {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(widget_title(&w.data.kind).unwrap_or_default()).font(bold(pal.meta())).color(pal.muted));
+        // A section of the profile: the label role, 16 px under the previous one.
+        ui.add_space(16.0 - ui.spacing().item_spacing.y);
+        ui.label(egui::RichText::new(widget_title(&w.data.kind).unwrap_or_default()).font(super::semibold(pal.label())).color(pal.muted));
         let detailed = w.data.kind == "favorite_games";
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
@@ -1035,7 +1032,7 @@ fn game_tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, wg: &WidgetGame, d
     let (rect, resp) = ui.allocate_exact_size(vec2(w, cover.y + if detailed { 0.0 } else { 20.0 }), Sense::hover());
     let art = Rect::from_min_size(rect.min, cover);
     let painter = ui.painter();
-    painter.rect_filled(art, pal.radius, pal.tint());
+    painter.rect_filled(art, pal.radius, pal.tk.hover);
     let cover_url = game.as_ref().and_then(|g| g.supplemental_game_data.as_ref()?.cover_image_url.as_deref()).and_then(cdn::game_cover_url);
     let icon_url = game.as_ref().and_then(|g| cdn::app_icon_url(g.id, g.icon_hash.as_deref()?, 64));
     if let Some(tex) = cover_url.and_then(|u| cx.images.get(ui.ctx(), &u, px(ui.ctx(), cover.y), false)) {
@@ -1056,12 +1053,12 @@ fn game_tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, wg: &WidgetGame, d
             ui.painter().galley(pos2(x, y), g, color);
             y += h + 4.0;
         };
-        line(if name.is_empty() { "…".into() } else { name.clone() }, bold(pal.size), pal.text);
+        line(if name.is_empty() { "…".into() } else { name.clone() }, super::semibold(pal.heading()), pal.text);
         if let Some(c) = wg.comment.as_deref().filter(|c| !c.is_empty()) {
             line(c.to_owned(), FontId::proportional(pal.meta()), pal.text);
         }
         if !wg.tags.is_empty() {
-            line(wg.tags.iter().map(|t| tag_label(t)).collect::<Vec<_>>().join(" · "), FontId::proportional(pal.meta()), pal.muted);
+            line(wg.tags.iter().map(|t| tag_label(t)).collect::<Vec<_>>().join(", "), FontId::proportional(pal.meta()), pal.muted);
         }
     } else {
         let g = one_line(ui, name.as_str(), FontId::proportional(pal.meta()), pal.muted, cover.x);

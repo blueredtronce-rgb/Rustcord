@@ -36,12 +36,12 @@ impl Tab {
 
     fn label(self) -> &'static str {
         match self {
-            Tab::Decoration => "Avatar Decoration",
+            Tab::Decoration => "Avatar decoration",
             Tab::Nameplate => "Nameplate",
-            Tab::Effect => "Profile Effect",
-            Tab::Frame => "Profile Frame",
-            Tab::NameStyle => "Name Style",
-            Tab::Theme => "Profile Theme",
+            Tab::Effect => "Profile effect",
+            Tab::Frame => "Profile frame",
+            Tab::NameStyle => "Name style",
+            Tab::Theme => "Profile theme",
         }
     }
 
@@ -504,11 +504,12 @@ fn tile_ui(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, k: u8, size: Vec2, i
     p.galley(pos2(rect.center().x - g.size().x / 2.0, rect.max.y - 19.0), g, pal.text);
     if owned {
         let c = pos2(rect.right() - 10.0, rect.top() + 10.0);
-        p.circle_filled(c, 7.0, pal.accent);
-        super::super::icons::paint(&p, super::super::icons::Icon::Check, Rect::from_center_size(c, Vec2::splat(10.0)), egui::Color32::WHITE, pal.accent);
+        // Owned: a check on `positive` (a state, with its shape), never the accent.
+        p.circle_filled(c, 7.0, pal.tk.positive);
+        super::super::icons::paint(&p, super::super::icons::Icon::Check, Rect::from_center_size(c, Vec2::splat(10.0)), pal.tk.on_positive, pal.tk.positive);
     }
     if selected {
-        p.rect_stroke(rect, pal.radius, Stroke::new(2.0, pal.accent), egui::StrokeKind::Inside);
+        p.rect_stroke(rect, pal.radius, Stroke::new(2.0, pal.text), egui::StrokeKind::Inside);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -718,15 +719,16 @@ fn swatch(ui: &mut egui::Ui, pal: &Pal, colors: &[u32], selected: bool) -> egui:
             let r = Rect::from_min_size(pos2(rect.left() + w * i as f32, rect.top()), vec2(w, rect.height()));
             ui.painter().rect_filled(r, 0.0, rgb(*c));
         }
-        let stroke = if selected { Stroke::new(2.0, pal.accent) } else { Stroke::new(1.0, pal.line()) };
+        let stroke = if selected { Stroke::new(2.0, pal.text) } else { Stroke::new(1.0, pal.tk.rule) };
         ui.painter().rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A field label: the label role (13/600, muted, sentence case as written).
 fn label(ui: &mut egui::Ui, pal: &Pal, text: &str) {
-    ui.add_space(4.0);
-    ui.label(RichText::new(text.to_uppercase()).font(super::super::bold(pal.size - 2.5)).color(pal.muted));
+    ui.add_space(8.0 - ui.spacing().item_spacing.y);
+    ui.label(RichText::new(text).font(super::super::semibold(pal.label())).color(pal.muted));
 }
 
 // ---------------------------------------------------------------------------
@@ -813,13 +815,14 @@ fn preview_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, me: &User, l: &
             ui.painter().add(display::theme_shapes(ui.ctx(), "cosmetics-preview", card, radius, c, banner.bottom(), pal.dark));
         }
         None => {
-            ui.painter().rect(card, radius, pal.surface, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
+            ui.painter().rect(card, radius, pal.surface, Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
         }
     }
-    let fill = l.theme.map(|(a, _)| rgb(a)).or(me.accent_color.map(rgb)).unwrap_or_else(|| images::initial_colors(me.id.0, pal.dark).0);
+    // No banner colour: the card itself (profile::banner), never a flat grey block.
+    let fill = l.theme.map(|(a, _)| rgb(a)).or(me.accent_color.map(rgb)).unwrap_or(pal.surface);
     let top = CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 };
     // My uploaded (or local) banner fades into the card, as on my profile card.
-    let (banner_url, _) = crate::ui::profile::banner(cx, me, None, true, pal.dark);
+    let (banner_url, _) = crate::ui::profile::banner(cx, me, None, true);
     match banner_url.as_ref().and_then(|url| cx.images.get(ui.ctx(), url, 600, false)) {
         Some(tex) => crate::ui::profile::paint_banner(ui.painter(), banner, top, tex, l.theme.map(|_| display::theme_veil(pal.dark))),
         None => {

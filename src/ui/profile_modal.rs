@@ -8,7 +8,8 @@
 //! shared with the popout (`note_field`, `SetNote` on blur).
 //! OWNERSHIP: friends/DMs/inbox/profile engineer (docs/SOCIAL_UI_DESIGN.md).
 
-use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup};
+use super::icons::Icon;
+use super::messages::{Btn, MenuIcon, Pal, menu_item, menu_setup, vector_button};
 use super::sidebar::{self, user_avatar_at, user_dot};
 use super::{Modal, UiCx, bold, cosmetics, one_line};
 use crate::backend::{Command, SocialCommand};
@@ -82,26 +83,33 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
     let look = cosmetics::profile_look(cx, user_id, guild_id, true);
     // A themed profile has its own colours and light / dark mode (§8), whatever the app's.
     let app = Pal::new(cx.theme);
-    let pal = look.theme.map_or(app, |t| cosmetics::theme_pal(&app, t));
+    // A modal (E3): `raised`, which the avatar ring and art tiles follow.
+    let pal = look.theme.map_or(Pal { surface: app.tk.raised, ..app }, |t| cosmetics::theme_pal(&app, t));
+    let r = pal.modal_radius();
     let is_me = cx.state.me.as_ref().is_some_and(|m| m.id == user_id);
-    let (banner_url, fill) = super::profile::banner(cx, &user, guild_id, is_me, pal.dark);
+    let (banner_url, fill) = super::profile::banner(cx, &user, guild_id, is_me);
     let (width, screen_h) = (WIDTH.min(ctx.content_rect().width() - 48.0), ctx.content_rect().height());
     // The whole modal fits under the title bar with a margin, and so do a frame's top staples
     // (pushed down by their height): the tab body scrolls in what the rest (measured last frame)
     // leaves, or, when that is under 80 px, the whole card scrolls.
     let ot = look.overflow_top(width);
     let room = screen_h - super::TITLE_BAR_H - 2.0 * MARGIN - ot;
-    let banner_h = if room < 480.0 { 72.0 } else if screen_h < 600.0 { 96.0 } else { BANNER };
     let side = if room < 480.0 { 88.0 } else { AVATAR };
+    // No banner image or colour: just room for the avatar's upper half.
+    let banner_h = if banner_url.is_none() && fill.is_none() { side / 2.0 + 24.0 } else if room < 480.0 { 72.0 } else if screen_h < 600.0 { 96.0 } else { BANNER };
     let rest_id = egui::Id::unique(("rc_profile_modal_rest", banner_h.to_bits()));
     let rest = ctx.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(banner_h + 250.0);
     let short = room - rest < 80.0;
     let body_h = (room - rest).clamp(80.0, 320.0);
-    let mut frame = Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(Margin::ZERO);
-    if look.theme.is_some() {
+    let style = ctx.global_style();
+    let edge = match look.theme {
         // The theme's gradient outline instead (`cosmetics::theme_outline`).
-        frame = frame.stroke(egui::Stroke::NONE);
-    }
+        Some(_) => Stroke::NONE,
+        // High contrast floats have no shadow, a 1.5 px muted edge instead.
+        None if pal.tk.mode == crate::theme::Mode::HighContrast => Stroke::new(1.5, pal.muted),
+        None => Stroke::new(1.0, pal.tk.rule),
+    };
+    let frame = Frame::popup(&style).fill(pal.surface).shadow(style.visuals.window_shadow).stroke(edge).corner_radius(r).inner_margin(Margin::ZERO);
     // Centred under that line (its height from last frame); a modal taller than the room is
     // clipped at the window bottom instead of pushed up over the title bar. Not constrained:
     // the area's clip (= its constrain rect) also clips the backdrop, which must dim the whole
@@ -113,7 +121,7 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
     let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, vec2(0.0, y)).constrain(false);
     let member = guild_id.and_then(|g| cx.state.find_member(g, user_id)).cloned();
     let fx = crate::overrides::effective_for(&user, member.as_ref());
-    let resp = egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+    let resp = egui::Modal::new(id).area(area).frame(frame).backdrop_color(pal.tk.scrim).show(ctx, |ui| {
         if look.theme.is_some() {
             cosmetics::theme_visuals(ui, &pal);
         }
@@ -127,13 +135,13 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
         let card_scroll = egui::ScrollArea::vertical().id_salt(("rc_profile_modal_card", user_id)).max_height(room).auto_shrink([false, true]);
         let banner_bottom = card_scroll
             .show(ui, |ui| {
-                let top = CornerRadius { nw: pal.card_radius(), ne: pal.card_radius(), sw: 0, se: 0 };
+                let top = CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
                 let (rect, _) = ui.allocate_exact_size(vec2(width, banner_h), Sense::hover());
                 let animated = super::profile::banner_animates(cx, banner_url.as_deref(), is_me, ui.rect_contains_pointer(rect));
                 match banner_url.as_deref().and_then(|u| cx.images.get(ui.ctx(), u, 600, animated)) {
                     Some(tex) => super::profile::paint_banner(ui.painter(), rect, top, tex, look.theme.map(|_| cosmetics::theme_veil(pal.dark))),
                     None => {
-                        ui.painter().rect_filled(rect, top, fill);
+                        ui.painter().rect_filled(rect, top, fill.unwrap_or(egui::Color32::TRANSPARENT));
                     }
                 }
                 let center = pos2(rect.left() + 24.0 + side / 2.0, rect.bottom());
@@ -158,15 +166,19 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
                 Frame::new().inner_margin(Margin { left: 24, right: 24, top: 0, bottom: 20 }).show(ui, |ui| {
                     ui.set_width(width - 48.0);
                     let style = fx.name_style.as_ref();
-                    let name_g = cosmetics::name_galley(ui, &name, bold(24.0), style, pal.text, width - 48.0);
+                    let name_g = cosmetics::name_galley(ui, &name, bold(pal.display()), style, pal.text, width - 48.0);
                     let (r, _) = ui.allocate_exact_size(name_g.size(), Sense::hover());
                     cosmetics::paint_name(ui.painter(), r.min, name_g, style, pal.text, pal.dark);
                     let profile = loaded(cx, user_id, guild_id);
                     let pronouns = profile.and_then(|p| p.pronouns()).map(str::to_owned);
                     let badges = cosmetics::badges(&user, profile);
-                    let handle = [Some(user.username.clone()), pronouns].into_iter().flatten().collect::<Vec<_>>().join(" • ");
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(handle).color(pal.muted));
+                        // "alice", 8 px, "they/them": no bullet between them.
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(RichText::new(&user.username).color(pal.muted));
+                        if let Some(p) = pronouns {
+                            ui.label(RichText::new(p).color(pal.muted));
+                        }
                         if let Some(pg) = cosmetics::guild_tag(&user, member.as_ref()) {
                             let (r, resp) = ui.allocate_exact_size(vec2(cosmetics::tag_chip_width(ui, pg, pal.size), ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
                             cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
@@ -192,10 +204,10 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
             .inner;
         let card = ui.min_rect();
         if let Some(colors) = look.theme {
-            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "modal", card, pal.card_radius(), colors, banner_bottom, pal.dark));
-            ui.painter().add(cosmetics::theme_outline(card, pal.card_radius(), colors));
+            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "modal", card, r, colors, banner_bottom, pal.dark));
+            ui.painter().add(cosmetics::theme_outline(card, r, colors));
         }
-        look.finish(ui, cx.images, card, pal.card_radius(), behind, cosmetics::shown_for(ui.ctx(), ("modal", user_id)), fx_anim);
+        look.finish(ui, cx.images, card, r, behind, cosmetics::shown_for(ui.ctx(), ("modal", user_id)), fx_anim);
     });
     if resp.should_close() || cx.view.modal != Some(Modal::Profile { user_id, guild_id }) {
         save_note(cx);
@@ -211,13 +223,13 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
     }
 }
 
-/// Message (accent), the friend state, and ⋯ (relationship items, Copy User ID).
+/// Message (the one primary), the friend state, and More (relationship items, Copy user ID).
 fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, is_me: bool) {
     ui.spacing_mut().item_spacing.x = 8.0;
     if is_me {
         return;
     }
-    let more = icon_button(ui, pal, "⋯", "More", 32.0, false, pal.text);
+    let more = vector_button(ui, pal, Icon::More, "More", 32.0, false, pal.text);
     egui::Popup::menu(&more).show(|ui| {
         menu_setup(ui);
         super::friends::user_menu_items(ui, cx, user_id);
@@ -226,13 +238,12 @@ fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, is_me: 
         if dev {
             ui.separator();
         }
-        if dev && menu_item(ui, "Copy User ID", MenuIcon::Glyph("🆔"), pal.text) {
+        if dev && menu_item(ui, "Copy user ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
             ui.ctx().copy_text(user_id.0.to_string());
         }
     });
     super::profile::friend_button(ui, cx, pal, user_id);
-    let text = RichText::new("Message").color(cx.theme.colors.accent_text.to_color32());
-    if ui.add(egui::Button::new(text).fill(pal.accent).min_size(vec2(96.0, 32.0))).clicked() {
+    if super::messages::button(ui, pal, Btn::Primary, "Message", true).clicked() {
         super::friends::message_user(cx, user_id);
     }
 }
@@ -240,17 +251,17 @@ fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, is_me: 
 fn tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, guild_id: Option<Id>) {
     let (servers, friends) = loaded(cx, user_id, guild_id).map_or((0, 0), |p| (p.mutual_guilds.len(), mutual_friends(p)));
     let is_me = cx.state.me.as_ref().is_some_and(|m| m.id == user_id);
-    let mut list = vec![(Tab::About, "About Me".to_owned())];
+    let mut list = vec![(Tab::About, "About me".to_owned())];
     if !is_me {
-        list.push((Tab::Servers, format!("{servers} Mutual Server{}", if servers == 1 { "" } else { "s" })));
-        list.push((Tab::Friends, format!("{friends} Mutual Friend{}", if friends == 1 { "" } else { "s" })));
+        list.push((Tab::Servers, format!("{servers} mutual server{}", if servers == 1 { "" } else { "s" })));
+        list.push((Tab::Friends, format!("{friends} mutual friend{}", if friends == 1 { "" } else { "s" })));
     }
     let rect = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 24.0;
             for (tab, label) in list {
                 let selected = cx.view.profile_modal_ui.tab == tab;
-                let g = ui.painter().layout_no_wrap(label.clone(), FontId::proportional(pal.size), pal.text);
+                let g = ui.painter().layout_no_wrap(label.clone(), FontId::new(pal.ui(), crate::theme::medium_family()), pal.text);
                 let (r, resp) = ui.allocate_exact_size(g.size() + vec2(0.0, 12.0), Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, &label));
                 let color = if selected || resp.hovered() { pal.text } else { pal.muted };
@@ -266,7 +277,7 @@ fn tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, guild_id: 
         })
         .response
         .rect;
-    ui.painter().hline(rect.x_range(), rect.bottom() + 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(rect.x_range(), rect.bottom() + 0.5, Stroke::new(1.0, pal.tk.rule));
     ui.add_space(6.0);
 }
 
@@ -292,9 +303,10 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, guild_id: 
     }
 }
 
+/// A section heading of the About tab: the label role, 16 px under the previous section.
 fn label(ui: &mut egui::Ui, pal: &Pal, text: &str) {
-    ui.add_space(4.0);
-    ui.label(RichText::new(text).font(bold(pal.meta())).color(pal.muted));
+    ui.add_space(16.0 - ui.spacing().item_spacing.y);
+    ui.label(RichText::new(text).font(super::semibold(pal.label())).color(pal.muted));
 }
 
 fn about(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, guild_id: Option<Id>) {
@@ -311,8 +323,8 @@ fn about(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, guild_id:
         label(ui, pal, &a.heading());
         super::profile::activity_section(ui, cx, pal, &a, 64.0, pal.surface);
     }
-    label(ui, pal, "Member Since");
-    ui.label(RichText::new(super::profile::member_since(user.id)).color(pal.text));
+    label(ui, pal, "Member since");
+    ui.label(RichText::new(super::profile::member_since(user.id)).size(pal.ui()).color(pal.text));
     let member = guild_id.and_then(|g| cx.state.find_member(g, user.id)).cloned();
     let roles = super::profile::guild_roles(cx, guild_id, member.as_ref());
     if !roles.is_empty() {
@@ -382,7 +394,7 @@ fn list_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, salt: impl egui::As
     paint(ui, cx, pic);
     let resp = ui.interact(row, ui.make_persistent_id(salt), Sense::click());
     if resp.hovered() {
-        ui.painter().set(bg, egui::Shape::rect_filled(row, pal.radius, pal.tint()));
+        ui.painter().set(bg, egui::Shape::rect_filled(row, pal.radius, pal.tk.hover));
     }
     let left = pic.right() + 12.0;
     let g = one_line(ui, name, bold(pal.size), pal.text, row.right() - left - 8.0);
