@@ -1002,17 +1002,18 @@ fn guild_channels(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
                 // Collapsed categories still show the open channel, channels needing attention
                 // and occupied voice channels.
                 let occupied = cx.state.voice_states.contains_key(&id);
-                let keep = cx.state.selected_channel == Some(id)
+                let shown = !collapsed
+                    || cx.state.selected_channel == Some(id)
                     || occupied
                     || cx.state.mention_count(id) > 0
                     || (cx.state.is_unread(id) && !cx.state.is_channel_muted(id));
-                if !collapsed || keep {
+                if shown {
                     channel_row(ui, cx, id);
                     if occupied {
                         voice_users(ui, cx, guild_id, id);
                     }
                 }
-                if let Some(t) = threads.get(&id).filter(|_| !collapsed || keep) {
+                if let Some(t) = threads.get(&id).filter(|_| shown) {
                     threads::sidebar_rows(ui, cx, id, t);
                 }
             }
@@ -1036,18 +1037,27 @@ fn category_row(ui: &mut egui::Ui, cx: &UiCx<'_>, id: Id, name: &str, collapsed:
     let resp = ui.interact(row, ui.make_persistent_id(("category", id)), Sense::click());
     let color = if resp.hovered() || resp.has_focus() { c.text } else { c.text_muted }.to_color32();
     let open = ui.ctx().animate_bool_with_time(resp.id.with("open"), !collapsed, super::messages::motion(ui, 0.12));
-    let turn = egui::emath::Rot2::from_angle((open - 1.0) * FRAC_PI_2);
-    let center = pos2(row.left() + PAD - 2.0, row.center().y);
-    let pts = [vec2(-4.0, -2.0), vec2(0.0, 2.0), vec2(4.0, -2.0)].map(|v| center + turn * v);
-    ui.painter().add(Shape::line(pts.to_vec(), Stroke::new(1.5, color)));
-    let left = row.left() + PAD + 8.0;
-    let g = one_line(ui, name, super::semibold(cx.theme.font.size - 2.0), color, row.right() - PAD - left);
-    ui.painter().galley(pos2(left, row.center().y - g.size().y / 2.0), g, color);
-    if resp.has_focus() {
-        row_focus(ui, cx, row);
+    if in_view(ui, row) {
+        let turn = egui::emath::Rot2::from_angle((open - 1.0) * FRAC_PI_2);
+        let center = pos2(row.left() + PAD - 2.0, row.center().y);
+        let pts = [vec2(-4.0, -2.0), vec2(0.0, 2.0), vec2(4.0, -2.0)].map(|v| center + turn * v);
+        ui.painter().add(Shape::line(pts.to_vec(), Stroke::new(1.5, color)));
+        let left = row.left() + PAD + 8.0;
+        let g = one_line(ui, name, super::semibold(cx.theme.font.size - 2.0), color, row.right() - PAD - left);
+        ui.painter().galley(pos2(left, row.center().y - g.size().y / 2.0), g, color);
+        if resp.has_focus() {
+            row_focus(ui, cx, row);
+        }
     }
     resp.widget_info(|| WidgetInfo::selected(Role::DisclosureTriangle, true, !collapsed, name));
     resp
+}
+
+/// Whether a row of the (not virtualized) channel list is in view. A row out of view keeps its
+/// widget (focus order, menu, keyboard clicks, animations) but skips the paint, which the clip
+/// would drop anyway: rows paint inside their rect, the margin covers anti-aliasing.
+fn in_view(ui: &egui::Ui, row: Rect) -> bool {
+    ui.is_rect_visible(row.expand(4.0))
 }
 
 /// Keyboard focus ring of a full-width list row, inset so it stays inside the card.
@@ -1108,54 +1118,58 @@ fn channel_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
         return;
     }
     let Some(ch) = cx.state.channels.get(&id) else { return };
-    let (kind, guild_id, icon) = (ch.kind, ch.guild_id, icons::of(ch, cx.state));
+    let (kind, guild_id) = (ch.kind, ch.guild_id);
     // Forum / media channels open their post list (forum.rs).
     let supported = ch.is_text_chat() || matches!(kind, ct::GUILD_FORUM | ct::GUILD_MEDIA);
     let voice = matches!(kind, ct::GUILD_VOICE | ct::GUILD_STAGE_VOICE);
     let name = ch.name.clone().unwrap_or_else(|| cx.state.channel_name(id));
     let selected = cx.state.selected_channel == Some(id);
     let connected = voice && cx.state.voice.channel_id == Some(id);
-    let muted = cx.state.is_channel_muted(id);
-    let unread = supported && !muted && !selected && cx.state.is_unread(id);
-    let mentions = if supported { cx.state.mention_count(id) } else { 0 };
 
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
-    let bg_slot = ui.painter().add(Shape::Noop);
+    let shown = in_view(ui, row);
+    let bg_slot = shown.then(|| ui.painter().add(Shape::Noop));
     let resp = ui.interact(row, ui.make_persistent_id(("channel", id)), if supported { Sense::click() } else { Sense::hover() });
     // Also while the pointer is on the chat button (a widget on top of the row).
     let hovered = supported && ui.rect_contains_pointer(row);
-    let fill = row_chrome(ui, cx, bg_slot, row, selected, hovered, unread);
-
-    let c = &cx.theme.colors;
-    let size = cx.theme.font.size;
-    if connected {
-        let bar = Rect::from_min_size(pos2(row.left() + ROW_INSET, row.top() + 6.0), vec2(2.0, ROW_H - 12.0));
-        ui.painter().rect_filled(bar, 1, presence_color(Presence::Online, c));
-    }
-    let color = row_text_color(c, !supported || muted, selected || unread || hovered);
-    // 20 px icon after 8 px of row padding, then the name; it follows the name's colour.
-    let slot = Rect::from_center_size(pos2(row.left() + ROW_INSET + 18.0, row.center().y), Vec2::splat(20.0));
-    icons::paint_channel(ui.painter(), icon, slot, color, row_bg(c, fill));
-    let mut right = row.right() - ROW_INSET - 8.0;
     let mut open_chat = false;
-    if voice && hovered {
-        let pal = Pal::new(cx.theme);
-        let r = Rect::from_center_size(pos2(right - 10.0, row.center().y), Vec2::splat(20.0));
-        // Not allocated: the row already holds the space.
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-        open_chat = icon_button(&mut child, &pal, "💬", "Open chat", 20.0, false, pal.text).clicked();
-        right -= 24.0;
-    } else if mentions > 0 {
-        right -= badge(ui, c, pos2(right, row.center().y), mentions, None) + 8.0;
-    }
-    right -= crate::plugins::sidebar::typing_dots(ui, cx.state, id, pos2(right, row.center().y));
-    // Body 500; unread 600 (docs/DESIGN.md §10.2).
-    let font = if unread { super::semibold(size) } else { FontId::new(size, crate::theme::medium_family()) };
-    let text_left = row.left() + ROW_INSET + 36.0;
-    let g = one_line(ui, name.as_str(), font, color, right - text_left);
-    ui.painter().galley(pos2(text_left, row.center().y - g.size().y / 2.0), g, color);
-    if resp.has_focus() {
-        row_focus(ui, cx, row);
+    if let Some(bg_slot) = bg_slot {
+        let muted = cx.state.is_channel_muted(id);
+        let unread = supported && !muted && !selected && cx.state.is_unread(id);
+        let mentions = if supported { cx.state.mention_count(id) } else { 0 };
+        let fill = row_chrome(ui, cx, bg_slot, row, selected, hovered, unread);
+
+        let c = &cx.theme.colors;
+        let size = cx.theme.font.size;
+        if connected {
+            let bar = Rect::from_min_size(pos2(row.left() + ROW_INSET, row.top() + 6.0), vec2(2.0, ROW_H - 12.0));
+            ui.painter().rect_filled(bar, 1, presence_color(Presence::Online, c));
+        }
+        let color = row_text_color(c, !supported || muted, selected || unread || hovered);
+        // 20 px icon after 8 px of row padding, then the name; it follows the name's colour.
+        let slot = Rect::from_center_size(pos2(row.left() + ROW_INSET + 18.0, row.center().y), Vec2::splat(20.0));
+        icons::paint_channel(ui.painter(), icons::of(&cx.state.channels[&id], cx.state), slot, color, row_bg(c, fill));
+        let mut right = row.right() - ROW_INSET - 8.0;
+        if voice && hovered {
+            let pal = Pal::new(cx.theme);
+            let r = Rect::from_center_size(pos2(right - 10.0, row.center().y), Vec2::splat(20.0));
+            // Not allocated: the row already holds the space.
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+            open_chat = icon_button(&mut child, &pal, "💬", "Open chat", 20.0, false, pal.text).clicked();
+            right -= 24.0;
+        } else if mentions > 0 {
+            right -= badge(ui, c, pos2(right, row.center().y), mentions, None) + 8.0;
+        }
+        // Out of view no dots either: they would only keep the 80 ms repaint going.
+        right -= crate::plugins::sidebar::typing_dots(ui, cx.state, id, pos2(right, row.center().y));
+        // Body 500; unread 600 (docs/DESIGN.md §10.2).
+        let font = if unread { super::semibold(size) } else { FontId::new(size, crate::theme::medium_family()) };
+        let text_left = row.left() + ROW_INSET + 36.0;
+        let g = one_line(ui, name.as_str(), font, color, right - text_left);
+        ui.painter().galley(pos2(text_left, row.center().y - g.size().y / 2.0), g, color);
+        if resp.has_focus() {
+            row_focus(ui, cx, row);
+        }
     }
 
     resp.widget_info(|| WidgetInfo::selected(Role::Button, supported, selected || connected, &name));
