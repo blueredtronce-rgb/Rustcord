@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rustcord
+GenericName=Chat client
+Comment=Lightweight third-party chat client
+Exec=rustcord
+Icon=rustcord
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupWMClass=rustcord
