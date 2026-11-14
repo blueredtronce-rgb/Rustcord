@@ -9,9 +9,9 @@ use super::{field_label, switch_row};
 use crate::backend::{Command, CommandSender};
 use crate::config::Settings;
 use crate::ui::messages::Pal;
-use crate::ui::section;
+use crate::ui::{hint, section};
 use crate::voice::InputMode;
-use crate::voice::video::{VideoCommand, VideoKey};
+use crate::voice::video::{VideoCommand, VideoKey, capture};
 use egui::{Key, Modifiers, PointerButton, Rect, RichText, Sense, Stroke, vec2};
 
 /// The page's per-opening state (the choices live in `Settings`).
@@ -148,6 +148,9 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
                 Some(None) => f.capturing = None,
                 None => {}
             }
+        }
+        if !cfg!(windows) {
+            hint(ui, cx.theme, "Push to talk works while the Rustcord window is in front.");
         }
     }
     if mode != old_mode {
@@ -301,6 +304,20 @@ fn vk_code(key: Key) -> Option<u16> {
     })
 }
 
+/// The push-to-talk key `vk` is held in this window's input (Linux, macOS: no global key state).
+#[cfg_attr(windows, allow(dead_code))]
+pub(super) fn key_held(i: &egui::InputState, vk: u16) -> bool {
+    match vk {
+        0 => false,
+        0x05 => i.pointer.button_down(PointerButton::Extra1),
+        0x06 => i.pointer.button_down(PointerButton::Extra2),
+        0x10 => i.modifiers.shift,
+        0x11 => i.modifiers.ctrl,
+        0x12 => i.modifiers.alt,
+        _ => Key::ALL.iter().find(|k| vk_code(**k) == Some(vk)).is_some_and(|k| i.key_down(*k)),
+    }
+}
+
 fn key_name(vk: u16) -> String {
     match vk {
         0 => "Record keybind".into(),
@@ -330,5 +347,21 @@ mod tests {
         assert_eq!(key_name(0x56), "V");
         assert_eq!(key_name(0x05), "Mouse 4");
         assert_eq!(key_name(0), "Record keybind");
+    }
+
+    #[test]
+    fn push_to_talk_key_from_window_input() {
+        let ctx = egui::Context::default();
+        let held = |events: Vec<egui::Event>, vk: u16| {
+            let mut out = false;
+            ctx.run_pass(egui::RawInput { events, ..Default::default() }, |ctx| out = ctx.input(|i| key_held(i, vk))).drop_without_applying_deltas();
+            out
+        };
+        let key = |pressed| egui::Event::Key { key: Key::V, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+        assert!(held(vec![key(true)], 0x56), "V down");
+        assert!(held(vec![], 0x56), "still held");
+        assert!(!held(vec![], 0x41), "another key");
+        assert!(!held(vec![key(false)], 0x56), "released");
+        assert!(!held(vec![], 0));
     }
 }

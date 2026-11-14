@@ -9,7 +9,7 @@
 //! convert and copy samples through lock-free bounded rings (`device::Ring`), never block and
 //! never allocate. Received packets reach the thread through a bounded queue (`Playback`).
 //! Push-to-talk polls `GetAsyncKeyState` (windows-sys `Win32_UI_Input_KeyboardAndMouse`) every
-//! 10 ms on that thread; elsewhere PTT never transmits.
+//! 10 ms on that thread; on Linux / macOS it reads the key as the focused window saw it.
 //!
 //! Memory bounds: capture queue `CAPTURE_QUEUE` frames, received queue `PACKET_QUEUE`
 //! packets, jitter `JITTER_PACKETS` per SSRC, mic ring 200 ms, output ring ≤ 100 ms; a
@@ -159,9 +159,20 @@ fn key_down(vk: u16) -> bool {
     unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(vk)) < 0 }
 }
 
+/// Linux, macOS: the key as the window last saw it (`set_ptt_held`; no global key state).
 #[cfg(not(windows))]
 fn key_down(_vk: u16) -> bool {
-    false
+    PTT_HELD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(windows))]
+static PTT_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Linux, macOS: the push-to-talk key is held in the focused Rustcord window (set each pass by
+/// `user_settings::logic`; false while the window is in the background).
+#[cfg(not(windows))]
+pub fn set_ptt_held(held: bool) {
+    PTT_HELD.store(held, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// One remote SSRC.
