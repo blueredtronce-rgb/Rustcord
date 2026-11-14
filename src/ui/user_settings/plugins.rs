@@ -229,7 +229,7 @@ fn option(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, o: &Opt) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(o.label).color(pal.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ComboBox::from_id_salt((m.name, o.key)).selected_text(list[cur]).show_ui(ui, |ui| {
+                    ComboBox::from_id_salt((m.name, o.key)).selected_text(list[cur]).icon(super::combo_icon).show_ui(ui, |ui| {
                         for (i, c) in list.iter().enumerate() {
                             if ui.selectable_label(cur == i, *c).clicked() && cur != i {
                                 save(cx, plugins::set(p, o.key, toml::Value::Integer(i as i64)));

@@ -592,7 +592,7 @@ fn guild_notifications(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                         send = Some((g.id, NotificationPatch { muted: Some(!muted), ..Default::default() }));
                     }
                     let mut pick = level;
-                    egui::ComboBox::from_id_salt(("rc_guild_notify", g.id)).width(150.0).selected_text(LEVELS[level as usize]).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt(("rc_guild_notify", g.id)).width(150.0).selected_text(LEVELS[level as usize]).icon(combo_icon).show_ui(ui, |ui| {
                         for (i, l) in LEVELS.iter().enumerate() {
                             ui.selectable_value(&mut pick, i as u8, *l);
                         }
@@ -721,35 +721,58 @@ fn switch(ui: &mut egui::Ui, pal: &Pal, on: &mut bool, label: &str) -> egui::Res
     super::messages::switch(ui, pal, on, label)
 }
 
-/// A setting row (§12, min 56 tall): the title (ui 14/500) and an optional description (meta,
-/// muted) on the left, the switch on the right level with the title, a `rule` under the row.
-/// True when toggled.
+/// A switch row (`setting_row`). True when toggled.
 fn switch_row(ui: &mut egui::Ui, theme: &Theme, label: &str, hint_text: Option<&str>, on: &mut bool) -> bool {
     let pal = Pal::new(theme);
-    let changed = egui::Frame::new()
+    setting_row(ui, theme, label, hint_text, vec2(40.0, 24.0), |ui| switch(ui, &pal, on, label).changed())
+}
+
+/// A setting row (§12, min 56 tall): the title (ui 14/500) and an optional description (meta,
+/// muted) on the left, the `ctl`-sized control on the right, level with the title. A row that
+/// directly follows another one (same group: no heading or other content between them) gets a
+/// `rule` above it, so a group has rules between its rows and none after the last.
+fn setting_row<R>(ui: &mut egui::Ui, theme: &Theme, label: &str, hint_text: Option<&str>, ctl: egui::Vec2, control: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let pal = Pal::new(theme);
+    // Where the last row ended, in this pass.
+    let last_end = egui::Id::unique("rc_settings_row_end");
+    let (pass, start) = (ui.ctx().cumulative_pass_nr(), ui.cursor().min);
+    let follows = ui.data(|d| d.get_temp::<(u64, egui::Pos2)>(last_end)).is_some_and(|(p, end)| p == pass && end.distance(start) < 0.5);
+    if follows {
+        let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+        ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, pal.tk.rule));
+    }
+    let title_font = egui::FontId::new(pal.ui(), crate::theme::medium_family());
+    let line = ui.fonts_mut(|f| f.row_height(&title_font));
+    let inner = egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(0, 12))
         .show(ui, |ui| {
             ui.set_min_height(32.0);
             ui.horizontal_top(|ui| {
-                let text_w = (ui.available_width() - 40.0 - 16.0).max(80.0);
+                let text_w = (ui.available_width() - ctl.x - 16.0).max(80.0);
                 ui.allocate_ui_with_layout(vec2(text_w, 0.0), Layout::top_down(Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    // Centres the title line on the 24 px switch.
-                    ui.add_space(2.0);
-                    let title = RichText::new(label).font(egui::FontId::new(pal.ui(), crate::theme::medium_family())).color(pal.text);
-                    ui.add(egui::Label::new(title).wrap());
+                    // Centres the title line on the control.
+                    ui.add_space(((ctl.y - line) / 2.0).max(0.0));
+                    ui.add(egui::Label::new(RichText::new(label).font(title_font).color(pal.text)).wrap());
                     if let Some(h) = hint_text {
                         ui.add(egui::Label::new(RichText::new(h).size(pal.meta()).color(pal.muted)).wrap());
                     }
                 });
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| switch(ui, &pal, on, label).changed()).inner
+                ui.with_layout(Layout::right_to_left(Align::Min), control).inner
             })
             .inner
         })
         .inner;
-    let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, pal.tk.rule));
-    changed
+    let end = ui.cursor().min;
+    ui.data_mut(|d| d.insert_temp(last_end, (pass, end)));
+    inner
+}
+
+/// The settings dropdowns' arrow (`ComboBox::icon`): the icon set's `ChevronDown` in the
+/// widget's text colour, instead of egui's filled triangle.
+pub(super) fn combo_icon(ui: &egui::Ui, rect: egui::Rect, visuals: &egui::style::WidgetVisuals, _open: bool) {
+    let r = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0));
+    icons::paint(ui.painter(), Icon::ChevronDown, r, visuals.fg_stroke.color, visuals.weak_bg_fill);
 }
 
 #[cfg(test)]
@@ -777,6 +800,31 @@ mod tests {
         assert_eq!(hits("avatar").first(), Some(&Page::Profiles), "the upload rows moved to Profiles");
         assert_eq!(hits("").len(), all.len());
         assert!(hits("no such setting").is_empty());
+    }
+
+    #[test]
+    fn rules_only_between_rows_of_a_group() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::Theme::ember_dark();
+        crate::theme::ThemeApplier::default().apply(&ctx, &theme);
+        let mut rules = 0;
+        // The theme's fonts are in from the second pass.
+        for _ in 0..2 {
+            let out = ctx.run_ui(Default::default(), |ui| {
+                let mut on = false;
+                for label in ["One", "Two", "Three"] {
+                    super::switch_row(ui, &theme, label, None, &mut on);
+                }
+                ui.label("Next group");
+                ui.add_enabled_ui(false, |ui| super::switch_row(ui, &theme, "Four", Some("Disabled, in a child ui."), &mut on));
+                super::switch_row(ui, &theme, "Five", None, &mut on);
+            });
+            let long_hline = |s: &egui::Shape| matches!(s, egui::Shape::LineSegment { points: [a, b], .. } if a.y == b.y && b.x - a.x > 100.0);
+            rules = out.shapes.iter().filter(|c| long_hline(&c.shape)).count();
+            out.drop_without_applying_deltas();
+        }
+        // One-Two, Two-Three, Four-Five; none above One or Four, none under Three or Five.
+        assert_eq!(rules, 3);
     }
 
     #[test]

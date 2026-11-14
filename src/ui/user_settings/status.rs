@@ -137,9 +137,12 @@ pub fn custom_status_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let images = &mut *cx.images;
     let resp = dialog(ctx, theme, "rc_custom_status", 442.0, "Set a custom status", |ui| {
         ui.add_enabled_ui(!pending, |ui| {
-            // An input (§9): the well fill and a 1 px `edge` border.
+            // An input (§9): the well fill and a 1 px `edge` border; focused, the 2 px focus ring
+            // replaces the border, as on egui-framed fields.
             let well = theme.colors.code_background.to_color32();
-            Frame::new().fill(well).stroke(egui::Stroke::new(1.0, pal.tk.edge)).corner_radius(pal.radius).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
+            let edit_id = ui.make_persistent_id("rc_custom_status_text");
+            let focused = ui.memory(|m| m.has_focus(edit_id));
+            let field = Frame::new().fill(well).stroke(egui::Stroke::new(1.0, pal.tk.edge)).corner_radius(pal.radius).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let button = icon_button(ui, &pal, "", "Choose an emoji", 28.0, f.emoji.is_some(), pal.text);
@@ -152,16 +155,19 @@ pub fn custom_status_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
                     });
                     let set = !f.text.is_empty() || f.emoji.is_some();
                     let w = ui.available_width() - if set { 34.0 } else { 0.0 };
-                    let edit = TextEdit::singleline(&mut f.text).char_limit(128).hint_text("What's on your mind?").frame(Frame::NONE).desired_width(w);
+                    let edit = TextEdit::singleline(&mut f.text).id(edit_id).char_limit(128).hint_text("What's on your mind?").frame(Frame::NONE).desired_width(w);
                     ui.add(edit);
                     if set && super::super::messages::vector_button(ui, &pal, Icon::Close, "Clear status", 28.0, false, pal.text).clicked() {
                         (f.text, f.emoji) = (String::new(), None);
                     }
                 });
             });
+            if focused {
+                ui.painter().rect_stroke(field.response.rect, pal.radius, egui::Stroke::new(2.0, pal.tk.focus), egui::StrokeKind::Inside);
+            }
             ui.add_space(4.0);
             super::field_label(ui, &pal, "Clear after");
-            egui::ComboBox::from_id_salt("rc_status_clear").width(ui.available_width()).selected_text(f.clear.label()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("rc_status_clear").width(ui.available_width()).selected_text(f.clear.label()).icon(super::combo_icon).show_ui(ui, |ui| {
                 for e in Expiry::ALL {
                     ui.selectable_value(&mut f.clear, e, e.label());
                 }

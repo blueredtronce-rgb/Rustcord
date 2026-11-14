@@ -288,7 +288,7 @@ fn font_combo(ui: &mut egui::Ui, salt: &str, path: &mut String, st: &mut EditorS
         None => "Built-in".to_owned(), // empty path
     };
     let mut picked: Option<PathBuf> = None;
-    egui::ComboBox::from_id_salt(salt).selected_text(current).width(160.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(salt).selected_text(current).width(160.0).icon(super::combo_icon).show_ui(ui, |ui| {
         if ui.selectable_label(path.is_empty(), "Built-in").clicked() {
             picked = Some(PathBuf::new());
         }

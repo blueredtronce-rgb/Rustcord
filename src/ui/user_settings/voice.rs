@@ -74,7 +74,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
             ui.vertical(|ui| {
                 ui.set_width(col);
                 field_label(ui, &pal, label);
-                egui::ComboBox::from_id_salt(("rc_voice_dev", label)).width(col).selected_text(pick.as_deref().unwrap_or("Default")).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("rc_voice_dev", label)).width(col).selected_text(pick.as_deref().unwrap_or("Default")).icon(super::combo_icon).show_ui(ui, |ui| {
                     devices |= ui.selectable_value(pick, None, "Default").changed();
                     for name in list {
                         if ui.selectable_label(pick.as_deref() == Some(name), name).clicked() {
@@ -182,7 +182,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     let camera = &mut cx.settings.camera;
     let shown = camera.as_deref().and_then(|id| cams.iter().find(|c| c.id == id)).map_or("Default", |c| c.name.as_str());
     let mut picked = false;
-    egui::ComboBox::from_id_salt("rc_camera").width(col.min(ui.available_width())).selected_text(shown).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt("rc_camera").width(col.min(ui.available_width())).selected_text(shown).icon(super::combo_icon).show_ui(ui, |ui| {
         picked |= ui.selectable_value(camera, None, "Default").changed();
         for c in cams {
             if ui.selectable_label(camera.as_deref() == Some(c.id.as_str()), &c.name).clicked() {

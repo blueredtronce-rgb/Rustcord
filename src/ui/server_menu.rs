@@ -1030,11 +1030,12 @@ pub fn invite_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id, channe
     }
 }
 
-/// ComboBox over (value, label) presets.
+/// ComboBox over (value, label) presets, with the settings dropdowns' chevron.
 pub(super) fn choice(ui: &mut egui::Ui, salt: &str, value: &mut u32, options: &[(u32, &str)]) -> bool {
     let shown = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
     let mut changed = false;
-    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(ui.available_width().min(400.0)).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt(salt).selected_text(shown).width(ui.available_width().min(400.0));
+    combo.icon(super::user_settings::combo_icon).show_ui(ui, |ui| {
         for (v, label) in options {
             changed |= ui.selectable_value(value, *v, *label).changed();
         }

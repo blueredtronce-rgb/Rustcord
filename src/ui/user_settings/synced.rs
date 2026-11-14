@@ -10,12 +10,11 @@
 
 use super::Page;
 use super::super::messages::Pal;
-use super::super::{UiCx, hint, section};
+use super::super::{UiCx, section};
 use crate::api::settings_proto::SettingValue;
 use crate::backend::{AccountCommand, AccountOp, Command, OpKind};
 use crate::model::Id;
 use crate::state::account::OpState;
-use egui::{Align, Layout, RichText};
 
 /// Where an option lives: top-level field, subfield path, wrapped (`BoolValue` / `UInt32Value`
 /// / `StringValue`) or a plain proto3 scalar (omitted when 0).
@@ -194,9 +193,9 @@ const ACTIVITY: &[Group] = &[
         title: "Activity status",
         rows: &[
             // 8.29 is a restriction: OFF shares everywhere.
-            Row::pick("Share my activity in new servers", "", p(8, &[29]), 1, &[(1, "In every server"), (2, "Not in large servers"), (3, "Nowhere")]),
+            Row::pick("Share my activity in servers", "", p(8, &[29]), 1, &[(1, "In every server"), (2, "Not in large servers"), (3, "Nowhere")]),
             Row::on("Show recent games on my profile", "", &[w(8, &[24])], true),
-            Row::on("Share detected activity", "Show the game you are playing as your status.", &[w(11, &[3])], true),
+            Row::on("Share detected activity", "Show the game I'm playing as my status.", &[w(11, &[3])], true),
         ],
     },
     Group {
@@ -511,23 +510,17 @@ fn row_ui(ui: &mut egui::Ui, cx: &mut UiCx<'_>, row: &Row) -> Option<Write> {
     }
 }
 
-/// Label left, a dropdown right, an optional hint under it.
+/// A setting row (`super::setting_row`) with a dropdown: the shared settings combo box.
 fn pick_row(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, hint_text: Option<&str>, at: At, shown: &str, items: impl FnOnce(&mut egui::Ui)) {
-    let pal = Pal::new(cx.theme);
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.set_min_height(32.0);
-        ui.label(RichText::new(label).color(pal.text));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_enabled_ui(!busy(cx, at.top), |ui| {
-                egui::ComboBox::from_id_salt(("rc_synced_pick", at.top, at.path)).width(220.0).selected_text(shown).show_ui(ui, items);
-            });
+    const WIDTH: f32 = 220.0;
+    // egui's combo box: one line of button text and the button padding.
+    let height = ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y;
+    let enabled = !busy(cx, at.top);
+    super::setting_row(ui, cx.theme, label, hint_text, egui::vec2(WIDTH, height), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            egui::ComboBox::from_id_salt(("rc_synced_pick", at.top, at.path)).width(WIDTH).selected_text(shown).icon(super::combo_icon).show_ui(ui, items);
         });
     });
-    if let Some(h) = hint_text {
-        hint(ui, cx.theme, h);
-    }
-    ui.add_space(4.0);
 }
 
 #[cfg(test)]

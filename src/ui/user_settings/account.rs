@@ -516,7 +516,7 @@ fn server_profile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User) {
     field_label(ui, &pal, "Choose a server");
     let name = |id| cx.state.guilds.iter().find(|g| g.id == id).map_or("", |g| g.name.as_str());
     let mut pick = guild_id;
-    egui::ComboBox::from_id_salt("rc_server_profile").width(260.0).selected_text(name(guild_id)).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt("rc_server_profile").width(260.0).selected_text(name(guild_id)).icon(super::combo_icon).show_ui(ui, |ui| {
         for g in &cx.state.guilds {
             ui.selectable_value(&mut pick, g.id, &g.name);
         }

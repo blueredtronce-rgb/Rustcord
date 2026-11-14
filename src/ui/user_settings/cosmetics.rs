@@ -388,7 +388,7 @@ fn catalog_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, f: &mut Form, me
             ui.add(TextEdit::singleline(&mut f.search).hint_text("Search").desired_width(180.0));
             if categories.len() > 1 {
                 let label = f.category.clone().unwrap_or_else(|| "All categories".into());
-                egui::ComboBox::from_id_salt("rc_cosmetics_category").selected_text(label).width(180.0).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("rc_cosmetics_category").selected_text(label).width(180.0).icon(super::combo_icon).show_ui(ui, |ui| {
                     ui.selectable_value(&mut f.category, None, "All categories");
                     for c in &categories {
                         ui.selectable_value(&mut f.category, Some((*c).to_owned()), *c);

@@ -1465,7 +1465,7 @@ fn channel_overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel_
         let parent = s.channel.parent_id.unwrap_or(ch.parent_id);
         let name_of = |p: Option<Id>| p.map_or_else(|| "No category".to_owned(), |p| state.channel_name(p));
         ui.add_enabled_ui(can, |ui| {
-            egui::ComboBox::from_id_salt("rc_channel_parent").selected_text(name_of(parent)).width(ui.available_width().min(400.0)).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("rc_channel_parent").selected_text(name_of(parent)).width(ui.available_width().min(400.0)).icon(super::user_settings::combo_icon).show_ui(ui, |ui| {
                 for p in std::iter::once(None).chain(cats.iter().map(|c| Some(c.id))) {
                     if ui.selectable_label(parent == p, name_of(p)).clicked() {
                         set(&mut s.channel.parent_id, ch.parent_id, p);
