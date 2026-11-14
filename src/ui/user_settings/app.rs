@@ -99,59 +99,73 @@ fn released(r: &egui::Response) -> bool {
     r.drag_stopped() || (r.changed() && !r.dragged())
 }
 
-/// Windows Settings: open at sign-in and start minimized (the HKCU Run value itself, read each
-/// time the page draws: the installer or another copy may have changed it), minimize to tray.
-pub(super) fn windows(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
-    if !cfg!(windows) {
-        hint(ui, cx.theme, "Only on Windows.");
-        return false;
+/// The copy of the Windows / Linux / macOS settings page (one page id `windows` on every OS).
+pub(super) struct DesktopCopy {
+    pub title: &'static str,
+    pub startup: &'static str,
+    pub minimized_meta: &'static str,
+    pub close: &'static str,
+    pub close_meta: &'static str,
+    pub first_close: &'static str,
+}
+
+pub(super) const DESKTOP: DesktopCopy = if cfg!(target_os = "macos") {
+    DesktopCopy {
+        title: "macOS settings",
+        startup: "Open Rustcord when I log in",
+        minimized_meta: "Rustcord starts in the menu bar, not as a window.",
+        close: "Keep Rustcord in the menu bar when I close the window",
+        close_meta: "Rustcord keeps running in the menu bar. Quit it from the menu bar icon or with Cmd+Q.",
+        first_close: "Rustcord is still running in the menu bar. Quit it from the menu bar icon.",
     }
+} else if cfg!(target_os = "linux") {
+    DesktopCopy {
+        title: "Linux settings",
+        startup: "Open Rustcord when I log in",
+        minimized_meta: "Rustcord starts in the system tray, not as a window.",
+        close: "Minimize to tray when I close the window",
+        close_meta: "Rustcord keeps running in the system tray. Quit it from the tray icon.",
+        first_close: "Rustcord is still running in the tray. Quit it from the tray icon.",
+    }
+} else {
+    DesktopCopy {
+        title: "Windows settings",
+        startup: "Open Rustcord when I sign in to Windows",
+        minimized_meta: "Rustcord starts in the notification area, not as a window.",
+        close: "Minimize to tray when I close the window",
+        close_meta: "Rustcord keeps running in the notification area. Quit it from the tray icon.",
+        first_close: "Rustcord is still running in the tray. Quit it from the tray icon.",
+    }
+};
+
+/// The page's own rows, for the settings search.
+pub(super) const DESKTOP_LABELS: [&str; 3] = [DESKTOP.startup, "Start minimized", DESKTOP.close];
+
+/// Windows / Linux / macOS settings: open at sign-in and start minimized (the OS entry itself,
+/// read each time the page draws: the installer or another copy may have changed it), minimize
+/// to tray. True when the settings changed.
+pub(super) fn windows(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     section(ui, cx.theme, "System startup");
-    let run = autostart();
-    let mut open = run.is_some();
-    let mut minimized = run.as_deref().is_none_or(|cmd| cmd.contains("--minimized"));
-    let mut toggled = switch_row(ui, cx.theme, "Open Rustcord when I sign in to Windows", None, &mut open);
+    let entry = crate::autostart::get();
+    let mut open = entry.is_some();
+    let mut minimized = entry.as_deref().is_none_or(|e| e.contains("--minimized"));
+    let mut toggled = switch_row(ui, cx.theme, DESKTOP.startup, None, &mut open);
     let theme = &*cx.theme;
-    toggled |= ui
-        .add_enabled_ui(open, |ui| switch_row(ui, theme, "Start minimized", Some("Rustcord starts in the notification area, not as a window."), &mut minimized))
-        .inner;
-    if toggled && let Err(e) = set_autostart(open, minimized) {
-        cx.view.toast(format!("Could not change the startup entry: {e}"), true);
+    toggled |= ui.add_enabled_ui(open, |ui| switch_row(ui, theme, "Start minimized", Some(DESKTOP.minimized_meta), &mut minimized)).inner;
+    let mut changed = false;
+    if toggled {
+        match crate::autostart::set(open, minimized) {
+            // An explicit choice: the one-time default never overrides it.
+            Ok(()) => changed = !std::mem::replace(&mut cx.settings.autostart_default_done, true),
+            Err(e) => cx.view.toast(format!("Could not change the startup entry: {e}"), true),
+        }
     }
     section(ui, cx.theme, "Window");
-    switch_row(
-        ui,
-        cx.theme,
-        "Minimize to tray when I close the window",
-        Some("Rustcord keeps running in the notification area. Quit it from the tray icon."),
-        &mut cx.settings.minimize_to_tray,
-    )
-}
-
-/// The command line of the HKCU Run value "Rustcord", if there is one.
-fn autostart() -> Option<String> {
-    #[cfg(windows)]
-    {
-        crate::winreg::autostart(crate::config::APP_NAME)
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
-}
-
-/// Writes the Run value for this exe (`--minimized` when `minimized`), or removes it.
-fn set_autostart(on: bool, minimized: bool) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        crate::winreg::set_autostart(crate::config::APP_NAME, on.then_some(exe.as_path()), minimized)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (on, minimized);
-        Err("only on Windows".into())
-    }
+    // Linux without a tray host: closing quits, whatever the switch says.
+    let no_tray = cfg!(target_os = "linux") && (crate::notify::tray_failed() || super::super::sidebar::nav_demo("no-tray"));
+    let meta = if no_tray { "No system tray found, so closing the window quits Rustcord." } else { DESKTOP.close_meta };
+    let theme = &*cx.theme;
+    changed | ui.add_enabled_ui(!no_tray, |ui| switch_row(ui, theme, DESKTOP.close, Some(meta), &mut cx.settings.minimize_to_tray)).inner
 }
 
 /// Streamer Mode (no "Disable sounds": Rustcord plays none; no OBS auto-enable: no process scan).

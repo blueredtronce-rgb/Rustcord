@@ -124,9 +124,12 @@ pub struct Settings {
     pub streamer: StreamerMode,
     /// Keybinds the user changed: action name -> shortcut ("Ctrl+Shift+M"; "" = none).
     pub keybinds: std::collections::BTreeMap<String, String>,
-    // Open at sign-in / start minimized are not kept here: the Windows Settings page reads the
-    // HKCU Run value itself. Older files' `open_on_startup`, `start_minimized` and
-    // `close_minimizes` (× minimized to the taskbar, off by default) are ignored.
+    // Open at sign-in / start minimized are not kept here: the Windows / Linux / macOS settings
+    // page reads the OS entry itself (`autostart.rs`). Older files' `open_on_startup`,
+    // `start_minimized` and `close_minimizes` (× minimized to the taskbar, off by default) are ignored.
+    /// The one-time autostart default (`autostart::default_once`) ran, or the user set autostart
+    /// on the Windows / Linux / macOS settings page. Older files lack it: false.
+    pub autostart_default_done: bool,
     /// Windows Settings: closing the window (×, Alt+F4) hides it to the tray; Quit is in the
     /// tray menu.
     pub minimize_to_tray: bool,
@@ -205,6 +208,7 @@ impl Default for Settings {
             reduced_motion: false,
             streamer: StreamerMode::default(),
             keybinds: Default::default(),
+            autostart_default_done: false,
             minimize_to_tray: true,
             tray_hint_shown: false,
             flash_taskbar: true,
@@ -287,7 +291,7 @@ mod tests {
         // Older files lack the settings pages' fields: their defaults apply.
         let old: Settings = toml::from_str("theme = \"Ember Dark\"\n[streamer]\nenabled = true\n").unwrap();
         assert_eq!((old.zoom, old.flash_taskbar, old.streamer.enabled, old.streamer.hide_personal_info), (1.0, true, true, true));
-        assert!(old.streamer.hides_invites() && !old.streamer.hide_from_capture);
+        assert!(old.streamer.hides_invites() && !old.streamer.hide_from_capture && !old.autostart_default_done);
     }
 
     #[test]

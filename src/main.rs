@@ -4,15 +4,18 @@
 mod activity;
 mod api;
 mod auth;
+mod autostart;
 mod backend;
 mod cache;
 mod config;
 mod emoji;
 mod gateway;
+mod media;
 mod model;
 mod notify;
 mod overrides;
 mod plugins;
+mod quests;
 mod state;
 mod theme;
 mod ui;
@@ -38,12 +41,16 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if quit {
+        // Nothing ran: no socket file left behind (Linux / macOS).
+        notify::shutdown();
         return Ok(());
     }
 
     // Read settings, the disk cache and the keyring while the window is being created.
     let preload = std::thread::spawn(|| {
-        let settings = config::Settings::load();
+        let mut settings = config::Settings::load();
+        // Autostart on once for an installed copy (never for dev builds or test runs).
+        autostart::default_once(&mut settings);
         let snapshot = cache::load_snapshot();
         ui::images::mem_trace("snapshot_loaded");
         // The RUSTCORD_LOGIN_TAB test hook always shows the login screen, never a stored account.
