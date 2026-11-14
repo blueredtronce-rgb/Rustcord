@@ -269,6 +269,11 @@ pub fn release_free_memory() {
         // SAFETY: documented call (Windows 8.1+, fails harmlessly before); a null heap = every heap.
         unsafe { HeapSetInformation(0, HEAP_OPTIMIZE_RESOURCES, &info, size_of::<OptimizeResources>()) };
     }
+    // SAFETY: glibc's trim of free heap pages; no preconditions.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 /// `RUSTCORD_MEMSTATS`: process counters at a startup step.
@@ -332,7 +337,15 @@ fn process_counters() -> String {
     out + "\n"
 }
 
-#[cfg(not(windows))]
+/// Linux: resident set (VmRSS) as the working set, anonymous resident memory (RssAnon) as private.
+#[cfg(target_os = "linux")]
+fn process_counters() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let mb = |key: &str| status.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<f64>().ok()).map_or(0.0, |kb| kb / 1024.0);
+    format!("process: working set {:.1} MB, private {:.1} MB\n", mb("VmRSS:"), mb("RssAnon:"))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn process_counters() -> String {
     String::new()
 }
