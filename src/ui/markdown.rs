@@ -104,13 +104,14 @@ struct Pal {
 impl Pal {
     fn new(cx: &UiCx<'_>) -> Self {
         let c = &cx.theme.colors;
+        let tk = cx.theme.tokens();
         Self {
             size: cx.theme.font.size,
             text: c.text.to_color32(),
             muted: c.text_muted.to_color32(),
             link: c.link.to_color32(),
-            chip: cx.theme.tokens().chip,
-            selection: cx.theme.tokens().selection,
+            chip: tk.chip,
+            selection: tk.selection,
             code_bg: c.code_background.to_color32(),
             radius: cx.theme.layout.corner_radius.clamp(0.0, 255.0) as u8,
         }
