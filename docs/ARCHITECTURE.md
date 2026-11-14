@@ -40,8 +40,14 @@ directly as a **user** client. Not a port of the official client.
   needed, that's fine), rsa 0.10 + sha2 0.11 + getrandom 0.4 (`sys_rng`) for the QR login key,
   qrcodegen 1.8, zeroize 1.9. Voice (pinned, approved): davey 0.2.0, opus-rs 0.1.42, cpal 0.18.2,
   aes-gcm 0.10.3, chacha20poly1305 0.10.1, tokio `net`. Video (pinned, approved): openh264 0.9.10,
-  windows-capture 2.0.1, `windows` 0.62.2 (Media Foundation features). Emoji data (approved): emojis 0.9.1. Build-only: embed-resource 3 (Windows build-dependency, icon resource),
-  resvg 0.49 (dev-dependency, `examples/export_icons.rs`).
+  windows-capture 2.0.1, `windows` 0.62.2 (Media Foundation features). Media playback (pinned,
+  approved, pure Rust): re_mp4 =0.5.1 (MP4/MOV demux), symphonia-core + symphonia-codec-aac
+  =0.6.1 (AAC-LC; MPL-2.0, unmodified). Emoji data (approved): emojis 0.9.1. Build-only: embed-resource 3 (Windows build-dependency, icon resource),
+  resvg 0.49 (dev-dependency, `examples/export_icons.rs`). Linux / macOS (target-gated, approved):
+  libc 0.2 (`cfg(unix)`: font mmap, `malloc_trim`, `/proc`, libproc), Linux ksni =0.3.7
+  (`async-io` + `blocking`, never its `tokio` default), zbus 5.19 (`async-io` + `blocking-api`,
+  the one keyring builds), winit 0.30.13 (`x11`, to force X11); macOS tray-icon =0.26.1,
+  objc2-user-notifications 0.3.2, objc2 0.6, block2 0.6, objc2-foundation / objc2-app-kit 0.3.2.
 - These crate versions are newer than your training data. **Check real APIs in the downloaded
   sources** under `~/.cargo/registry/src/index.crates.io-*/`
   (e.g. `egui-0.37.0\src`, `reqwest-0.13.*`, `tokio-tungstenite-0.30.0`, `toml-1.*`) instead of
@@ -150,13 +156,24 @@ login hint and README).
   Screenshot runs skip the single-instance check and the tray icon (closing then quits).
 - Desktop (`notify.rs`, `user_settings/app.rs` `logic`): one Rustcord per data dir (a named
   mutex + the tray window, both named after a hash of the config dir, so runs with their own
-  `RUSTCORD_HOME` never meet the user's); `--minimized` starts hidden in the tray, `--quit` asks
-  the running one to quit and waits.
+  `RUSTCORD_HOME` never meet the user's; Linux / macOS: a Unix socket of that name in
+  `XDG_RUNTIME_DIR` or the temp dir); `--minimized` starts hidden in the tray, `--quit` asks
+  the running one to quit and waits, `--clear-login` removes the saved login and exits.
+  Autostart (`autostart.rs`: HKCU Run, `~/.config/autostart/rustcord.desktop`, a LaunchAgent)
+  is switched on once per data dir for an installed copy only: never in debug builds, never with
+  any `RUSTCORD_*` variable set, never over an existing entry. Linux runs on X11 (XWayland)
+  whenever `DISPLAY` is set; without a tray host closing quits. `RUSTCORD_NAV_DEMO=no-tray`
+  shows the Linux settings page as without a tray host.
 - Installer (`src/bin/rustcord-setup`, flags in its main.rs): `RUSTCORD_SETUP_TEST=1` switches to
   the test identity "RustcordSetupTest" (own folder, Run value, shortcuts, Apps entry; use it
   with `--silent --dir <scratch>` and uninstall with `--uninstall --silent`);
   `RUSTCORD_SCREENSHOT=<png>` + `RUSTCORD_SETUP_SCREEN=install|progress|done|error|uninstall|removed`
   renders a screen without installing.
+- Linux tarball installer (`scripts/linux/install.sh`): `RUSTCORD_SETUP_TEST=1` +
+  `RUSTCORD_SETUP_PREFIX=<scratch>` installs everything under `<scratch>` instead of `$HOME`
+  (`--quit` gets its own `RUSTCORD_HOME`, `--purge` skips the keyring); `--uninstall --purge`
+  must leave `<scratch>` gone. Packaging: `scripts/build-linux.sh`, `scripts/build-macos.sh`,
+  CI `.github/workflows/release.yml` (manual or `v*` tags only).
 - `RUSTCORD_LOGIN_TAB=qr|email|token|mfa`: start on the login screen with that tab, ignoring
   any stored token (`mfa` = the 2FA form with all methods, no network). Use with an empty
   `RUSTCORD_HOME`; `qr` connects to the remote-auth gateway (never scan such a code in tests).

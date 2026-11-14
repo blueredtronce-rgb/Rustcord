@@ -818,6 +818,12 @@ Playing                                     <- label role: "Playing" / "Listenin
     notification area. Quit it from the tray icon."
   - "Open Rustcord when I sign in to Windows".
   - Both are switch rows.
+- **App settings > Linux / macOS** (same page, id `windows`): "Linux settings" / "macOS
+  settings"; "Open Rustcord when I log in"; the start-minimized meta says "system tray" /
+  "menu bar"; macOS close row "Keep Rustcord in the menu bar when I close the window". Linux
+  without a tray host: the close row is disabled with "No system tray found, so closing the
+  window quits Rustcord." Camera, screen share and video calls are disabled controls there,
+  each with a tooltip like "Camera isn't available on Linux yet."
 - **Installer:** title "Rustcord setup"; heading "Install Rustcord"; option rows use the same
   sentence case; buttons "Install" (primary) and "Cancel". Done: "Rustcord is installed" with
   "Open Rustcord".
