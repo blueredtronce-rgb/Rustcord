@@ -90,6 +90,9 @@ pub enum Command {
     /// Game detection and activity icons (`crate::activity`); answered with
     /// `BackendEvent::Activity`.
     Activity(crate::activity::ActivityCommand),
+    /// Quests list, accept, claim, reward code, video progress (`crate::quests`); answered
+    /// with `BackendEvent::Quests`. docs/QUESTS_NOTES.md.
+    Quests(crate::quests::QuestCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -1004,6 +1007,8 @@ pub enum BackendEvent {
     Account(AccountEvent),
     /// The activity thread and its fetches; the UI hands them to `AppState::activity`.
     Activity(crate::activity::ActivityEvent),
+    /// Quest answers; the UI hands them to `AppState::quests`.
+    Quests(crate::quests::QuestEvent),
 }
 
 /// Decoded image ready for texture upload. Static images have exactly one frame.
@@ -2057,6 +2062,45 @@ fn handle_activity(cmd: crate::activity::ActivityCommand, session: &mut Option<S
     }
 }
 
+/// `Command::Quests` (docs/QUESTS_NOTES.md): one request per click, the page open's fetch, or one
+/// video progress send per 10 s of real play. Logged out: every one is answered "Not connected".
+/// Errors are already quest copy (`api::quests`: captcha, 401 without logout).
+fn handle_quests(cmd: crate::quests::QuestCommand, session: &mut Option<Session>, sink: &EventSink) {
+    use crate::quests::{QuestCommand as C, QuestEvent as E};
+    let ev = |e: E| Some(BackendEvent::Quests(e));
+    let failed = move |quest_id: Id, stop_video: bool| move |message: String| ev(E::Failed { quest_id, message, stop_video });
+    match cmd {
+        C::Fetch => {
+            rest(session, sink, |api| async move { api.quests_me().await }, move |r| ev(E::Loaded(r)));
+            // The header just stays without a balance if this fails.
+            rest(session, sink, |api| async move { api.orbs_balance().await }, move |r| {
+                r.map_err(|e| eprintln!("rustcord: Orbs balance: {e}")).ok().and_then(|n| ev(E::Orbs(n)))
+            });
+        }
+        C::Enroll { quest_id, sealed } => rest(session, sink, |api| async move { api.quest_enroll(quest_id, sealed.as_deref()).await }, move |r| {
+            r.map_or_else(failed(quest_id, false), |s| ev(E::Status(Box::new(s))))
+        }),
+        C::VideoProgress { quest_id, timestamp } => {
+            rest(session, sink, |api| async move { api.quest_video_progress(quest_id, timestamp).await }, move |r| match r {
+                Ok(s) => ev(E::VideoSaved(Box::new(s))),
+                Err(e) => {
+                    eprintln!("rustcord: quest video progress: {e}");
+                    failed(quest_id, true)(crate::quests::VIDEO_FAILED.into())
+                }
+            })
+        }
+        C::Claim { quest_id, platform, sealed } => rest(session, sink, |api| async move { api.quest_claim(quest_id, platform, sealed.as_deref()).await }, move |r| {
+            r.map_or_else(failed(quest_id, false), |a| {
+                let error = a.errors.into_iter().map(|e| e.message).find(|m| !m.is_empty());
+                ev(E::Claimed { quest_id, claimed_at: a.claimed_at, error })
+            })
+        }),
+        C::RewardCode { quest_id } => rest(session, sink, |api| async move { api.quest_reward_code(quest_id).await }, move |r| {
+            ev(E::Code { quest_id, code: r.map(Arc::new) })
+        }),
+    }
+}
+
 /// After a login: fetch the detectable-games list when the saved one is missing or a day old,
 /// once per run (a failure waits for the next start), a little after the session's own start.
 fn refresh_detectable(session: &mut Option<Session>, sink: &EventSink, activity: &crate::activity::Service, fetched: &mut bool) {
@@ -2368,6 +2412,7 @@ async fn run(
             Command::Social(c) => handle_social(c, &mut session, &sink),
             Command::Account(c) => handle_account(c, &mut session, &sink, None),
             Command::Activity(c) => handle_activity(c, &mut session, &sink, &activity),
+            Command::Quests(c) => handle_quests(c, &mut session, &sink),
         }
     }
 
@@ -2493,5 +2538,29 @@ mod tests {
         let (gw, _rx) = tmpsc::unbounded_channel();
         let err = swap_token(&api, &gw, true, new, |_| Err("store locked".into()));
         assert_eq!(err, Err("store locked".into()), "a keyring failure is reported, the swap still happens");
+    }
+
+    #[tokio::test]
+    async fn quest_commands_offline_answer() {
+        use crate::quests::{QuestCommand as C, QuestEvent as E};
+        let (tx, rx) = mpsc::channel();
+        let sink = EventSink::new(tx, egui::Context::default());
+        let mut session = None;
+        for c in [
+            C::Fetch,
+            C::Enroll { quest_id: Id(1), sealed: None },
+            C::VideoProgress { quest_id: Id(1), timestamp: 10 },
+            C::Claim { quest_id: Id(1), platform: 0, sealed: None },
+            C::RewardCode { quest_id: Id(1) },
+        ] {
+            handle_quests(c, &mut session, &sink);
+        }
+        let evs: Vec<BackendEvent> = rx.try_iter().collect();
+        assert!(matches!(&evs[0], BackendEvent::Quests(E::Loaded(Err(e))) if e == "Not connected"), "{evs:?}");
+        assert!(matches!(&evs[1], BackendEvent::Quests(E::Failed { stop_video: false, .. })));
+        assert!(matches!(&evs[2], BackendEvent::Quests(E::Failed { stop_video: true, .. })));
+        assert!(matches!(&evs[3], BackendEvent::Quests(E::Failed { stop_video: false, .. })));
+        assert!(matches!(&evs[4], BackendEvent::Quests(E::Code { code: Err(_), .. })));
+        assert_eq!(evs.len(), 5, "the Orbs balance stays silent");
     }
 }
