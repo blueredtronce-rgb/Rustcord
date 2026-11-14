@@ -924,8 +924,16 @@ fn draw(k: &mut Pen, icon: Icon, locked: bool) {
                 (12.0 + r * c, 12.75 + r * s)
             };
             k.fill(&(0..5).map(|i| pt(2 * i + 1)).collect::<Vec<_>>());
+            // Each point runs one unit past its base along its own edges: two anti-aliased
+            // edges meeting exactly would show as light seams inside the star.
+            let past = |inner: P, tip: P| {
+                let (dx, dy) = (inner.0 - tip.0, inner.1 - tip.1);
+                let len = dx.hypot(dy);
+                (inner.0 + dx / len, inner.1 + dy / len)
+            };
             for i in 0..5 {
-                k.fill(&[pt((2 * i + 9) % 10), pt(2 * i), pt(2 * i + 1)]);
+                let tip = pt(2 * i);
+                k.fill(&[past(pt((2 * i + 9) % 10), tip), tip, past(pt(2 * i + 1), tip)]);
             }
         }
         Globe => {
