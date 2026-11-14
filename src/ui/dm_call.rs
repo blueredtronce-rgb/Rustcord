@@ -206,17 +206,19 @@ fn waiting(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
         let more = format!("+{}", people.len() - shown);
         ui.painter().text(a.center(), Align2::CENTER_CENTER, more, bold(18.0), FG);
     }
-    // Join Call (green) and Join with Video, centred under the avatars.
+    // Join call (`positive_fill`, its label: white on the presence green fails 4.5:1) and Join
+    // with video, centred under the avatars.
+    let tk = cx.theme.tokens();
     let (w1, w2, gap) = (112.0, 136.0, 8.0);
     let left = rect.center().x - (w1 + w2 + gap) / 2.0;
     let top = cy + AVATAR / 2.0 + 20.0;
-    let buttons = [(false, "Join Call", w1, green, Color32::WHITE), (true, "Join with Video", w2, BUTTON, FG)];
+    let buttons = [(false, "Join call", w1, tk.positive_fill, tk.positive_label), (true, "Join with video", w2, BUTTON, FG)];
     let mut x = left;
     for (video, label, w, fill, fg) in buttons {
         let r = Rect::from_min_size(pos2(x, top), vec2(w, 36.0));
         x += w + gap;
-        let text = egui::RichText::new(label).color(fg).font(bold(cx.theme.font.size));
-        if ui.put(r, egui::Button::new(text).fill(fill).corner_radius(8)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        let text = egui::RichText::new(label).color(fg).font(egui::FontId::new(cx.theme.font.size - 1.0, crate::theme::medium_family()));
+        if ui.put(r, egui::Button::new(text).fill(fill).corner_radius(cx.theme.layout.corner_radius)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
             join(cx, ch, video);
         }
     }
@@ -237,7 +239,7 @@ pub(super) fn row_mark(ui: &mut egui::Ui, cx: &UiCx<'_>, ch: Id, right: egui::Po
 }
 
 /// The incoming-call popup (above everything, centred): the caller's avatar in a pulsing
-/// ring, the DM's name, Decline (red, stops ringing me), Accept with Video and Accept (green,
+/// ring, the DM's name, Decline (danger fill, stops ringing me), Accept with video and Accept (positive fill,
 /// Ctrl+Enter). Accepting joins the call and opens the DM.
 /// `accept`: the Answer keybind was pressed (taken by `ui()` before the page could see it).
 pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
@@ -246,7 +248,8 @@ pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
     let name = s.channel_name(ch);
     let caller = s.caller(ch).and_then(|u| s.users.get(&u)).map(|u| (u.id, u.display_name().to_owned(), super::images::user_avatar_url(None, u, None, 128, false)));
     let green = presence_color(Presence::Online, &cx.theme.colors);
-    let red = cx.theme.colors.danger.to_color32();
+    // The buttons: `danger_fill` / `positive_fill` under the white icons (§2.2).
+    let tk = cx.theme.tokens();
     // Some(Some(video)) = accept, Some(None) = decline.
     let mut action = accept.then_some(Some(false));
     let card = egui::Frame::popup(&ctx.global_style()).fill(STAGE).corner_radius(12).inner_margin(24);
@@ -272,7 +275,7 @@ pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
                     ui.label(egui::RichText::new("Incoming call…").color(FG_MUTED).size(cx.theme.font.size - 1.0));
                     ui.add_space(20.0);
                     let (row, _) = ui.allocate_exact_size(vec2(176.0, 48.0), Sense::hover());
-                    let buttons = [(None, red, "Decline", Icon::Hangup), (Some(true), green, "Accept with Video", Icon::Camera), (Some(false), green, "Accept", Icon::Phone)];
+                    let buttons = [(None, tk.danger_fill, "Decline", Icon::Hangup), (Some(true), tk.positive_fill, "Accept with video", Icon::Camera), (Some(false), tk.positive_fill, "Accept", Icon::Phone)];
                     for (i, (what, fill, tip, icon)) in buttons.into_iter().enumerate() {
                         let r = Rect::from_min_size(pos2(row.left() + i as f32 * 64.0, row.top()), Vec2::splat(48.0));
                         if round_button(ui, r, fill, tip, icon).clicked() {
