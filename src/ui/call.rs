@@ -5,7 +5,7 @@
 //! LIVE for streamers; a camera, a watched stream or my own preview shows its latest frame from
 //! `VideoFrames` (uploaded only when its generation changes, letterboxed; my camera mirrored). A click expands a tile
 //! (the others in a strip below), another click returns to the grid. Someone else's stream needs
-//! a click on "Watch Stream"; its × or leaving the call view stops watching. The text chat opens
+//! a click on "Watch stream"; its × or leaving the call view stops watching. The text chat opens
 //! beside the stage (in its place in narrow windows).
 //! Visibility (docs/VIDEO_DESIGN.md "UI hook-up"): videos painted in a pass are visible, all
 //! others hidden; `sync` (App::logic, which also runs while minimized) turns that into
@@ -55,7 +55,7 @@ pub struct CallUi {
     pub(super) chat: bool,
     /// Expanded tile.
     focus: Option<TileKey>,
-    /// Streams I clicked "Watch Stream" on (stream keys) and when; None once connected (in
+    /// Streams I clicked "Watch stream" on (stream keys) and when; None once connected (in
     /// `remote`). A click that got nowhere within the backend's CONNECT_TIMEOUT is forgotten.
     watching: HashMap<String, Option<Instant>>,
     /// Videos marked visible with the backend.
@@ -346,22 +346,23 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
     let x = left + g.size().x + 12.0;
     ui.painter().galley(pos2(left, cy - g.size().y / 2.0), g, FG);
     if cx.state.voice.video.screen_share.is_some() {
-        let w = live_pill(ui.painter(), pos2(x, cy), cx.theme.colors.danger.to_color32());
+        let w = live_pill(ui.painter(), pos2(x, cy), cx.theme.tokens().danger_fill);
         let pill = Rect::from_min_size(pos2(x, cy - 8.0), vec2(w, 16.0));
         ui.interact(pill, ui.make_persistent_id("call_live"), Sense::hover()).on_hover_text("You are sharing your screen");
     }
     let chat = cx.view.call_ui.chat;
-    if stage_button(ui, toggle, "call_chat_toggle", Icon::Message, if chat { "Hide Chat" } else { "Show Chat" }, chat).clicked() {
+    if stage_button(ui, toggle, "call_chat_toggle", Icon::Message, if chat { "Hide chat" } else { "Show chat" }, chat).clicked() {
         cx.view.call_ui.chat = !chat;
     }
 }
 
-/// Red "LIVE" pill whose left edge is centred on `left_center`; returns its width.
+/// The "Live" tag (badge role on `red`, the `danger_fill`; chip radius) whose left edge is
+/// centred on `left_center`; returns its width.
 pub(super) fn live_pill(p: &egui::Painter, left_center: egui::Pos2, red: Color32) -> f32 {
     let text = on_color(red);
-    let g = p.layout_no_wrap("LIVE".into(), bold(11.0), text);
+    let g = p.layout_no_wrap("Live".into(), bold(11.0), text);
     let pill = Rect::from_min_size(left_center - vec2(0.0, 8.0), vec2(g.size().x + 12.0, 16.0));
-    p.rect_filled(pill, 8, red);
+    p.rect_filled(pill, 4, red);
     p.galley(pill.center() - g.size() / 2.0, g, text);
     pill.width()
 }
@@ -475,7 +476,8 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 8, t.tint);
     let c = cx.theme.colors.clone();
-    let (green, red) = (presence_color(Presence::Online, &c), c.danger.to_color32());
+    // Red marks and the "Live" tag: the danger fill (>= 3:1 on the dark pills too).
+    let (green, red) = (presence_color(Presence::Online, &c), crate::theme::Tokens::new(&c).danger_fill);
     let shown = t.video.as_ref().is_some_and(|k| paint_video(&p, &mut cx.view.call_ui, k, rect, t.mine));
     let watch = t.stream.as_ref().filter(|_| !t.mine && !shown);
     // The name pill needs 64 px; smaller tiles (a short stage) show it while hovered.
@@ -546,7 +548,7 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         }
         let joining = joining.is_some();
         let b = Rect::from_center_size(pos2(rect.center().x, if rect.height() >= 150.0 { rect.center().y + 40.0 } else { rect.center().y }), vec2(132.0, 32.0));
-        let label = egui::RichText::new(if joining { "Joining…" } else { "Watch Stream" }).color(c.accent_text.to_color32());
+        let label = egui::RichText::new(if joining { "Joining…" } else { "Watch stream" }).color(c.accent_text.to_color32());
         let button = egui::Button::new(label).fill(c.accent.to_color32()).corner_radius(8).min_size(b.size());
         let enabled = cx.state.voice.connected;
         let layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight);
@@ -565,8 +567,8 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         let alpha = if resp.hovered() || resp.has_focus() { 230 } else { 170 };
         ui.painter().circle_filled(x.center(), 16.0, Color32::from_black_alpha(alpha));
         icons::paint(ui.painter(), Icon::Close, Rect::from_center_size(x.center(), Vec2::splat(16.0)), FG, Color32::TRANSPARENT);
-        resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stop Watching"));
-        if resp.on_hover_text("Stop Watching").on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stop watching"));
+        if resp.on_hover_text("Stop watching").on_hover_cursor(CursorIcon::PointingHand).clicked() {
             cx.view.call_ui.watching.remove(key);
             cx.view.call_ui.focus = None;
             cx.cmd.send(video(VideoCommand::StopWatching { stream_key: key.clone() }));
@@ -689,8 +691,8 @@ fn controls(ui: &mut egui::Ui, cx: &mut UiCx<'_>, bar: Rect) {
     let (mute, deaf) = (cx.view.self_mute || cx.view.self_deaf, cx.view.self_deaf);
     let wait = |tip| if connected { tip } else { "Connecting…" };
     let buttons = [
-        MediaButton { icon: Icon::Camera, tip: wait(if cam { "Turn Off Camera" } else { "Turn On Camera" }), on: cam, red: false, slashed: false, enabled: connected },
-        MediaButton { icon: Icon::Screen, tip: wait(if share { "Stop Streaming" } else { "Share Your Screen" }), on: share, red: false, slashed: false, enabled: connected },
+        MediaButton { icon: Icon::Camera, tip: wait(if cam { "Turn off camera" } else { "Turn on camera" }), on: cam, red: false, slashed: false, enabled: connected },
+        MediaButton { icon: Icon::Screen, tip: wait(if share { "Stop streaming" } else { "Share your screen" }), on: share, red: false, slashed: false, enabled: connected },
         MediaButton { icon: Icon::Mic, tip: if mute { "Unmute" } else { "Mute" }, on: false, red: false, slashed: mute, enabled: true },
         MediaButton { icon: Icon::Headphones, tip: if deaf { "Undeafen" } else { "Deafen" }, on: false, red: false, slashed: deaf, enabled: true },
         MediaButton { icon: Icon::Hangup, tip: "Disconnect", on: false, red: true, slashed: false, enabled: true },

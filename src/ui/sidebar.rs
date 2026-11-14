@@ -134,13 +134,13 @@ fn zone(pointer: Option<egui::Pos2>, icon: Rect, slot: Slot, merge: Option<Guild
 fn finish_drag(ui: &mut egui::Ui, cx: &mut UiCx<'_>, target: Option<Target>) {
     let ctx = ui.ctx().clone();
     let Some(id) = dragged(&ctx) else { return };
-    let accent = cx.theme.colors.accent.to_color32();
+    let mark = cx.theme.colors.text.to_color32();
     if let Some(t) = &target {
         if let Some(y) = t.line {
-            ui.painter().hline(ui.max_rect().x_range().shrink(12.0), y, Stroke::new(2.0, accent));
+            ui.painter().hline(ui.max_rect().x_range().shrink(12.0), y, Stroke::new(2.0, mark));
         }
         if let Some(r) = t.ring {
-            ui.painter().rect_stroke(r.expand(2.0), ICON_R + 2.0, Stroke::new(2.0, accent), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(r.expand(2.0), ICON_R + 2.0, Stroke::new(2.0, mark), egui::StrokeKind::Outside);
         }
     }
     if let (Some(p), Some(index)) = (ctx.pointer_latest_pos(), cx.state.guilds.iter().position(|g| g.id == id)) {
@@ -191,7 +191,8 @@ fn folder(ui: &mut egui::Ui, cx: &mut UiCx<'_>, f: &GuildFolder, index: usize, b
     let fid = f.id.unwrap_or_default();
     let open_key = folder_open_id(fid);
     let open = ui.data(|d| d.get_temp::<bool>(open_key)).unwrap_or(false);
-    let color = f.color.map(rgb).unwrap_or(c.accent.to_color32());
+    // No colour picked: neutral (ember is the brand's, never a tile's).
+    let color = f.color.map(rgb).unwrap_or(c.text_muted.to_color32());
     let name = f.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| {
         let names = f.guild_ids.iter().filter_map(|g| cx.state.guild(*g)).map(|g| g.name.as_str());
         names.collect::<Vec<_>>().join(", ")
@@ -295,12 +296,12 @@ fn icon_slot(ui: &mut egui::Ui, salt: impl egui::AsIdSalt, selected: bool) -> (R
     let icon = Rect::from_center_size(row.center(), Vec2::splat(ICON));
     let resp = ui.interact(icon, ui.make_persistent_id(salt), Sense::click());
     let target = if selected || resp.hovered() { 1.0 } else { 0.0 };
-    let morph = ui.ctx().animate_value_with_time(resp.id.with("morph"), target, ANIM);
+    let morph = ui.ctx().animate_value_with_time(resp.id.with("morph"), target, super::messages::motion(ui, ANIM));
     (row, icon, resp, morph)
 }
 
-/// Left-edge pill (height eases to 8 unread / 20 hover / 40 selected) and the mention badge
-/// with a cut-out ring in the bar color.
+/// Left-edge pill (height eases to 8 unread / 20 hover / 40 selected; it heats up on the way to
+/// 40, `heat_bar`), the mention badge with a cut-out ring in the bar color, and the focus ring.
 fn decorate(ui: &egui::Ui, c: &ThemeColors, row: Rect, icon: Rect, resp: &egui::Response, (selected, unread): (bool, bool), mentions: u32) {
     let target = if selected {
         40.0
@@ -311,14 +312,42 @@ fn decorate(ui: &egui::Ui, c: &ThemeColors, row: Rect, icon: Rect, resp: &egui::
     } else {
         0.0
     };
-    let h = ui.ctx().animate_value_with_time(resp.id.with("pill"), target, ANIM);
+    let h = ui.ctx().animate_value_with_time(resp.id.with("pill"), target, super::messages::motion(ui, ANIM));
+    let tk = crate::theme::applied_tokens(ui.ctx());
     if h >= 1.0 {
         let pill = Rect::from_min_size(pos2(row.left(), row.center().y - h / 2.0), vec2(4.0, h));
-        ui.painter().rect_filled(pill, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, c.text.to_color32());
+        heat_bar(ui.painter(), pill, c.text.to_color32(), tk.heat);
     }
     if mentions > 0 {
         badge(ui, c, pos2(icon.right() + 4.0, icon.bottom() - 4.0), mentions, Some(c.guild_bar.to_color32()));
     }
+    if resp.has_focus() {
+        ui.painter().rect_stroke(icon.expand(2.0), ICON_R + 2.0, Stroke::new(2.0, tk.focus), egui::StrokeKind::Outside);
+    }
+}
+
+/// Rustcord's signature (docs/DESIGN.md §10.1): the rail pill is `text` up to 20 px tall and
+/// heats toward `heat` (cold ends, ember body, white-hot core; one flat accent on light and high
+/// contrast themes) as it grows to the selected 40 px. No glow.
+fn heat_bar(p: &egui::Painter, pill: Rect, text: Color32, heat: [Color32; 3]) {
+    let t = ((pill.height() - 20.0) / 20.0).clamp(0.0, 1.0);
+    let [cold, body, core] = heat.map(|h| text.lerp_to_gamma(h, t));
+    p.rect_filled(pill, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, cold);
+    let inner = pill.shrink2(vec2(0.0, 3.0));
+    if t <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for (f, col) in [(0.0, cold), (0.3, body), (0.5, core), (0.7, body), (1.0, cold)] {
+        let y = egui::lerp(inner.top()..=inner.bottom(), f);
+        mesh.colored_vertex(pos2(inner.left(), y), col);
+        mesh.colored_vertex(pos2(inner.right(), y), col);
+    }
+    for k in (0..8).step_by(2) {
+        mesh.add_triangle(k, k + 1, k + 2);
+        mesh.add_triangle(k + 1, k + 3, k + 2);
+    }
+    p.add(mesh);
 }
 
 /// Server-bar tooltip: the name in bold, right of the icon.
@@ -332,15 +361,14 @@ fn home_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let c = cx.theme.colors.clone();
     let selected = cx.state.selected_guild.is_none();
     let (row, icon, resp, morph) = icon_slot(ui, "home", selected);
-    // The logo mark on a neutral tile; hover/selection turns the tile accent.
-    let fill = c.surface.to_color32().lerp_to_gamma(c.accent.to_color32(), morph);
-    let mark = c.accent.to_color32().lerp_to_gamma(c.accent_text.to_color32(), morph);
+    // The ember mark on a neutral tile, always; hover and selection only lift the tile.
+    let fill = tile_fill(ui, &c, morph);
     ui.painter().rect_filled(icon, ICON_R, fill);
-    logo_mark(ui.painter(), icon.center(), 30.0, mark, fill);
+    logo_mark(ui.painter(), icon.center(), 30.0, c.accent.to_color32(), fill);
     decorate(ui, &c, row, icon, &resp, (selected, false), cx.state.dm_unread_count());
 
-    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, "Direct Messages"));
-    side_tooltip(&resp, "Direct Messages");
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, "Direct messages"));
+    side_tooltip(&resp, "Direct messages");
     if resp.clicked() {
         cx.state.select_guild(None);
         cx.view.settings_open = false;
@@ -392,16 +420,19 @@ fn guild_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, badges: &HashMap<I
     icon
 }
 
-/// "Add a Server" (+) under the servers: opens the join / create dialog (server_menu.rs).
+/// "Add a server" (+) under the servers: opens the join / create dialog (server_menu.rs).
 fn add_server_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let c = cx.theme.colors.clone();
     let (_, icon, resp, morph) = icon_slot(ui, "add_server", false);
-    let fill = c.surface.to_color32().lerp_to_gamma(c.accent.to_color32(), morph);
+    let fill = tile_fill(ui, &c, morph);
     ui.painter().rect_filled(icon, ICON_R, fill);
-    let fg = c.accent.to_color32().lerp_to_gamma(c.accent_text.to_color32(), morph);
+    let fg = c.text_muted.to_color32().lerp_to_gamma(crate::theme::applied_tokens(ui.ctx()).positive, morph);
     icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(icon.center(), Vec2::splat(20.0)), fg, fill);
-    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a Server"));
-    side_tooltip(&resp, "Add a Server");
+    if resp.has_focus() {
+        ui.painter().rect_stroke(icon.expand(2.0), ICON_R + 2.0, Stroke::new(2.0, crate::theme::applied_tokens(ui.ctx()).focus), egui::StrokeKind::Outside);
+    }
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a server"));
+    side_tooltip(&resp, "Add a server");
     if resp.clicked() {
         server_menu::open(cx, super::Modal::JoinServer);
     }
@@ -462,17 +493,23 @@ fn user_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id, guild_id: Option<Id
     if dev {
         ui.separator();
     }
-    if dev && menu_item(ui, "Copy User ID", MenuIcon::Glyph("🆔"), text) {
+    if dev && menu_item(ui, "Copy user ID", MenuIcon::Glyph("🆔"), text) {
         ui.ctx().copy_text(user.0.to_string());
     }
 }
 
-/// Server icon `index` in `rect`; without one, its initials on the server's own colour, turning
-/// accent as `morph` goes to 1 (unavailable servers grey). An animated icon plays while
+/// A neutral rail tile (`surface`), lifted by the `selected` tint as `morph` goes to 1.
+fn tile_fill(ui: &egui::Ui, c: &ThemeColors, morph: f32) -> Color32 {
+    let surface = c.surface.to_color32();
+    surface.lerp_to_gamma(surface.blend(crate::theme::applied_tokens(ui.ctx()).selected), morph)
+}
+
+/// Server icon `index` in `rect`; without one, its initials in semibold `text` on a neutral tile
+/// that lifts as `morph` goes to 1 (unavailable servers muted). An animated icon plays while
 /// `animate`, showing the static frame while the animation loads.
 fn paint_guild_icon(ui: &mut egui::Ui, cx: &mut UiCx<'_>, index: usize, rect: Rect, radius: f32, morph: f32, animate: bool) {
     let g = &cx.state.guilds[index];
-    let (id, unavailable) = (g.id, g.unavailable);
+    let unavailable = g.unavailable;
     let text = initials(&g.name);
     let (static_url, anim_url) = (cdn::guild_icon_url(g, ICON_PX, false), cdn::guild_icon_url(g, ICON_PX, true).filter(|_| animate));
     let ctx = ui.ctx().clone();
@@ -488,12 +525,11 @@ fn paint_guild_icon(ui: &mut egui::Ui, cx: &mut UiCx<'_>, index: usize, rect: Re
             let (fill, fg) = if unavailable {
                 (c.surface.to_color32(), c.text_muted.to_color32())
             } else {
-                let (fill, fg) = initial_colors(id.0, ui.visuals().dark_mode);
-                (fill.lerp_to_gamma(c.accent.to_color32(), morph), fg.lerp_to_gamma(c.accent_text.to_color32(), morph))
+                (tile_fill(ui, c, morph), c.text.to_color32())
             };
             ui.painter().rect_filled(rect, radius, fill);
             let size = rect.height() * if text.chars().count() > 2 { 0.33 } else { 0.4 };
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, bold(size), fg);
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, super::semibold(size), fg);
         }
     }
 }
@@ -517,9 +553,10 @@ pub fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let name = match (guild, dm) {
         (Some(i), _) => cx.state.guilds[i].name.clone(),
         (None, Some(ch)) => cx.state.channel_name(ch),
-        (None, None) => "Direct Messages".to_owned(),
+        (None, None) => "Direct messages".to_owned(),
     };
-    let g = one_line(ui, name, bold(cx.theme.font.size - 0.5), muted, rect.width() - 64.0);
+    // The ui role, 600 (docs/DESIGN.md §10.6).
+    let g = one_line(ui, name, super::semibold(cx.theme.font.size - 1.0), muted, rect.width() - 64.0);
     let icon = Rect::from_min_size(pos2(rect.center().x - (24.0 + g.size().x) / 2.0, rect.center().y - 8.0), Vec2::splat(16.0));
     match (guild, dm) {
         (Some(i), _) => paint_guild_icon(ui, cx, i, icon, 4.0, 0.0, false),
@@ -583,26 +620,27 @@ fn initials(name: &str) -> String {
     if s.is_empty() { "?".into() } else { s }
 }
 
-/// Count badge (danger pill) whose right edge is centred vertically on `right_center`. `ring`
-/// draws a 4 px outline in the background color so the badge stands out on top of icons.
-/// Returns the badge width.
+/// Count badge (`danger_fill` pill, badge role 11/700) whose right edge is centred vertically on
+/// `right_center`. `ring` draws a 4 px outline in the background color so the badge stands out
+/// on top of icons. Returns the badge width.
 pub(super) fn badge(ui: &egui::Ui, c: &ThemeColors, right_center: egui::Pos2, count: u32, ring: Option<Color32>) -> f32 {
+    let tk = crate::theme::Tokens::new(c);
     let text = if count > 99 { "99+".to_owned() } else { count.to_string() };
-    let galley = ui.painter().layout_no_wrap(text, bold(11.0), Color32::WHITE);
+    let galley = ui.painter().layout_no_wrap(text, bold(11.0), tk.danger_label);
     let h = 16.0;
     let w = (galley.size().x + 8.0).max(h);
     let rect = Rect::from_min_max(pos2(right_center.x - w, right_center.y - h / 2.0), pos2(right_center.x, right_center.y + h / 2.0));
     if let Some(ring) = ring {
         ui.painter().rect_filled(rect.expand(4.0), CornerRadius::same(12), ring);
     }
-    ui.painter().rect_filled(rect, CornerRadius::same(8), c.danger.to_color32());
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    ui.painter().rect_filled(rect, CornerRadius::same(8), tk.danger_fill);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, tk.danger_label);
     w
 }
 
-/// Hairline between panel areas (same as the message view's header border).
+/// Hairline between panel areas (the `rule` token; the message view's header border too).
 pub(super) fn line(c: &ThemeColors) -> Stroke {
-    Stroke::new(1.0, c.text_muted.to_color32().gamma_multiply(0.2))
+    Stroke::new(1.0, crate::theme::Tokens::new(c).rule)
 }
 
 /// One muted meta-size line (empty states), centred near the top of the area.
@@ -678,12 +716,12 @@ pub(super) fn user_presence(state: &AppState, user: Id) -> Presence {
     if state.me.as_ref().is_some_and(|m| m.id == user) { my_presence(state) } else { state.presence(user) }
 }
 
-/// "Online", "Idle", "Do Not Disturb", "Offline".
+/// "Online", "Idle", "Do not disturb", "Offline".
 pub(super) fn presence_label(p: Presence) -> &'static str {
     match p {
         Presence::Online => "Online",
         Presence::Idle => "Idle",
-        Presence::Dnd => "Do Not Disturb",
+        Presence::Dnd => "Do not disturb",
         Presence::Offline => "Offline",
     }
 }
@@ -925,23 +963,32 @@ fn drop_muted(s: &AppState, items: &mut Vec<SidebarItem>) {
     });
 }
 
-/// Category header: its name in the case given, after a 12 px chevron that turns from down
-/// (open) to right (collapsed) in 0.1 s.
+/// Category header: its name in the label role (13/600) in the case given, after a 12 px
+/// chevron that turns from down (open) to right (collapsed) in 120 ms.
 fn category_row(ui: &mut egui::Ui, cx: &UiCx<'_>, id: Id, name: &str, collapsed: bool) -> egui::Response {
     let c = &cx.theme.colors;
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
     let resp = ui.interact(row, ui.make_persistent_id(("category", id)), Sense::click());
-    let color = if resp.hovered() { c.text } else { c.text_muted }.to_color32();
-    let open = ui.ctx().animate_bool_with_time(resp.id.with("open"), !collapsed, 0.1);
+    let color = if resp.hovered() || resp.has_focus() { c.text } else { c.text_muted }.to_color32();
+    let open = ui.ctx().animate_bool_with_time(resp.id.with("open"), !collapsed, super::messages::motion(ui, 0.12));
     let turn = egui::emath::Rot2::from_angle((open - 1.0) * FRAC_PI_2);
     let center = pos2(row.left() + PAD - 2.0, row.center().y);
     let pts = [vec2(-4.0, -2.0), vec2(0.0, 2.0), vec2(4.0, -2.0)].map(|v| center + turn * v);
     ui.painter().add(Shape::line(pts.to_vec(), Stroke::new(1.5, color)));
     let left = row.left() + PAD + 8.0;
-    let g = one_line(ui, name, bold(cx.theme.font.size - 2.0), color, row.right() - PAD - left);
+    let g = one_line(ui, name, super::semibold(cx.theme.font.size - 2.0), color, row.right() - PAD - left);
     ui.painter().galley(pos2(left, row.center().y - g.size().y / 2.0), g, color);
+    if resp.has_focus() {
+        row_focus(ui, cx, row);
+    }
     resp.widget_info(|| WidgetInfo::selected(Role::DisclosureTriangle, true, !collapsed, name));
     resp
+}
+
+/// Keyboard focus ring of a full-width list row, inset so it stays inside the card.
+fn row_focus(ui: &egui::Ui, cx: &UiCx<'_>, row: Rect) {
+    let pal = Pal::new(cx.theme);
+    super::messages::focus_ring(ui, &pal, row.shrink2(vec2(ROW_INSET + 2.0, 2.0)), f32::from(pal.radius));
 }
 
 /// Row background / unread pill shared by channel, DM and voice-user rows. Returns the fill
@@ -970,18 +1017,17 @@ fn row_bg(c: &ThemeColors, fill: Color32) -> Color32 {
     c.sidebar.to_color32().blend(fill)
 }
 
-/// (selected, hovered) fills of rows on the sidebar color. Selected is the theme's resting
-/// button fill; hover sits halfway, so it shows in every theme (`message_hover` is tuned for
-/// the message background and nearly vanishes on the light sidebar).
+/// (selected, hovered) fills of rows: the `selected` and `hover` tokens over the sidebar colour,
+/// opaque so status-dot rings and icon cut-outs can use them.
 pub(super) fn row_fills(ui: &egui::Ui, c: &ThemeColors) -> (Color32, Color32) {
-    let selected = ui.visuals().widgets.inactive.weak_bg_fill;
-    (selected, c.sidebar.to_color32().lerp_to_gamma(selected, 0.55))
+    let (tk, sidebar) = (crate::theme::applied_tokens(ui.ctx()), c.sidebar.to_color32());
+    (sidebar.blend(tk.selected), sidebar.blend(tk.hover))
 }
 
-/// Name color of a channel/DM row: dim when muted, bright when it wants attention.
+/// Name color of a channel/DM row: dim when muted (45 %), bright when it wants attention.
 fn row_text_color(c: &ThemeColors, dim: bool, bright: bool) -> Color32 {
     if dim {
-        c.text_muted.to_color32().gamma_multiply(0.55)
+        c.text_muted.to_color32().gamma_multiply(0.45)
     } else if bright {
         c.text.to_color32()
     } else {
@@ -1038,15 +1084,19 @@ fn channel_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
         right -= badge(ui, c, pos2(right, row.center().y), mentions, None) + 8.0;
     }
     right -= crate::plugins::sidebar::typing_dots(ui, cx.state, id, pos2(right, row.center().y));
-    let font = if unread { bold(size) } else { FontId::proportional(size) };
-    let text_left = row.left() + ROW_INSET + 34.0;
+    // Body 500; unread 600 (docs/DESIGN.md §10.2).
+    let font = if unread { super::semibold(size) } else { FontId::new(size, crate::theme::medium_family()) };
+    let text_left = row.left() + ROW_INSET + 36.0;
     let g = one_line(ui, name.as_str(), font, color, right - text_left);
     ui.painter().galley(pos2(text_left, row.center().y - g.size().y / 2.0), g, color);
+    if resp.has_focus() {
+        row_focus(ui, cx, row);
+    }
 
     resp.widget_info(|| WidgetInfo::selected(Role::Button, supported, selected || connected, &name));
     resp.context_menu(|ui| channel_menu(ui, cx, id, guild_id, voice.then_some(connected)));
     if !supported {
-        resp.on_hover_text("Not supported yet");
+        resp.on_hover_text("Rustcord can't open this channel type yet.");
     } else if voice && !connected && !open_chat && resp.clicked() {
         cx.cmd.send(Command::JoinVoice { guild_id, channel_id: id });
     } else if open_chat || resp.clicked() {
@@ -1063,7 +1113,7 @@ fn channel_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, guild_id: Option<I
     menu_setup(ui);
     let c = &cx.theme.colors;
     let (text, danger) = (c.text.to_color32(), c.danger.to_color32());
-    if ui.add_enabled_ui(cx.state.is_unread(id), |ui| menu_item(ui, "Mark As Read", MenuIcon::Glyph("✔"), text)).inner {
+    if ui.add_enabled_ui(cx.state.is_unread(id), |ui| menu_item(ui, "Mark as read", MenuIcon::Glyph("✔"), text)).inner {
         mark_read(cx, [id]);
     }
     if let Some(connected) = voice {
@@ -1072,10 +1122,10 @@ fn channel_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, guild_id: Option<I
             if menu_item(ui, "Disconnect", MenuIcon::Icon(Icon::Hangup), danger) {
                 cx.cmd.send(Command::LeaveVoice);
             }
-        } else if menu_item(ui, "Join Voice", MenuIcon::Glyph("🔊"), text) {
+        } else if menu_item(ui, "Join voice", MenuIcon::Glyph("🔊"), text) {
             cx.cmd.send(Command::JoinVoice { guild_id, channel_id: id });
         }
-        if menu_item(ui, "Open Chat", MenuIcon::Glyph("💬"), text) {
+        if menu_item(ui, "Open chat", MenuIcon::Glyph("💬"), text) {
             cx.state.select_channel(id);
             cx.view.settings_open = false;
             cx.view.call_ui.chat |= connected;
@@ -1083,11 +1133,11 @@ fn channel_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, guild_id: Option<I
     }
     server_menu::channel_menu_items(ui, cx, id);
     ui.separator();
-    if menu_item(ui, "Copy Link", MenuIcon::Icon(Icon::Link), text) {
+    if menu_item(ui, "Copy link", MenuIcon::Icon(Icon::Link), text) {
         let place = guild_id.map_or_else(|| "@me".to_owned(), |g| g.0.to_string());
         ui.ctx().copy_text(format!("https://discord.com/channels/{place}/{}", id.0));
     }
-    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy Channel ID", MenuIcon::Glyph("🆔"), text) {
+    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy channel ID", MenuIcon::Glyph("🆔"), text) {
         ui.ctx().copy_text(id.0.to_string());
     }
 }
@@ -1156,13 +1206,11 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
     let bg = row_bg(c, fill);
     let (muted, mark) = (c.text_muted.to_color32(), if u.by_server { c.danger } else { c.text_muted }.to_color32());
     let (mut right, cy) = (row.right() - ROW_INSET - 6.0, row.center().y);
-    // Right to left, 4 px apart: LIVE pill, camera, deafened, muted.
+    // Right to left, 4 px apart: "Live" tag, camera, deafened, muted.
     if u.live {
-        let g = ui.painter().layout_no_wrap("LIVE".into(), bold(11.0), Color32::WHITE);
-        let pill = Rect::from_min_max(pos2(right - g.size().x - 12.0, cy - 8.0), pos2(right, cy + 8.0));
-        ui.painter().rect_filled(pill, 8, c.danger.to_color32());
-        ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
-        right = pill.left() - 4.0;
+        let w = ui.painter().layout_no_wrap("Live".into(), bold(11.0), Color32::WHITE).size().x + 12.0;
+        super::call::live_pill(ui.painter(), pos2(right - w, cy), crate::theme::Tokens::new(c).danger_fill);
+        right -= w + 4.0;
     }
     for (on, icon, color) in [(u.video, Icon::Camera, muted), (u.deaf, Icon::Deafened, mark), (u.muted, Icon::MicOff, mark)] {
         if on {
@@ -1190,7 +1238,7 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
     }
 }
 
-/// DM rows under a "Direct Messages" header, filtered by the header field; closed DMs are
+/// DM rows under a "Direct messages" header, filtered by the header field; closed DMs are
 /// left out until a new message arrives in them.
 fn dm_list(ui: &mut egui::Ui, cx: &mut UiCx<'_>, area: egui::ScrollArea) {
     // Opening a closed DM (notification, quick restore of the last channel) lists it again.
@@ -1211,10 +1259,10 @@ fn dm_list(ui: &mut egui::Ui, cx: &mut UiCx<'_>, area: egui::ScrollArea) {
     if ids.is_empty() {
         friends_row(ui, cx);
         dm_header(ui, cx, false);
-        empty_state(ui, cx, 24.0, if query.is_empty() { "No direct messages yet" } else { "No matches" });
+        empty_state(ui, cx, 24.0, if query.is_empty() { "No direct messages yet. Start one from your friends list." } else { "No conversations match that name." });
         return;
     }
-    // Rows are uniform (Friends, ["Pinned", the pinned DMs], "Direct Messages", the rest): only
+    // Rows are uniform (Friends, ["Pinned", the pinned DMs], "Direct messages", the rest): only
     // the visible ones are laid out.
     let head = usize::from(pins > 0);
     area.show_rows(ui, DM_ROW_H, ids.len() + 2 + head, |ui, range| {
@@ -1263,13 +1311,13 @@ fn dm_listed(state: &AppState, hidden: &HashMap<Id, Option<Id>>, id: Id) -> bool
     hidden.get(&id).is_none_or(|&closed_at| state.channels.get(&id).and_then(|c| c.last_message_id) > closed_at)
 }
 
-/// "Direct Messages" with a "+" (Create DM: the group picker in friends.rs); PinDMs' "Pinned"
+/// "Direct messages" with a "+" (Create DM: the group picker in friends.rs); PinDMs' "Pinned"
 /// above the pinned DMs in the same style, without the "+".
 fn dm_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pinned: bool) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), DM_ROW_H), Sense::hover());
     let color = cx.theme.colors.text_muted.to_color32();
-    let title = if pinned { "Pinned" } else { "Direct Messages" };
-    let g = one_line(ui, title, bold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD - 24.0);
+    let title = if pinned { "Pinned" } else { "Direct messages" };
+    let g = one_line(ui, title, super::semibold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD - 24.0);
     let text_y = row.bottom() - g.size().y - 6.0;
     let center_y = text_y + g.size().y / 2.0;
     ui.painter().galley(pos2(row.left() + PAD + 2.0, text_y), g, color);
@@ -1309,8 +1357,8 @@ pub(super) fn dm_avatar_at(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, rect: R
     presence
 }
 
-/// Paints `name` (in `color`) at x `left_center.x`, centred on its y; with a status line (meta
-/// size, muted) under it, the pair is centred instead. `max_w` bounds the status line.
+/// Paints `name` (in `color`) at x `left_center.x`, centred on its y; with a status line (the
+/// meta role, muted) under it, the pair is centred instead. `max_w` bounds the status line.
 /// Returns the name's rect (guild tag chips go after it) and the right end of the text.
 pub(super) fn name_and_status(ui: &egui::Ui, cx: &mut UiCx<'_>, name: Arc<egui::Galley>, color: Color32, status: Option<&StatusText>, left_center: egui::Pos2, max_w: f32) -> (Rect, f32) {
     let (x, cy) = (left_center.x, left_center.y);
@@ -1319,7 +1367,7 @@ pub(super) fn name_and_status(ui: &egui::Ui, cx: &mut UiCx<'_>, name: Arc<egui::
         ui.painter().galley(at.min, name, color);
         return (at, at.right());
     };
-    let font = FontId::proportional(cx.theme.font.size - 2.0);
+    let font = FontId::proportional(cx.theme.font.size - 3.0);
     let sub_h = ui.ctx().fonts_mut(|f| f.row_height(&font));
     let (name_h, muted) = (name.size().y, cx.theme.colors.text_muted.to_color32());
     let top = cy - (name_h + sub_h) / 2.0;
@@ -1439,7 +1487,7 @@ fn dm_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, anchor: egui::Pos2) {
     menu_setup(ui);
     let text = cx.theme.colors.text.to_color32();
     let user = cx.state.channels.get(&id).filter(|c| c.kind == ct::DM).and_then(|c| c.recipient_ids.first().copied());
-    if ui.add_enabled_ui(cx.state.is_unread(id), |ui| menu_item(ui, "Mark As Read", MenuIcon::Glyph("✔"), text)).inner {
+    if ui.add_enabled_ui(cx.state.is_unread(id), |ui| menu_item(ui, "Mark as read", MenuIcon::Glyph("✔"), text)).inner {
         mark_read(cx, [id]);
     }
     ui.separator();
@@ -1459,8 +1507,8 @@ fn dm_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, anchor: egui::Pos2) {
         ui.separator();
     }
     let (label, copy) = match user {
-        Some(u) => ("Copy User ID", u),
-        None => ("Copy Channel ID", id),
+        Some(u) => ("Copy user ID", u),
+        None => ("Copy channel ID", id),
     };
     if dev && menu_item(ui, label, MenuIcon::Glyph("🆔"), text) {
         ui.ctx().copy_text(copy.0.to_string());
@@ -1471,9 +1519,14 @@ fn dm_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, anchor: egui::Pos2) {
 // User panel
 // ---------------------------------------------------------------------------
 
-/// Background of the user panel: between the channel list and the server bar.
+/// Background of the user panel: `surface`, one step up from the panes (E1).
 fn user_panel_fill(c: &ThemeColors) -> Color32 {
-    c.sidebar.to_color32().lerp_to_gamma(c.guild_bar.to_color32(), 0.7)
+    c.surface.to_color32()
+}
+
+/// Corner radius of the floating user panel: the container tier (1.5r).
+fn panel_r(theme: &Theme) -> u8 {
+    Pal::new(theme).card_radius()
 }
 
 /// Height of the floating user panel: the account row (two text lines grow with the font
@@ -1512,7 +1565,7 @@ pub fn user_panel(ctx: &egui::Context, cx: &mut UiCx<'_>, width: f32) {
     let pos = pos2(screen.left() + PANEL_MARGIN, screen.bottom() - PANEL_MARGIN - h);
     egui::Area::new(egui::Id::unique("user_panel")).order(egui::Order::Middle).fixed_pos(pos).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(width - 2.0 * PANEL_MARGIN, h), Sense::hover());
-        ui.painter().rect_filled(rect, PANEL_R, user_panel_fill(&c));
+        ui.painter().rect_filled(rect, panel_r(cx.theme), user_panel_fill(&c));
         let voice_h = h - account_h(cx.theme);
         if voice_h > 0.0 {
             let split = rect.top() + voice_h;
@@ -1520,12 +1573,15 @@ pub fn user_panel(ctx: &egui::Context, cx: &mut UiCx<'_>, width: f32) {
             ui.painter().hline(rect.x_range(), split - 0.5, line(&c));
         }
         account_row(ui, cx, rect.with_min_y(rect.top() + voice_h), rect.left_top());
-        // Last: the outline stays over the nameplate's edge.
-        ui.painter().rect_stroke(rect, PANEL_R, line(&c), egui::StrokeKind::Inside);
+        // Last: the outline stays over the nameplate's edge. Light and high contrast only: there
+        // `surface` sits close to the panes under it; on dark themes the fill step is the edge.
+        if cx.theme.tokens().mode != crate::theme::Mode::Dark {
+            ui.painter().rect_stroke(rect, panel_r(cx.theme), line(&c), egui::StrokeKind::Inside);
+        }
     });
 }
 
-/// "Voice Connected" (or "Connecting…", LIVE while I share) over "channel / server" (opens the
+/// "Voice connected" (or "Connecting…", "Live" while I share) over "channel / server" (opens the
 /// call view), and the disconnect button; once connected, Camera and Screen Share buttons under
 /// them (lit while on: a click stops it).
 fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
@@ -1533,12 +1589,10 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let c = cx.theme.colors.clone();
     let row = Rect::from_min_size(rect.min + Vec2::splat(12.0), vec2(rect.width() - 24.0, 32.0));
     let sharing = cx.state.voice.video.screen_share.is_some();
-    // Connected in status green, connecting in idle yellow; both ~2:1 on light panels, so
-    // darkened there (~6:1 / ~5.6:1 on Paper Light).
-    let (word, presence) = if cx.state.voice.connected { ("Voice Connected", Presence::Online) } else { ("Connecting…", Presence::Idle) };
+    // Connected in green text, connecting in straw (both readable on light panels too).
+    let tk = cx.theme.tokens();
+    let (word, color) = if cx.state.voice.connected { ("Voice connected", tk.positive_text) } else { ("Connecting…", tk.attention) };
     let word = &crate::plugins::sidebar::call_timer(ui.ctx(), cx.state, word);
-    let color = presence_color(presence, &c);
-    let color = if ui.visuals().dark_mode { color } else { color.lerp_to_gamma(Color32::BLACK, 0.5) };
     let guild = cx.state.channels.get(&ch).and_then(|x| x.guild_id).and_then(|g| cx.state.guild(g)).map(|g| g.name.clone());
     let place = match guild {
         Some(g) => format!("{} / {g}", cx.state.channel_name(ch)),
@@ -1549,12 +1603,13 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let link_rect = Rect::from_min_max(pos2(row.left(), row.center().y), pos2(row.left() + max_w, row.bottom()));
     let link = ui.interact(link_rect, ui.make_persistent_id("voice_place"), Sense::click());
     let link_color = if link.hovered() { c.text } else { c.text_muted }.to_color32();
-    let top_g = one_line(ui, word, bold(cx.theme.font.size - 1.0), color, max_w - if sharing { 44.0 } else { 0.0 });
-    let sub_g = one_line(ui, place.as_str(), FontId::proportional(12.0), link_color, max_w);
+    // Label role over meta (docs/DESIGN.md §10.5).
+    let top_g = one_line(ui, word, super::semibold(cx.theme.font.size - 2.0), color, max_w - if sharing { 44.0 } else { 0.0 });
+    let sub_g = one_line(ui, place.as_str(), FontId::proportional(cx.theme.font.size - 3.0), link_color, max_w);
     let top = row.center().y - (top_g.size().y + sub_g.size().y) / 2.0;
     let sub_y = top + top_g.size().y;
     if sharing {
-        super::call::live_pill(ui.painter(), pos2(row.left() + top_g.size().x + 6.0, top + top_g.size().y / 2.0), c.danger.to_color32());
+        super::call::live_pill(ui.painter(), pos2(row.left() + top_g.size().x + 6.0, top + top_g.size().y / 2.0), cx.theme.tokens().danger_fill);
     }
     ui.painter().galley(pos2(row.left(), top), top_g, color);
     ui.painter().galley(pos2(row.left(), sub_y), sub_g, link_color);
@@ -1569,8 +1624,7 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let base = user_panel_fill(&c);
     let bg = if hot { base.blend(c.text.to_color32().gamma_multiply(0.08)) } else { base };
     ui.painter().rect_filled(button, CornerRadius::from(cx.theme.layout.corner_radius), bg);
-    let glyph = if hot { c.danger } else { c.text_muted }.to_color32();
-    icons::paint(ui.painter(), Icon::Hangup, button.shrink(7.0), glyph, bg);
+    icons::paint(ui.painter(), Icon::Hangup, button.shrink(6.0), c.danger.to_color32(), bg);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Disconnect"));
     if resp.on_hover_text("Disconnect").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         cx.cmd.send(Command::LeaveVoice);
@@ -1583,10 +1637,10 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let w = (row.width() - 8.0) / 2.0;
     let colors = (base.blend(c.text.to_color32().gamma_multiply(0.06)), c.text.to_color32(), c.danger.to_color32());
     let cam = cx.state.voice.video.camera_on;
-    let camera = super::call::MediaButton { icon: Icon::Camera, tip: if cam { "Turn Off Camera" } else { "Turn On Camera" }, on: cam, red: false, slashed: false, enabled: true };
+    let camera = super::call::MediaButton { icon: Icon::Camera, tip: if cam { "Turn off camera" } else { "Turn on camera" }, on: cam, red: false, slashed: false, enabled: true };
     // Lit from the Go Live click on (still connecting): a click cancels it.
     let share = cx.state.voice.video.sharing();
-    let screen = super::call::MediaButton { icon: Icon::Screen, tip: if share { "Stop Streaming" } else { "Share Your Screen" }, on: share, red: false, slashed: false, enabled: true };
+    let screen = super::call::MediaButton { icon: Icon::Screen, tip: if share { "Stop streaming" } else { "Share your screen" }, on: share, red: false, slashed: false, enabled: true };
     let radius = cx.theme.layout.corner_radius;
     if camera.show(ui, Rect::from_min_size(pos2(row.left(), row.bottom() + 8.0), vec2(w, 32.0)), radius, "voice_camera", colors).clicked() {
         super::call::toggle_camera(cx);
@@ -1596,8 +1650,6 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     }
 }
 
-/// Corner radius of the floating user panel.
-const PANEL_R: u8 = 8;
 /// Microphone / headphones: the 32 px button and the ∨ of its device menu.
 const GROUP_W: f32 = 50.0;
 
@@ -1654,7 +1706,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let mic = voice_button(ui, cx, mic, false, if mute || deaf { "Unmute" } else { "Mute" }, mute || deaf);
     let phones = voice_button(ui, cx, phones, true, if deaf { "Undeafen" } else { "Deafen" }, deaf);
     let open = cx.view.settings_open;
-    if panel_button(ui, cx.theme, gear, Icon::Gear, "User Settings", false, open).clicked() {
+    if panel_button(ui, cx.theme, gear, Icon::Gear, "User settings", false, open).clicked() {
         cx.view.settings_open = !open;
     }
     if mic || phones {
@@ -1684,8 +1736,9 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
         (None, Some(a)) => (Some(a), status_text(cx.state.chat.my_custom_status.as_ref(), None)),
         (None, None) => (None, Some(line)),
     };
-    let name_g = super::cosmetics::name_galley(ui, &name, bold(size - 1.0), fx.name_style.as_ref(), c.text.to_color32(), max_w);
-    let sub_font = FontId::proportional(size - 2.0);
+    // Name 14/600 over the meta line (docs/DESIGN.md §10.5).
+    let name_g = super::cosmetics::name_galley(ui, &name, super::semibold(size - 1.0), fx.name_style.as_ref(), c.text.to_color32(), max_w);
+    let sub_font = FontId::proportional(size - 3.0);
     let sub_h = ui.fonts_mut(|f| f.row_height(&sub_font));
     let top = cy - (name_g.size().y + sub_h) / 2.0;
     let name_at = pos2(text_left, top);
@@ -1718,7 +1771,8 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     }
     if let Some(np) = &fx.nameplate {
         // Under the voice section only the lower corners are the panel's.
-        let corners = if rect.top() > panel.y + 0.5 { CornerRadius { sw: PANEL_R, se: PANEL_R, ..CornerRadius::ZERO } } else { CornerRadius::same(PANEL_R) };
+        let r = panel_r(cx.theme);
+        let corners = if rect.top() > panel.y + 0.5 { CornerRadius { sw: r, se: r, ..CornerRadius::ZERO } } else { CornerRadius::same(r) };
         let end = name_end.max(sub_right);
         let shape = super::cosmetics::nameplate_cover(ui, cx.images, rect, np, fx_anim, corners, base, end);
         // High Contrast: the panel colour stays opaque behind the text (and the buttons).
@@ -1806,8 +1860,8 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
     // What the icon sits on (the slash's gap).
     let mut under = user_panel_fill(&c);
     if slashed {
-        p.rect_filled(group, r, c.danger.to_color32().gamma_multiply(0.15));
-        under = under.blend(c.danger.to_color32().gamma_multiply(0.15));
+        p.rect_filled(group, r, c.danger.to_color32().gamma_multiply(0.12));
+        under = under.blend(c.danger.to_color32().gamma_multiply(0.12));
     }
     // Discord: one pill around icon and ∨ while either is hovered, the hovered half brighter.
     if hot || more_hot {
@@ -1825,7 +1879,7 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
     let v = if more_hot { c.text.to_color32() } else { panel_icon_rest(&c) };
     p.add(Shape::line(vec![k + vec2(-3.5, -1.75), k + vec2(0.0, 1.75), k + vec2(3.5, -1.75)], Stroke::new(1.5, v)));
 
-    let label = if output { "Output Options" } else { "Input Options" };
+    let label = if output { "Output options" } else { "Input options" };
     more.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
     if more.clicked() && !open {
         // Local: the voice task lists the audio devices (no request).
@@ -1848,7 +1902,7 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
         menu_setup(ui);
         ui.set_max_width(280.0);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        ui.label(egui::RichText::new(if output { "Output Device" } else { "Input Device" }).size(12.0).color(muted));
+        ui.label(egui::RichText::new(if output { "Output device" } else { "Input device" }).size(12.0).color(muted));
         for name in std::iter::once(None).chain(list.iter().map(Some)) {
             let glyph = if current.as_ref() == name { "✔" } else { "" };
             if menu_item(ui, name.map_or("Default", String::as_str), MenuIcon::Glyph(glyph), text) {
@@ -1856,7 +1910,7 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
             }
         }
         ui.separator();
-        page = menu_item(ui, "Voice Settings", MenuIcon::Glyph("⚙"), text);
+        page = menu_item(ui, "Voice settings", MenuIcon::Glyph("⚙"), text);
     });
     if let Some(name) = pick {
         *(if output { &mut cx.settings.voice_output } else { &mut cx.settings.voice_input }) = name;
