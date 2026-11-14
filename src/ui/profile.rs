@@ -92,6 +92,9 @@ pub fn show_popup(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let pal = look.theme.map_or(Pal { surface: app.tk.raised, ..app }, |t| cosmetics::theme_pal(&app, t));
     let r = pal.modal_radius();
     let shadow = ctx.global_style().visuals.popup_shadow;
+    // The footer's More menu is a layer of its own: a click or Escape while it is open closes
+    // only the menu (read before the menu closes itself this pass).
+    let menu_open = egui::Popup::is_id_open(ctx, menu_id());
     let mut bounds = ctx.content_rect().shrink(16.0);
     // A frame's top staples stand above the card: their room too, not the title bar.
     bounds.min.y = ctx.content_rect().top() + super::TITLE_BAR_H + 8.0 + look.overflow_top(WIDTH);
@@ -146,7 +149,7 @@ pub fn show_popup(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             look.finish(ui, cx.images, rect, r, behind, cosmetics::shown_for(ui.ctx(), ("card", user.id)), animate);
         })
         .response;
-    if ctx.input(|i| i.key_pressed(Key::Escape)) || (pass != opened && resp.clicked_elsewhere()) {
+    if !menu_open && (ctx.input(|i| i.key_pressed(Key::Escape)) || (pass != opened && resp.clicked_elsewhere())) {
         cx.view.profile_card = None;
     }
 }
@@ -627,8 +630,13 @@ pub(super) fn friend_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, use
     }
 }
 
-/// Popout actions on someone's card: Message, Add Friend (friends.rs), View Full Profile
-/// (profile_modal.rs). My own card only has the last.
+/// The footer's More menu (`actions`).
+fn menu_id() -> egui::Id {
+    egui::Id::unique("rc_profile_card_more")
+}
+
+/// Popout footer (§12): Message (my own card: Edit profile), Add Friend (friends.rs, not on
+/// mine), and More: View full profile (profile_modal.rs), Copy user ID in Developer Mode.
 fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, guild_id: Option<Id>, is_me: bool) {
     Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 16 }).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -646,9 +654,22 @@ fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, guild_i
             if !is_me {
                 friend_button(ui, cx, pal, user_id);
             }
-            if vector_button(ui, pal, Icon::Person, "View full profile", 32.0, false, pal.text).clicked() {
-                profile_modal::open(cx, user_id, guild_id);
-            }
+            let more = vector_button(ui, pal, Icon::More, "More", 32.0, false, pal.text);
+            egui::Popup::menu(&more).id(menu_id()).show(|ui| {
+                menu_setup(ui);
+                // The app's menu colours: `pal` may be a themed card's (cosmetics::theme_pal).
+                let text = cx.theme.colors.text.to_color32();
+                if menu_item(ui, "View full profile", MenuIcon::Icon(Icon::Person), text) {
+                    profile_modal::open(cx, user_id, guild_id);
+                }
+                // Settings > Advanced > Developer Mode.
+                if cx.state.account.settings.developer_mode() {
+                    ui.separator();
+                    if menu_item(ui, "Copy user ID", MenuIcon::Icon(Icon::IdCard), text) {
+                        ui.ctx().copy_text(user_id.0.to_string());
+                    }
+                }
+            });
         });
     });
 }
