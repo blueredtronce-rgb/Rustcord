@@ -4,14 +4,14 @@
 //! lower part (status picker, custom status, Edit Profile) is `user_settings::account_popout`.
 //! Opening a card loads the profile (`profile_modal::fetch`): pronouns, About Me, mutual counts
 //! (open the full profile on that tab), Member Since and my Note. Others' cards end with the
-//! Message / friend state (Add, Accept, sent) / View Full Profile actions. Also asks the 80013
+//! Message / friend state (Add, Accept, sent) / More (View full profile) actions. Also asks the 80013
 //! question each frame (`friends::ask_stranger`).
 //! OWNERSHIP: friends/DMs/inbox/profile engineer (docs/SOCIAL_UI_DESIGN.md).
 
 use super::icons::Icon;
-use super::messages::{tag, vector_button, Btn, Pal};
+use super::messages::{menu_item, menu_setup, tag, vector_button, Btn, MenuIcon, Pal};
 use super::profile_modal::{self, Tab};
-use super::sidebar::{paint_status_text, presence_label, status_label, status_tooltip, user_dot, user_presence, user_status_text};
+use super::sidebar::{paint_status_text, status_label, status_tooltip, user_dot, user_presence, user_presence_label, user_status_text};
 use super::{cosmetics, images, rgb, Modal, UiCx};
 use crate::api::cdn;
 use crate::backend::ContextLocation;
@@ -200,7 +200,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
     let presence = user_presence(cx.state, user.id);
     let label = match cx.state.chat.my_status.filter(|_| is_me) {
         Some(s) => status_label(s),
-        None => presence_label(presence),
+        None => user_presence_label(cx.state, user.id),
     };
     ui.interact(dot, ui.make_persistent_id("rc_card_status"), Sense::hover()).on_hover_text(label);
     // Custom status bubble right of the avatar, at most two lines (mine also while invisible,

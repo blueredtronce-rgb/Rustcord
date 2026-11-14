@@ -668,11 +668,17 @@ fn dot_metrics(avatar: Rect) -> (f32, f32, f32) {
 /// Status icon on the bottom-right of an avatar, cut out of it by a ring in the background
 /// color `ring`. Returns the icon's rect (status tooltips).
 pub(super) fn status_dot(p: &egui::Painter, avatar: Rect, presence: Presence, c: &ThemeColors, ring: Color32) -> Rect {
+    let (center, r) = dot_ring(p, avatar, ring);
+    paint_status(p, center, r, presence, c, ring);
+    Rect::from_center_size(center, Vec2::splat(2.0 * r))
+}
+
+/// The ring that cuts an avatar's status icon out of it; returns the icon's centre and radius.
+fn dot_ring(p: &egui::Painter, avatar: Rect, ring: Color32) -> (egui::Pos2, f32) {
     let (r, cut, inset) = dot_metrics(avatar);
     let center = avatar.right_bottom() - Vec2::splat(r + inset);
     p.circle_filled(center, r + cut, ring);
-    paint_status(p, center, r, presence, c, ring);
-    Rect::from_center_size(center, Vec2::splat(2.0 * r))
+    (center, r)
 }
 
 /// Status icon of radius `r` with its cut-outs in `bg`: online a dot, idle a crescent, do not
@@ -693,9 +699,18 @@ pub(super) fn paint_status(p: &egui::Painter, center: egui::Pos2, r: f32, presen
     }
 }
 
-/// `status_dot` of a user (mine: my status); a phone instead while they are online only on
-/// mobile. Returns the icon's rect.
+/// `status_dot` of a user (mine: my status); while they stream (`is_streaming`) a `live` dot with
+/// a play triangle cut out, else a phone while they are online only on mobile. Returns the
+/// icon's rect.
 pub(super) fn user_dot(p: &egui::Painter, avatar: Rect, state: &AppState, user: Id, c: &ThemeColors, ring: Color32) -> Rect {
+    if is_streaming(state, user) {
+        let (center, r) = dot_ring(p, avatar, ring);
+        p.circle_filled(center, r, crate::theme::Tokens::new(c).live);
+        // Centred on its centroid, like a play button.
+        let tri = [vec2(-0.4, -0.55), vec2(0.6, 0.0), vec2(-0.4, 0.55)].map(|v| center + v * r);
+        p.add(Shape::convex_polygon(tri.to_vec(), ring, Stroke::NONE));
+        return Rect::from_center_size(center, Vec2::splat(2.0 * r));
+    }
     let presence = user_presence(state, user);
     if presence != Presence::Online || !state.presence_of(user).is_some_and(|x| x.mobile) {
         return status_dot(p, avatar, presence, c, ring);
@@ -724,6 +739,17 @@ pub(super) fn presence_label(p: Presence) -> &'static str {
         Presence::Dnd => "Do not disturb",
         Presence::Offline => "Offline",
     }
+}
+
+/// Whether a user is live on Twitch / YouTube (their shown activity is a stream, type 1) and not
+/// offline: their dot turns `live` and their status word is "Streaming", as in Discord.
+pub(super) fn is_streaming(state: &AppState, user: Id) -> bool {
+    user_presence(state, user) != Presence::Offline && crate::activity::activity_of(state, user).is_some_and(|a| a.kind == 1)
+}
+
+/// `presence_label` of a user's status, or "Streaming" while they stream (status tooltips).
+pub(super) fn user_presence_label(state: &AppState, user: Id) -> &'static str {
+    if is_streaming(state, user) { "Streaming" } else { presence_label(user_presence(state, user)) }
 }
 
 /// A status I can pick, as the status menu names it.
@@ -2078,6 +2104,20 @@ mod tests {
         assert_eq!(at(110.0, Slot::Child(7, 1), None), Some((GuildDrop::Folder { id: 7, index: 1 }, Some(96.0), false)));
         assert_eq!(at(130.0, Slot::Child(7, 1), None), Some((GuildDrop::Folder { id: 7, index: 2 }, Some(144.0), false)));
         assert_eq!(zone(None, icon, Slot::Top(0), merge).map(|t| t.to), None);
+    }
+
+    #[test]
+    fn streams_read_as_streaming() {
+        use crate::model::{GatewayEvent, UserPresence};
+        let mut s = AppState::default();
+        let with = |status, kind| UserPresence { status, activity: Some(Activity { kind, name: "Twitch".into(), rich: None }), ..Default::default() };
+        let list = vec![(Id(1), with(Presence::Online, 1)), (Id(2), with(Presence::Idle, 1)), (Id(3), with(Presence::Online, 0)), (Id(4), with(Presence::Offline, 1))];
+        s.apply_gateway(GatewayEvent::PresenceUpdate(list), None);
+        assert_eq!(user_presence_label(&s, Id(1)), "Streaming");
+        assert_eq!(user_presence_label(&s, Id(2)), "Streaming");
+        assert_eq!(user_presence_label(&s, Id(3)), "Online");
+        assert_eq!(user_presence_label(&s, Id(4)), "Offline");
+        assert_eq!(user_presence_label(&s, Id(5)), "Offline");
     }
 
     #[test]

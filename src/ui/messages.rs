@@ -1117,8 +1117,10 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                 if matches!(kind, channel_type::DM | channel_type::GROUP_DM) {
                     // The other user's avatar (with their status when known) or the group's icon.
                     let (slot, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
-                    if let Some(p) = super::sidebar::dm_avatar_at(ui, cx, ch, slot) {
-                        super::sidebar::status_dot(ui.painter(), slot, p, &cx.theme.colors, pal.bg);
+                    if super::sidebar::dm_avatar_at(ui, cx, ch, slot).is_some()
+                        && let Some(&u) = cx.state.channels.get(&ch).and_then(|c| c.recipient_ids.first())
+                    {
+                        super::sidebar::user_dot(ui.painter(), slot, cx.state, u, &cx.theme.colors, pal.bg);
                     }
                 } else {
                     // Fixed icon slot so every channel title starts at one x.
