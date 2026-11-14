@@ -982,10 +982,10 @@ fn absorb_window(state: &mut AppState, ch: Id) {
 
 /// "N new messages since 14:03" over the top of the list while the first unread message is
 /// scrolled out above it: a click scrolls to that message, "Mark as read" acks the channel and
-/// closes the bar (the "New" divider stays for this visit). Red-hot like that divider: unread.
+/// closes the bar (the "New" divider stays for this visit). A calm `surface` bar; only its "New"
+/// tag is red-hot, like the divider's, so an unread channel doesn't read as an error.
 fn new_messages_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, list: Rect, (first, count, more): (Id, usize, bool)) {
     let pal = lc.pal;
-    let fg = pal.tk.danger_label;
     let rect = Rect::from_min_size(list.min + vec2(16.0, 0.0), vec2(list.width() - 32.0, 32.0));
     let n = if more { format!("{count}+") } else { count.to_string() };
     let today = chrono::Local::now().date_naive();
@@ -993,22 +993,29 @@ fn new_messages_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut M
         .map(|t| t.format(if t.date_naive() == today { "%H:%M" } else { "%H:%M, %-d %B" }).to_string())
         .unwrap_or_default();
     let text = format!("{n} new message{} since {since}", if n == "1" { "" } else { "s" });
-    let mark_g = ui.painter().layout_no_wrap("Mark as read".into(), FontId::new(pal.meta(), crate::theme::semibold_family()), fg);
-    let mark_rect = Rect::from_min_max(pos2(rect.right() - 24.0 - mark_g.size().x, rect.top()), rect.max);
     let resp = ui.interact(rect, ui.make_persistent_id("rc_new_messages_bar"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+    // The action reads as a link, as "Jump to present" does.
+    let mark_g = ui.painter().layout_no_wrap("Mark as read".into(), FontId::new(pal.meta(), crate::theme::semibold_family()), pal.link);
+    let mark_rect = Rect::from_min_max(pos2(rect.right() - 24.0 - mark_g.size().x, rect.top()), rect.max);
     let mark = ui.interact(mark_rect, ui.make_persistent_id("rc_new_messages_read"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &text));
     mark.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Mark as read"));
-    let fill = if resp.hovered() || mark.hovered() { pal.tk.danger_fill.lerp_to_gamma(Color32::BLACK, 0.1) } else { pal.tk.danger_fill };
-    let text_g = super::one_line(ui, text, FontId::proportional(pal.meta()), fg, mark_rect.left() - rect.left() - 24.0);
+    let fill = if resp.hovered() || mark.hovered() { pal.surface.blend(pal.tk.hover) } else { pal.surface };
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, fill);
-    p.galley(pos2(rect.left() + 16.0, rect.center().y - text_g.size().y / 2.0), text_g, fg);
+    // A `rule` edge over the scrolling messages (High Contrast needs it); its top row sits on
+    // the header's own hairline. Opaque: egui fills only inside the stroke band, so a
+    // translucent edge would let the message text under it show through.
+    let shape = Rect::from_min_max(rect.min - vec2(0.0, 1.0), rect.max);
+    p.rect(shape, CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, fill, Stroke::new(1.0, fill.blend(pal.tk.rule)), egui::StrokeKind::Inside);
+    let tag = new_tag(p, &pal, pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER);
+    let text_g = super::one_line(ui, text, FontId::proportional(pal.meta()), pal.text, mark_rect.left() - tag.right() - 16.0);
+    let p = ui.painter();
+    p.galley(pos2(tag.right() + 8.0, rect.center().y - text_g.size().y / 2.0), text_g, pal.text);
     let mark_pos = pos2(rect.right() - 16.0 - mark_g.size().x, rect.center().y - mark_g.size().y / 2.0);
     if mark.hovered() {
-        p.hline(mark_pos.x..=mark_pos.x + mark_g.size().x, mark_pos.y + mark_g.size().y, Stroke::new(1.0, fg));
+        p.hline(mark_pos.x..=mark_pos.x + mark_g.size().x, mark_pos.y + mark_g.size().y, Stroke::new(1.0, pal.link));
     }
-    p.galley(mark_pos, mark_g, fg);
+    p.galley(mark_pos, mark_g, pal.link);
     if mark.clicked() {
         super::sidebar::mark_read(cx, [lc.ch]);
         memo.bar_closed = true;
@@ -1469,12 +1476,7 @@ fn separator(ui: &mut egui::Ui, pal: &Pal, id: Id, date: bool, new: bool) {
     let stroke = Stroke::new(1.0, if new { pal.danger } else { pal.tk.rule });
     let mut right = rect.right() - 16.0;
     if new {
-        // The "New" tag: badge role on `danger_fill`, chip radius, sentence case.
-        let g = p.layout_no_wrap("New".into(), FontId::new(pal.badge(), bold_family()), pal.tk.danger_label);
-        let tag = Rect::from_min_max(pos2(right - g.size().x - 10.0, y - 8.0), pos2(right, y + 8.0));
-        p.rect_filled(tag, pal.radius / 2, pal.tk.danger_fill);
-        p.galley(tag.center() - g.size() / 2.0, g, pal.tk.danger_label);
-        right = tag.left();
+        right = new_tag(p, pal, pos2(right, y), Align2::RIGHT_CENTER).left();
     }
     if date {
         let galley = p.layout_no_wrap(day_label(id), FontId::new(pal.meta(), crate::theme::semibold_family()), color);
@@ -1485,6 +1487,16 @@ fn separator(ui: &mut egui::Ui, pal: &Pal, id: Id, date: bool, new: bool) {
     } else {
         p.hline(rect.left() + 16.0..=right, y, stroke);
     }
+}
+
+/// The "New" tag (badge role on `danger_fill`, chip radius, sentence case), placed by `align`
+/// at `at`. Returns its rect.
+fn new_tag(p: &egui::Painter, pal: &Pal, at: egui::Pos2, align: Align2) -> Rect {
+    let g = p.layout_no_wrap("New".into(), FontId::new(pal.badge(), bold_family()), pal.tk.danger_label);
+    let tag = align.anchor_size(at, vec2(g.size().x + 10.0, 16.0));
+    p.rect_filled(tag, pal.radius / 2, pal.tk.danger_fill);
+    p.galley(tag.center() - g.size() / 2.0, g, pal.tk.danger_label);
+    tag
 }
 
 /// One message (with its date separator). Returns the row if it is hovered.
