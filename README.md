@@ -146,8 +146,12 @@ memory after sending them. The QR login uses a new RSA key per code that only li
 
 ## Install
 
-Get `Rustcord-Setup-<version>.exe` from this repository's Releases page once one is
-published, or build it yourself (see below). The setup is a single exe built from
+Get the package for your system from this repository's Releases page once one is published,
+or build it yourself (see [Build](#build)).
+
+### Windows
+
+Get `Rustcord-Setup-<version>.exe`. The setup is a single exe built from
 Rustcord's own code (about 23 MB with the app inside); no installer tools are involved.
 
 Run it. It installs for your Windows user only (no administrator rights), like Discord: the
@@ -177,11 +181,63 @@ To build the setup yourself (Windows, see Build):
 powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1   # -> dist\Rustcord-Setup-<version>.exe
 ```
 
+### Linux
+
+Two packages for 64-bit x86 with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+):
+
+- `rustcord_<version>_amd64.deb` for Debian, Ubuntu, Mint and their relatives:
+  `sudo apt install ./rustcord_<version>_amd64.deb`. `sudo apt remove rustcord` removes it.
+- `rustcord-<version>-linux-x86_64.tar.gz` for any distribution, installed for your user only
+  (no root):
+
+  ```bash
+  tar -xzf rustcord-<version>-linux-x86_64.tar.gz
+  sh rustcord-<version>/install.sh                     # add --no-autostart to skip the login start
+  sh ~/.local/share/rustcord/install.sh --uninstall    # later; --purge also deletes settings, cache and login
+  ```
+
+  It puts the app in `~/.local/bin/rustcord`, its app menu entry and icons in
+  `~/.local/share`, and the login start in `~/.config/autostart/rustcord.desktop`. Running it
+  again updates Rustcord in place and keeps your login start choice; a running Rustcord is asked
+  to quit first. The tarball uses the system's libraries: ALSA, OpenSSL 3, OpenGL, X11 and
+  libxkbcommon-x11 (install.sh says when that one is missing).
+
+"Open Rustcord when I log in" is on by default (Rustcord turns it on at its first start;
+Settings → Linux settings turns it off). It starts hidden in the system tray. Rustcord runs on
+X11, through XWayland on Wayland desktops, like Discord's own app: Wayland doesn't let an app
+hide its window to a tray. The tray icon needs a desktop with a StatusNotifierItem tray, like
+KDE, Xfce, Cinnamon or Ubuntu's GNOME; plain GNOME (Fedora) needs the AppIndicator extension,
+otherwise closing the window quits Rustcord. The login is kept in the Secret Service keyring
+(GNOME Keyring or KWallet); without one, Rustcord can't remember it.
+
+Turn off "Open Rustcord when I log in" before `apt remove rustcord`: the login start belongs
+to your user and stays behind (it does nothing once the app is gone).
+
+### macOS
+
+`Rustcord-<version>-macos-universal.dmg` runs on Apple silicon and Intel Macs with macOS 11
+or newer. Open it and drag Rustcord onto Applications.
+
+Rustcord is not notarized by Apple (that needs a paid Apple developer account), so macOS
+blocks the first start ("Apple could not verify…"). Open Rustcord once, then go to System
+Settings → Privacy & Security and click **Open Anyway** next to the Rustcord message (since
+macOS 15, right-click → Open no longer skips the check). Or, in Terminal:
+`xattr -dr com.apple.quarantine /Applications/Rustcord.app`. The app is only ad-hoc signed,
+so macOS asks again for the microphone and the keychain after each update.
+
+Closing the window keeps Rustcord in the menu bar; quit it from the menu bar icon or with
+Cmd+Q. "Open Rustcord when I log in" is on by default (a login item in
+`~/Library/LaunchAgents/io.github.r0sc.rustcord.plist`; macOS shows a notice when it is
+added). To uninstall, turn that off in Settings → macOS settings, quit Rustcord and move it
+from Applications to the Trash.
+
 ## Build
 
 Requirements: Rust stable (1.95+; tested with 1.99); on Windows, the MSVC build tools
-(Visual Studio Build Tools with "Desktop development with C++"); on Linux, `pkg-config` and the
-OpenSSL development package (e.g. `libssl-dev`).
+(Visual Studio Build Tools with "Desktop development with C++"); on Linux, a C/C++ compiler,
+`pkg-config` and the ALSA and OpenSSL development packages (Debian/Ubuntu:
+`sudo apt install build-essential pkg-config libasound2-dev libssl-dev`); on macOS, the Xcode
+command line tools (`xcode-select --install`).
 
 ```bash
 cargo build --release
@@ -207,6 +263,19 @@ CARGO_TARGET_DIR='C:/rc-target' cargo build --release            # Git Bash
 
 The binary is then at `C:\rc-target\release\rustcord.exe`.
 
+The Linux and macOS packages:
+
+```bash
+bash scripts/build-linux.sh   # on Linux (needs dpkg-deb): dist/rustcord_<version>_amd64.deb and dist/rustcord-<version>-linux-x86_64.tar.gz
+bash scripts/build-macos.sh   # on a Mac: dist/Rustcord-<version>-macos-universal.dmg (both architectures, ad-hoc signed)
+```
+
+`.github/workflows/release.yml` builds all three on GitHub. It never runs on pushes or pull
+requests: start it under Actions → release → Run workflow (packages as workflow artifacts;
+"check_only" runs only fmt, clippy and the tests), or push a tag `v<version>` matching
+`Cargo.toml`'s version, which also creates a draft release with the packages and
+`SHA256SUMS` to publish by hand.
+
 To regenerate the icons after editing `assets/logo.svg` / `assets/logo-small.svg` (the same
 R-bubble, larger for <= 32 px; `assets/logo-mono.svg` is the flat one-colour mark without the
 tile, and `logo_mark` in `src/ui/sidebar.rs` paints the in-app vector copy) (dev-only
@@ -225,9 +294,9 @@ cargo run --example export_icons
 | Local profile overrides | `…\config\overrides\` (`overrides.toml` + image copies) | `…/overrides/` | `…/overrides/` |
 | Cache (snapshot, images) | `%LOCALAPPDATA%\Rustcord\cache\` | `~/.cache/rustcord/` | `~/Library/Caches/Rustcord/` |
 | Login token | Windows Credential Manager (generic credential `user-token.Rustcord`) | Secret Service | Keychain |
-| Added games, saved games list | `…\config\games.json`, `…\cache\detectable.tsv` | – | – |
-| Installed app (setup) | `%LOCALAPPDATA%\Programs\Rustcord\` | – | – |
-| Start at sign-in | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Rustcord` | – | – |
+| Added games, saved games list | `…\config\games.json`, `…\cache\detectable.tsv` | `…/games.json`, `~/.cache/rustcord/detectable.tsv` | `…/games.json`, `~/Library/Caches/Rustcord/detectable.tsv` |
+| Installed app (setup) | `%LOCALAPPDATA%\Programs\Rustcord\` | `/usr/bin/rustcord` (.deb), `~/.local/bin/rustcord` (install.sh) | `/Applications/Rustcord.app` |
+| Start at sign-in | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Rustcord` | `~/.config/autostart/rustcord.desktop` | `~/Library/LaunchAgents/io.github.r0sc.rustcord.plist` |
 
 The token is never written to a file or a log. Logging out deletes it from the credential
 store and deletes the cache. `RUSTCORD_HOME=<dir>` moves config and cache to `<dir>/config`

@@ -122,7 +122,11 @@ Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.
 `assets/rustcord-tray.ico`. `build.rs` (embed-resource, `assets/rustcord.rc`) embeds them as
 icon id 1 (exe, window and balloon icon) and id 2 (notification-area icon, loaded by `notify.rs`
 at the small-icon size, falling back to id 1). The in-app mark (home button, title bars) is
-painted by `ui/sidebar.rs` `logo_mark` from the same geometry.
+painted by `ui/sidebar.rs` `logo_mark` from the same geometry. The packages use the same
+PNGs: Linux hicolor icons 16-512, the macOS `.icns` from 16-1024 (`iconutil` in
+`scripts/build-macos.sh`) and `icons/rustcord-tray-36.png` (logo-mono in black: the macOS menu
+bar template image). Package metadata: `assets/linux/rustcord.desktop`, `assets/macos/Info.plist`
+(`@VERSION@` is replaced with Cargo.toml's version).
 
 Shared-contract items (pub signatures in stubs, `model.rs`, `backend.rs` enums, `UiCx`,
 `ViewState`, `Snapshot`, `Theme` fields) must not be renamed or removed. You may add private
