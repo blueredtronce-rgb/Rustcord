@@ -204,7 +204,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     });
     if unsaved {
         ui.horizontal(|ui| {
-            let hint = RichText::new("Unsaved changes").size(cx.theme.font.size - 1.5).color(cx.theme.colors.accent.to_color32());
+            // Straw: it needs attention, with its word (never the accent).
+            let hint = RichText::new("Unsaved changes").size(cx.theme.font.size - 3.0).color(cx.theme.tokens().attention);
             ui.label(hint).on_hover_text("Kept until restart or until you pick another theme; use Save as… to keep them.");
             if ui.small_button("Revert").clicked() {
                 *cx.theme = Theme::find(&cx.theme.name);
@@ -235,9 +236,11 @@ fn spaced(colors: &[Rgba]) -> Vec<GradientStop> {
 }
 
 /// Round swatches of `themes` (flat ones, or the gradient ones) added to `ui` (a wrapping row);
-/// the selected theme carries the accent ring and a check. Returns the clicked theme.
+/// the selected theme carries a 2 px `text` ring and a check on `positive` (§12; never the
+/// accent). Returns the clicked theme.
 pub(super) fn swatches(ui: &mut egui::Ui, themes: &[Theme], current: &Theme, gradients: bool) -> Option<Theme> {
     let c = &current.colors;
+    let tk = current.tokens();
     let mut picked = None;
     for t in themes.iter().filter(|t| t.gradient.is_some() == gradients) {
         let selected = t.name == current.name;
@@ -257,13 +260,13 @@ pub(super) fn swatches(ui: &mut egui::Ui, themes: &[Theme], current: &Theme, gra
             // Also smooths the mesh's edge.
             p.circle_stroke(centre, r, Stroke::new(1.5, c.text_muted.to_color32().gamma_multiply(0.35)));
             if selected || resp.hovered() || resp.has_focus() {
-                let ring = if selected { c.accent } else { c.text_muted }.to_color32();
+                let ring = if selected { c.text } else { c.text_muted }.to_color32();
                 p.circle_stroke(centre, r + 3.5, Stroke::new(2.0, ring));
             }
             if selected {
                 let badge = rect.right_top() + vec2(-8.0, 8.0);
-                p.circle_filled(badge, 8.0, c.accent.to_color32());
-                crate::ui::icons::paint(p, Icon::Check, egui::Rect::from_center_size(badge, egui::Vec2::splat(12.0)), c.accent_text.to_color32(), c.accent.to_color32());
+                p.circle_filled(badge, 8.0, tk.positive);
+                crate::ui::icons::paint(p, Icon::Check, egui::Rect::from_center_size(badge, egui::Vec2::splat(12.0)), tk.on_positive, tk.positive);
             }
         }
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &t.name));

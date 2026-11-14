@@ -8,7 +8,7 @@
 use super::{field_label, switch_row};
 use crate::backend::{Command, CommandSender};
 use crate::config::Settings;
-use crate::ui::messages::{Pal, icon_button};
+use crate::ui::messages::Pal;
 use crate::ui::section;
 use crate::voice::InputMode;
 use crate::voice::video::{VideoCommand, VideoKey};
@@ -70,7 +70,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     let col = if two { (w - 52.0) / 2.0 } else { w - 40.0 };
     let row = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing = vec2(12.0, 6.0);
-        for (label, list, pick) in [("Input Device", &v.inputs, &mut s.voice_input), ("Output Device", &v.outputs, &mut s.voice_output)] {
+        for (label, list, pick) in [("Input device", &v.inputs, &mut s.voice_input), ("Output device", &v.outputs, &mut s.voice_output)] {
             ui.vertical(|ui| {
                 ui.set_width(col);
                 field_label(ui, &pal, label);
@@ -85,7 +85,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
                 });
             });
         }
-        if icon_button(ui, &pal, "⟳", "Refresh devices", 28.0, false, pal.text).clicked() {
+        if crate::ui::messages::vector_button(ui, &pal, crate::ui::icons::Icon::Refresh, "Refresh devices", 28.0, false, pal.text).clicked() {
             cx.cmd.send(Command::ListVoiceDevices);
             cx.cmd.send(Command::Video(VideoCommand::ListCameras));
         }
@@ -101,18 +101,18 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
         f.dirty = true;
     }
 
-    section(ui, cx.theme, "Input Mode");
+    section(ui, cx.theme, "Input mode");
     let old_mode = input_mode(s);
     let mut mode = old_mode;
     // Two radio rows, 8 px apart; the unselected one ringed so it reads on dark pages.
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1.0, pal.muted);
+        ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1.5, pal.tk.edge);
         let va = InputMode::VoiceActivity { threshold_db: s.voice_threshold_db };
-        if ui.radio(matches!(mode, InputMode::VoiceActivity { .. }), "Voice Activity").clicked() {
+        if ui.radio(matches!(mode, InputMode::VoiceActivity { .. }), "Voice activity").clicked() {
             mode = va;
         }
-        if ui.radio(matches!(mode, InputMode::PushToTalk { .. }), "Push to Talk").clicked() && !matches!(mode, InputMode::PushToTalk { .. }) {
+        if ui.radio(matches!(mode, InputMode::PushToTalk { .. }), "Push to talk").clicked() && !matches!(mode, InputMode::PushToTalk { .. }) {
             if s.push_to_talk_key == 0 {
                 // No key yet: ask for one first; the mode switches once it is pressed.
                 f.capturing = Some(ui.input(|i| i.modifiers));
@@ -124,7 +124,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     ui.add_space(16.0);
     match &mut mode {
         InputMode::VoiceActivity { threshold_db } => {
-            field_label(ui, &pal, "Input Sensitivity");
+            field_label(ui, &pal, "Input sensitivity");
             sensitivity(ui, &pal, threshold_db, v.channel_id.is_some().then_some(v.level));
         }
         InputMode::PushToTalk { .. } => {}
@@ -159,7 +159,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
         cx.cmd.send(Command::SetVoiceInputMode(mode));
     }
 
-    section(ui, cx.theme, "Microphone & Sound");
+    section(ui, cx.theme, "Microphone and sound");
     let (old_mute, old_deaf) = (cx.view.self_mute, cx.view.self_deaf);
     // Shown like the user panel: deafened counts as muted.
     let (mut mute, mut deaf) = (old_mute || old_deaf, old_deaf);
@@ -303,7 +303,7 @@ fn vk_code(key: Key) -> Option<u16> {
 
 fn key_name(vk: u16) -> String {
     match vk {
-        0 => "Record Keybind".into(),
+        0 => "Record keybind".into(),
         0x05 => "Mouse 4".into(),
         0x06 => "Mouse 5".into(),
         0x10 => "Shift".into(),
@@ -329,6 +329,6 @@ mod tests {
         assert_eq!(vk_code(Key::Escape), None);
         assert_eq!(key_name(0x56), "V");
         assert_eq!(key_name(0x05), "Mouse 4");
-        assert_eq!(key_name(0), "Record Keybind");
+        assert_eq!(key_name(0), "Record keybind");
     }
 }

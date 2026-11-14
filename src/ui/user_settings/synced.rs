@@ -430,14 +430,14 @@ pub(super) fn message_display(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 }
 
 /// One Message Display choice: a sketch of three messages (cozy: avatar, name line over the
-/// text; compact: one line each), the label under it, the accent ring when `on`.
+/// text; compact: one line each), the radio and label under it, a 2 px `text` ring when `on`.
 fn display_card(ui: &mut egui::Ui, pal: &Pal, label: &str, dense: bool, on: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(176.0, 112.0), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, ui.is_enabled(), on, label));
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         let hot = resp.hovered() || resp.has_focus();
-        let ring = if on { pal.accent } else if hot { pal.muted } else { pal.muted.gamma_multiply(0.3) };
+        let ring = if on { pal.text } else if hot { pal.muted } else { pal.tk.rule };
         p.rect_filled(rect, pal.radius, pal.bg);
         p.rect_stroke(rect, pal.radius, egui::Stroke::new(if on { 2.0 } else { 1.0 }, ring), egui::StrokeKind::Inside);
         let sketch = egui::Rect::from_min_max(rect.min + egui::vec2(14.0, 14.0), egui::pos2(rect.right() - 14.0, rect.bottom() - 34.0));
@@ -446,20 +446,17 @@ fn display_card(ui: &mut egui::Ui, pal: &Pal, label: &str, dense: bool, on: bool
         for (i, w) in [0.8, 0.55, 0.7].into_iter().enumerate() {
             let (x, y) = (sketch.left(), sketch.top() + i as f32 * if dense { 14.0 } else { 22.0 });
             if dense {
-                bar(x, y, 22.0, pal.accent.gamma_multiply(0.7));
+                bar(x, y, 22.0, pal.muted);
                 bar(x + 28.0, y, (sketch.width() - 28.0) * w, ink);
             } else if i < 2 {
                 p.circle_filled(egui::pos2(x + 8.0, y + 8.0), 8.0, ink);
-                bar(x + 22.0, y + 1.0, 36.0, pal.accent.gamma_multiply(0.7));
+                bar(x + 22.0, y + 1.0, 36.0, pal.muted);
                 bar(x + 22.0, y + 10.0, (sketch.width() - 22.0) * w, ink);
             }
         }
         let dot = egui::pos2(rect.left() + 20.0, rect.bottom() - 18.0);
-        p.circle_stroke(dot, 7.0, egui::Stroke::new(1.5, if on { pal.accent } else { pal.muted }));
-        if on {
-            p.circle_filled(dot, 4.0, pal.accent);
-        }
-        p.text(dot + egui::vec2(14.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(pal.size), pal.text);
+        super::super::messages::paint_radio(p, pal, egui::Rect::from_center_size(dot, egui::Vec2::splat(16.0)), on);
+        p.text(dot + egui::vec2(14.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(pal.ui(), crate::theme::medium_family()), pal.text);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

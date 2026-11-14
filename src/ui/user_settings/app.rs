@@ -157,7 +157,7 @@ fn set_autostart(on: bool, minimized: bool) -> Result<(), String> {
 /// Streamer Mode (no "Disable sounds": Rustcord plays none; no OBS auto-enable: no process scan).
 pub(super) fn streamer(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     let s = &mut cx.settings.streamer;
-    let mut changed = switch_row(ui, cx.theme, "Enable Streamer Mode", Some("Also on a keybind (Keybinds)."), &mut s.enabled);
+    let mut changed = switch_row(ui, cx.theme, "Streamer mode", Some("Hides what you pick below while you stream. Also on a keybind (Keybinds)."), &mut s.enabled);
     section(ui, cx.theme, "Options");
     let theme = &*cx.theme;
     ui.add_enabled_ui(s.enabled, |ui| {
@@ -313,7 +313,7 @@ fn global_keys(ctx: &egui::Context, cx: &mut UiCx<'_>) -> bool {
     if streamer {
         let s = &mut cx.settings.streamer;
         s.enabled = !s.enabled;
-        cx.view.toast(if s.enabled { "Streamer Mode on" } else { "Streamer Mode off" }.to_owned(), false);
+        cx.view.toast(if s.enabled { "Streamer mode is on" } else { "Streamer mode is off" }.to_owned(), false);
     }
     streamer
 }

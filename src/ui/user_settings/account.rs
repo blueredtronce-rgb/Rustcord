@@ -17,7 +17,7 @@ use crate::auth::Secret;
 use crate::backend::{AccountCommand, Command, OpKind};
 use crate::model::User;
 use crate::state::account::{AccountState, OpState};
-use crate::ui::messages::Pal;
+use crate::ui::messages::{Btn, Pal};
 use crate::ui::{UiCx, bold, cosmetics, images, profile::cover_uv, rgb, sidebar::user_avatar_at};
 use egui::{Align, CornerRadius, Frame, Image, Layout, Margin, Rect, RichText, Sense, Stroke, TextEdit, Vec2, pos2, vec2};
 use std::path::PathBuf;
@@ -103,7 +103,6 @@ impl ProfileForm {
 pub(super) fn my_account(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let Some(me) = cx.state.me.clone() else { return };
     let pal = Pal::new(cx.theme);
-    let c = cx.theme.colors.clone();
     // Esc closes an open editor first, not the whole layer (a dialog or popup above goes first).
     if cx.view.user_settings_ui.account.editor.edit.is_some()
         && !security::dialog_open(cx)
@@ -113,50 +112,63 @@ pub(super) fn my_account(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     {
         close_editor(cx);
     }
-    Frame::new().fill(c.sidebar.to_color32()).corner_radius(pal.card_radius()).show(ui, |ui| {
+    // One E1 container (docs/DESIGN.md §12): banner, avatar, name and the one primary, then the
+    // account rows divided by hairlines. No panel inside the panel.
+    let has_banner = me.banner.is_some() || me.accent_color.is_some();
+    Frame::new().fill(pal.surface).corner_radius(pal.card_radius()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let w = ui.available_width();
-        // Banner strip, avatar overlapping its lower edge, name, Edit User Profile.
+        // Banner strip (or just room for the avatar), avatar overlapping its lower edge, name,
+        // Edit profile.
         let top = CornerRadius { nw: pal.card_radius(), ne: pal.card_radius(), sw: 0, se: 0 };
-        let (banner, _) = ui.allocate_exact_size(vec2(w, 100.0), Sense::hover());
+        let (banner, _) = ui.allocate_exact_size(vec2(w, if has_banner { 100.0 } else { 48.0 }), Sense::hover());
         paint_banner(ui, cx, &me, banner, top);
         let avatar = Rect::from_min_size(pos2(banner.left() + 16.0, banner.bottom() - 40.0), Vec2::splat(80.0));
-        ui.painter().circle_filled(avatar.center(), 46.0, c.sidebar.to_color32());
+        ui.painter().circle_filled(avatar.center(), 46.0, pal.surface);
         user_avatar_at(ui, cx.images, &cdn::avatar_url(&me, 160, true), avatar, true, 1.0, (me.id, me.display_name()));
         let (head, _) = ui.allocate_exact_size(vec2(w, 56.0), Sense::hover());
         let name_left = avatar.right() + 16.0;
-        let (label, bw) = if w >= 480.0 { ("Edit User Profile", 150.0) } else { ("Edit Profile", 110.0) };
-        let g = crate::ui::one_line(ui, me.display_name(), bold(pal.size + 5.0), pal.text, (head.right() - 32.0 - bw - name_left).max(40.0));
+        let bw = 120.0;
+        let g = crate::ui::one_line(ui, me.display_name(), crate::ui::semibold(pal.title()), pal.text, (head.right() - 32.0 - bw - name_left).max(40.0));
         ui.painter().galley(pos2(name_left, head.top() + 8.0), g, pal.text);
-        let edit_rect = Rect::from_min_size(pos2(head.right() - 16.0 - bw, head.top() + 6.0), vec2(bw, 32.0));
-        if ui.put(edit_rect, super::primary(cx.theme, label)).clicked() {
+        let edit_rect = Rect::from_min_size(pos2(head.right() - 16.0 - bw, head.top() + 4.0), vec2(bw, 32.0));
+        let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect).layout(Layout::right_to_left(Align::Center)));
+        if primary_button(&mut edit, cx.theme, "Edit profile", true).clicked() {
             cx.view.settings_page = Page::Profiles;
         }
 
-        Frame::new().fill(c.surface.to_color32()).corner_radius(pal.card_radius()).inner_margin(16).outer_margin(Margin { left: 16, right: 16, top: 0, bottom: 16 }).show(ui, |ui| {
+        Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 16 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 6.0;
             let name = me.global_name.clone().filter(|n| !n.is_empty());
-            field(ui, cx, &pal, Field::DisplayName, "Display Name", name.as_deref().unwrap_or("Not set"), &me);
-            ui.add_space(14.0);
+            field(ui, cx, &pal, Field::DisplayName, "Display name", name.as_deref().unwrap_or("Not set"), &me);
+            rule(ui, &pal);
             let username = if cx.settings.streamer.hides_personal() { "Hidden by Streamer Mode" } else { me.username.as_str() };
             field(ui, cx, &pal, Field::Username, "Username", username, &me);
-            ui.add_space(14.0);
+            rule(ui, &pal);
             let hide = cx.settings.streamer.hides_personal();
             // The cache never holds them: until READY they are unknown, not missing.
             let online = cx.state.conn == crate::backend::ConnState::Connected && !crate::config::offline_mode();
-            let none = |missing| if hide { "Hidden by Streamer Mode" } else if online { missing } else { "Shown once connected" };
+            let none = |missing| if hide { "Hidden by Streamer Mode" } else if online { missing } else { "Shown once you're connected." };
             let reveal = &mut cx.view.user_settings_ui.account.reveal;
             // Discord's Edit / Add, only once it is known whether there is one.
             let button = |v: Option<&str>| if v.is_some() { Some("Edit") } else { online.then_some("Add") };
             let email = me.email.as_deref().map(String::as_str);
             secret_row(ui, &pal, "Email", email.filter(|_| !hide), mask_email, &mut reveal.0, none("You haven't added an email yet."), button(email));
-            ui.add_space(14.0);
+            rule(ui, &pal);
             let phone = me.phone.as_deref().map(String::as_str);
-            secret_row(ui, &pal, "Phone Number", phone.filter(|_| !hide), mask_phone, &mut reveal.1, none("You haven't added a phone number yet."), button(phone));
+            secret_row(ui, &pal, "Phone number", phone.filter(|_| !hide), mask_phone, &mut reveal.1, none("You haven't added a phone number yet."), button(phone));
         });
     });
     security::show(ui, cx, &pal, &me);
+}
+
+/// The hairline between two rows of one group (`rule`), 12 px of air on each side.
+fn rule(ui: &mut egui::Ui, pal: &Pal) {
+    ui.add_space(12.0 - ui.spacing().item_spacing.y);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, pal.tk.rule));
+    ui.add_space(12.0 - ui.spacing().item_spacing.y);
 }
 
 /// Email / phone in the account card: masked, Reveal shows it here (nothing is sent); changing
@@ -181,7 +193,7 @@ fn secret_row(ui: &mut egui::Ui, pal: &Pal, label: &str, value: Option<&str>, ma
         });
         let Some(button) = button else { return };
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let edit = ui.add(egui::Button::new(button).min_size(vec2(64.0, 32.0)));
+            let edit = crate::ui::messages::button(ui, pal, Btn::Secondary, button, true);
             if edit.on_hover_text("Opens discord.com: changing it needs a verification code").clicked() {
                 open_account_page(ui);
             }
@@ -218,7 +230,7 @@ fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &
                 ui.label(RichText::new(value).color(pal.text));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new("Edit").min_size(vec2(64.0, 32.0))).clicked() {
+                if crate::ui::messages::button(ui, pal, Btn::Secondary, "Edit", true).clicked() {
                     open_editor(cx, which, me);
                 }
             });
@@ -240,7 +252,7 @@ fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &
         let r = ui.add(TextEdit::singleline(&mut f.draft).char_limit(NAME_MAX).hint_text(hint).desired_width(f32::INFINITY));
         enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if which == Field::Username {
-            field_label(ui, pal, "Current Password");
+            field_label(ui, pal, "Current password");
             let id = egui::Id::unique("rc_account_password");
             let r = ui.add(TextEdit::singleline(&mut *f.password).id(id).password(true).char_limit(PASSWORD_MAX).desired_width(f32::INFINITY));
             // egui's undo history would keep plain copies of the password.
@@ -257,7 +269,7 @@ fn field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, which: Field, label: &
     let mut save = enter && ok && !pending;
     ui.horizontal(|ui| {
         save |= primary_button(ui, cx.theme, if pending { "Saving…" } else { "Save" }, ok && !pending).clicked();
-        if ui.add(egui::Button::new("Cancel").frame(false).min_size(vec2(64.0, 32.0))).clicked() {
+        if crate::ui::messages::button(ui, pal, Btn::Ghost, "Cancel", true).clicked() {
             close_editor(cx);
         }
     });
@@ -314,13 +326,13 @@ fn image_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, kind: OpKind, has_
     let mut remove = false;
     ui.horizontal(|ui| {
         crate::ui::button_row(ui);
-        field_label(ui, pal, if avatar { "Avatar" } else { "Profile Banner" });
+        field_label(ui, pal, if avatar { "Avatar" } else { "Profile banner" });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if has_one {
-                let r = ui.add_enabled(!pending, egui::Button::new(RichText::new("Remove").color(pal.danger)).frame(false).min_size(vec2(64.0, 32.0)));
-                remove = r.on_hover_text(format!("Remove {what}")).clicked();
+                let r = ui.add_enabled_ui(!pending, |ui| crate::ui::messages::button(ui, pal, Btn::Ghost, "Remove", true)).inner;
+                remove = r.on_hover_text(format!("Remove {}", what.to_lowercase())).clicked();
             }
-            let change = ui.add_enabled(!pending && allowed.is_ok(), egui::Button::new("Change").min_size(vec2(64.0, 32.0)));
+            let change = crate::ui::messages::button(ui, pal, Btn::Secondary, "Change", !pending && allowed.is_ok());
             pick = match allowed {
                 Ok(()) => change.on_hover_text(if avatar { "PNG, JPG, GIF or WebP up to 10 MB, cropped to a square" } else { "Cropped to 1024×409" }).clicked(),
                 Err(why) => change.on_disabled_hover_text(why).clicked(),
@@ -347,11 +359,12 @@ fn send_image(cx: &mut UiCx<'_>, kind: OpKind, path: Option<PathBuf>) {
     }
 }
 
-/// Banner: my banner image (cover-cropped), else my banner colour, else the avatar
-/// placeholder's hue (never a block of theme accent).
+/// Banner: my banner image (cover-cropped), else my banner colour, else nothing (the
+/// container shows through: no flat grey block, docs/DESIGN.md §12).
 fn paint_banner(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, rect: Rect, corners: CornerRadius) {
-    let fill = me.accent_color.map(rgb).unwrap_or_else(|| images::initial_colors(me.id.0, cx.theme.dark).0);
-    ui.painter().rect_filled(rect, corners, fill);
+    if let Some(fill) = me.accent_color.map(rgb) {
+        ui.painter().rect_filled(rect, corners, fill);
+    }
     if let Some(hash) = &me.banner {
         let animated = hash.starts_with("a_") && ui.rect_contains_pointer(rect);
         if let Some(tex) = cx.images.get(ui.ctx(), &cdn::user_banner_url(me.id, hash, 600), 600, animated) {
@@ -393,7 +406,7 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             });
         }
         if let Some(e) = &form.error {
-            ui.label(RichText::new(format!("Could not load your profile: {e}")).size(pal.meta()).color(pal.danger));
+            ui.label(RichText::new(format!("Your profile didn't load ({e}). Connect, then open this page again.")).size(pal.meta()).color(pal.danger));
         }
         // A failed load leaves the fields blank: editing them would overwrite unseen values.
         let ready = form.loaded && form.error.is_none();
@@ -402,11 +415,11 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             field_label(ui, &pal, "Pronouns");
             ui.add(TextEdit::singleline(&mut form.draft.pronouns).char_limit(PRONOUNS_MAX).hint_text("Add your pronouns").desired_width(f32::INFINITY));
             ui.add_space(10.0);
-            field_label(ui, &pal, "About Me");
+            field_label(ui, &pal, "About me");
             ui.add(TextEdit::multiline(&mut form.draft.bio).char_limit(BIO_MAX).desired_rows(4).desired_width(f32::INFINITY));
             let n = form.draft.bio.chars().count();
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| ui.label(RichText::new(format!("{}", BIO_MAX - n)).size(pal.meta()).color(pal.muted)));
-            field_label(ui, &pal, "Banner Color");
+            field_label(ui, &pal, "Banner colour");
             ui.horizontal(|ui| {
                 let fallback = images::initial_colors(me.id.0, pal.dark).0;
                 let current = form.draft.accent.map(rgb).unwrap_or(fallback);
@@ -415,7 +428,7 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                     form.draft.accent = Some(u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]));
                 }
                 ui.label(RichText::new(format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])).color(pal.muted));
-                if form.draft.accent.is_some() && ui.add(egui::Button::new("Default").frame(false)).on_hover_text("Use the colour from your avatar").clicked() {
+                if form.draft.accent.is_some() && crate::ui::messages::button(ui, &pal, Btn::Ghost, "Use default", true).on_hover_text("Use the colour from your avatar").clicked() {
                     form.draft.accent = None;
                 }
             });
@@ -426,8 +439,8 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         ui.add_space(12.0);
         let dirty = form.draft != form.base;
         ui.horizontal(|ui| {
-            save = primary_button(ui, cx.theme, if pending { "Saving…" } else { "Save Changes" }, dirty && !pending && ready).clicked();
-            if ui.add_enabled(dirty && !pending, egui::Button::new("Reset").frame(false).min_size(vec2(64.0, 32.0))).clicked() {
+            save = primary_button(ui, cx.theme, if pending { "Saving…" } else { "Save changes" }, dirty && !pending && ready).clicked();
+            if crate::ui::messages::button(ui, &pal, Btn::Ghost, "Reset", dirty && !pending).clicked() {
                 form.discard();
             }
         });
@@ -435,7 +448,8 @@ pub(super) fn profiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     if wide {
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
-                ui.set_width(ui.available_width() - CARD_W - 24.0);
+                // Room for the 24 px gap, the card and the row's two item gaps: no overflow.
+                ui.set_width(ui.available_width() - CARD_W - 24.0 - 2.0 * ui.spacing().item_spacing.x);
                 form_ui(ui, form);
             });
             ui.add_space(24.0);
@@ -483,7 +497,7 @@ fn profile_tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     let (was, mut server) = (tab.is_some(), tab.is_some());
     let w = ui.available_width().min(320.0);
     ui.allocate_ui(vec2(w, 36.0), |ui| {
-        ui.add_enabled_ui(first.is_some(), |ui| crate::ui::login::segmented(ui, cx.theme, &mut server, &[(false, "User Profile"), (true, "Server Profiles")]));
+        ui.add_enabled_ui(first.is_some(), |ui| crate::ui::login::segmented(ui, cx.theme, &mut server, &[(false, "User profile"), (true, "Server profiles")]));
     });
     if server != was {
         *tab = if server { first.map(|g| (g, None)) } else { None };
@@ -512,7 +526,7 @@ fn server_profile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User) {
         return;
     }
     ui.add_space(10.0);
-    field_label(ui, &pal, "Server Nickname");
+    field_label(ui, &pal, "Server nickname");
     let probe = AccountCommand::SetMyNick { guild_id, nick: None };
     let (allowed, op) = (cx.state.account_check(&probe), probe.op());
     let state = cx.state.account.ops.get(&op).cloned();
@@ -529,8 +543,8 @@ fn server_profile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User) {
     let dirty = text != nick;
     let mut save = false;
     ui.horizontal(|ui| {
-        save = primary_button(ui, cx.theme, if pending { "Saving…" } else { "Save Changes" }, dirty && allowed.is_ok() && !pending).clicked();
-        if ui.add_enabled(dirty && !pending, egui::Button::new("Reset").frame(false).min_size(vec2(64.0, 32.0))).clicked() {
+        save = primary_button(ui, cx.theme, if pending { "Saving…" } else { "Save changes" }, dirty && allowed.is_ok() && !pending).clicked();
+        if crate::ui::messages::button(ui, &pal, Btn::Ghost, "Reset", dirty && !pending).clicked() {
             *draft = nick.clone();
         }
     });
@@ -571,15 +585,16 @@ fn prefill(cx: &mut UiCx<'_>, me: &User) {
 fn preview(ui: &mut egui::Ui, images_cache: &mut images::ImageCache, pal: &Pal, me: &User, d: &ProfileDraft, theme: Option<(u32, u32)>) {
     let pal = &theme.map_or(*pal, |t| cosmetics::theme_pal(pal, t));
     let real = crate::overrides::real_for(me);
-    let stroke = if theme.is_some() { Stroke::NONE } else { Stroke::new(1.0, pal.line()) };
-    Frame::new().fill(pal.surface).corner_radius(10).stroke(stroke).show(ui, |ui| {
+    let stroke = if theme.is_some() { Stroke::NONE } else { Stroke::new(1.0, pal.tk.rule) };
+    let r = pal.modal_radius();
+    Frame::new().fill(pal.surface).corner_radius(r).stroke(stroke).show(ui, |ui| {
         if theme.is_some() {
             cosmetics::theme_visuals(ui, pal);
         }
         let theme_slot = ui.painter().add(egui::Shape::Noop);
         ui.set_width(CARD_W);
         ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-        let top = CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 };
+        let top = CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
         let h = if me.banner.is_some() { 106.0 } else { 60.0 };
         let (rect, _) = ui.allocate_exact_size(vec2(CARD_W, h), Sense::hover());
         // An uploaded banner fades into the card like on the profile card (profile::paint_banner).
@@ -587,7 +602,8 @@ fn preview(ui: &mut egui::Ui, images_cache: &mut images::ImageCache, pal: &Pal, 
             Some(tex) => crate::ui::profile::paint_banner(ui.painter(), rect, top, tex, theme.map(|_| cosmetics::theme_veil(pal.dark))),
             None => {
                 let fill = theme.map(|(primary, _)| primary).or(d.accent).map(rgb);
-                ui.painter().rect_filled(rect, top, fill.unwrap_or_else(|| images::initial_colors(me.id.0, pal.dark).0));
+                // No colour: the card itself, like the profile popout (profile::banner).
+                ui.painter().rect_filled(rect, top, fill.unwrap_or(pal.surface));
             }
         }
         let center = pos2(rect.left() + 56.0, rect.bottom());
@@ -600,23 +616,28 @@ fn preview(ui: &mut egui::Ui, images_cache: &mut images::ImageCache, pal: &Pal, 
         Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 14 }).show(ui, |ui| {
             ui.set_width(CARD_W - 32.0);
             let style = real.name_style.as_ref();
-            let name = cosmetics::name_galley(ui, me.display_name(), bold(20.0), style, pal.text, CARD_W - 32.0);
+            let name = cosmetics::name_galley(ui, me.display_name(), bold(pal.title()), style, pal.text, CARD_W - 32.0);
             let (r, _) = ui.allocate_exact_size(name.size(), Sense::hover());
             cosmetics::paint_name(ui.painter(), r.min, name, style, pal.text, pal.dark);
-            let pronouns = d.pronouns.trim();
-            let handle = if pronouns.is_empty() { me.username.clone() } else { format!("{} • {pronouns}", me.username) };
-            ui.label(RichText::new(handle).color(pal.muted));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(RichText::new(&me.username).color(pal.muted));
+                let pronouns = d.pronouns.trim();
+                if !pronouns.is_empty() {
+                    ui.label(RichText::new(pronouns).color(pal.muted));
+                }
+            });
             let bio = d.bio.trim();
             if !bio.is_empty() {
-                ui.separator();
-                ui.label(RichText::new("ABOUT ME").small().font(bold(pal.size - 3.0)).color(pal.muted));
+                ui.add_space(12.0);
+                ui.label(RichText::new("About me").font(crate::ui::semibold(pal.label())).color(pal.muted));
                 ui.add(egui::Label::new(RichText::new(bio).color(pal.text)).wrap());
             }
         });
         if let Some(c) = theme {
             let card = ui.min_rect();
-            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "profiles-preview", card, 10, c, rect.bottom(), pal.dark));
-            ui.painter().add(cosmetics::theme_outline(card, 10, c));
+            ui.painter().set(theme_slot, cosmetics::theme_shapes(ui.ctx(), "profiles-preview", card, r, c, rect.bottom(), pal.dark));
+            ui.painter().add(cosmetics::theme_outline(card, r, c));
         }
     });
 }

@@ -39,13 +39,13 @@ impl Bind {
 
     pub(super) fn label(self) -> &'static str {
         match self {
-            Bind::ToggleMute => "Toggle Mute",
-            Bind::ToggleDeafen => "Toggle Deafen",
-            Bind::ToggleStreamerMode => "Toggle Streamer Mode",
-            Bind::Inbox => "Open Inbox",
+            Bind::ToggleMute => "Toggle mute",
+            Bind::ToggleDeafen => "Toggle deafen",
+            Bind::ToggleStreamerMode => "Toggle streamer mode",
+            Bind::Inbox => "Open inbox",
             Bind::Search => "Search the Channel",
-            Bind::Pins => "Pinned Messages",
-            Bind::AcceptCall => "Answer Incoming Call",
+            Bind::Pins => "Pinned messages",
+            Bind::AcceptCall => "Answer incoming call",
         }
     }
 
@@ -134,7 +134,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
             ui.label(RichText::new(b.label()).color(pal.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let custom = cx.settings.keybinds.contains_key(b.name());
-                if custom && super::super::messages::icon_button(ui, &pal, "↺", "Reset to default", 28.0, false, pal.text).clicked() {
+                if custom && super::super::messages::vector_button(ui, &pal, crate::ui::icons::Icon::Reset, "Reset to default", 28.0, false, pal.text).clicked() {
                     cx.settings.keybinds.remove(b.name());
                     changed = true;
                 }
@@ -143,7 +143,8 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
                     (false, Some(k)) => format(&k),
                     (false, None) => "None".to_owned(),
                 };
-                let color = if recording == Some(i) { pal.accent } else { pal.text };
+                // Recording: temper blue, the keyboard-focus colour (never the accent).
+                let color = if recording == Some(i) { pal.link } else { pal.text };
                 let btn = egui::Button::new(RichText::new(text).color(color).monospace()).min_size(vec2(170.0, 30.0));
                 if ui.add(btn).on_hover_text("Record a new shortcut").clicked() {
                     recording = if recording == Some(i) { None } else { Some(i) };

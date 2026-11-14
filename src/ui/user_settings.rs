@@ -89,7 +89,7 @@ impl Page {
     /// Nav groups, in Discord's order.
     const GROUPS: [(&str, &[Page]); 5] = [
         (
-            "User Settings",
+            "User settings",
             &[
                 Page::MyAccount,
                 Page::Profiles,
@@ -103,9 +103,9 @@ impl Page {
                 Page::FriendRequests,
             ],
         ),
-        ("Billing Settings", &[Page::Billing]),
+        ("Billing settings", &[Page::Billing]),
         (
-            "App Settings",
+            "App settings",
             &[
                 Page::Appearance,
                 Page::Accessibility,
@@ -120,7 +120,7 @@ impl Page {
                 Page::Advanced,
             ],
         ),
-        ("Activity Settings", &[Page::ActivityPrivacy, Page::RegisteredGames, Page::GameOverlay]),
+        ("Activity settings", &[Page::ActivityPrivacy, Page::RegisteredGames, Page::GameOverlay]),
         ("Rustcord", &[Page::Plugins, Page::LocalProfile, Page::ThemeEditor]),
     ];
 
@@ -128,39 +128,39 @@ impl Page {
     fn info(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Page::MyAccount => (
-                "My Account",
+                "My account",
                 "my-account",
                 "display name username email phone password two-factor 2fa authenticator sms backup codes security keys account standing disable delete",
             ),
             Page::Profiles => ("Profiles", "profiles", "pronouns about me bio avatar banner colour color"),
-            Page::Cosmetics => ("Profile Cosmetics", "cosmetics", "avatar decoration profile effect nameplate frame"),
-            Page::ContentSocial => ("Content & Social", "content", "messaging permissions dms spam sensitive explicit filter"),
-            Page::Privacy => ("Data & Privacy", "privacy", "data consent personalize statistics read receipts"),
+            Page::Cosmetics => ("Profile cosmetics", "cosmetics", "avatar decoration profile effect nameplate frame"),
+            Page::ContentSocial => ("Content & social", "content", "messaging permissions dms spam sensitive explicit filter"),
+            Page::Privacy => ("Data & privacy", "privacy", "data consent personalize statistics read receipts"),
             Page::FamilyCenter => ("Family Center", "family", "teen parent"),
-            Page::AuthorizedApps => ("Authorized Apps", "apps", "oauth applications deauthorize bots"),
+            Page::AuthorizedApps => ("Authorized apps", "apps", "oauth applications deauthorize bots"),
             Page::Devices => ("Devices", "devices", "sessions log out logged in"),
             Page::Connections => ("Connections", "connections", "accounts spotify steam github twitch xbox"),
-            Page::FriendRequests => ("Friend Requests", "friend-requests", "friends"),
-            Page::Billing => ("Nitro & Billing", "billing", "nitro boost subscriptions gift payment"),
+            Page::FriendRequests => ("Friend requests", "friend-requests", "friends"),
+            Page::Billing => ("Nitro & billing", "billing", "nitro boost subscriptions gift payment"),
             Page::Appearance => ("Appearance", "appearance", "theme dark light gradient font member list colours colors density"),
             Page::Accessibility => {
                 ("Accessibility", "accessibility", "saturation role colours colors font size scaling zoom spacing reduced motion animation gif tts")
             }
-            Page::VoiceVideo => ("Voice & Video", "voice", "microphone speaker camera push to talk input output"),
+            Page::VoiceVideo => ("Voice & video", "voice", "microphone speaker camera push to talk input output"),
             Page::Clips => ("Clips", "clips", "clips recording record voice"),
             Page::Chat => ("Chat", "chat", "text images embeds links media emoji reactions spoilers"),
             Page::Notifications => ("Notifications", "notifications", "desktop taskbar push mute servers"),
             Page::Keybinds => ("Keybinds", "keybinds", "shortcuts hotkeys keyboard"),
             Page::Language => ("Language", "language", "locale"),
-            Page::Windows => ("Windows Settings", "windows", "startup minimize tray close"),
-            Page::StreamerMode => ("Streamer Mode", "streamer", "streaming obs hide"),
+            Page::Windows => ("Windows settings", "windows", "startup minimize tray close"),
+            Page::StreamerMode => ("Streamer mode", "streamer", "streaming obs hide"),
             Page::Advanced => ("Advanced", "advanced", "developer mode copy id hardware acceleration"),
-            Page::ActivityPrivacy => ("Activity Privacy", "activity", "activity status game join"),
-            Page::RegisteredGames => ("Registered Games", "games", "games detection"),
-            Page::GameOverlay => ("Game Overlay", "overlay", "overlay"),
+            Page::ActivityPrivacy => ("Activity privacy", "activity", "activity status game join"),
+            Page::RegisteredGames => ("Registered games", "games", "games detection"),
+            Page::GameOverlay => ("Game overlay", "overlay", "overlay"),
             Page::Plugins => ("Plugins", "plugins", "vencord"),
-            Page::LocalProfile => ("Local Profile", "local-profile", "local banner avatar this device"),
-            Page::ThemeEditor => ("Theme Editor", "theme-editor", "customize theme colours colors import export"),
+            Page::LocalProfile => ("Local profile", "local-profile", "local banner avatar this device"),
+            Page::ThemeEditor => ("Theme editor", "theme-editor", "customize theme colours colors import export"),
         }
     }
 
@@ -168,7 +168,7 @@ impl Page {
     /// shortcut: kept by hand next to the pages' code; move the labels into shared consts if they drift.
     fn local_labels(self) -> &'static [&'static str] {
         match self {
-            Page::Appearance => &["Theme", "Gradients", "Message Display", "Cozy", "Compact", "Use Discord font (gg sans)", "Show member list"],
+            Page::Appearance => &["Theme", "Gradients", "Message display", "Cozy", "Compact", "Use Discord font (gg sans)", "Show member list"],
             Page::Accessibility => &[
                 "Saturation",
                 "Show role colours in names",
@@ -179,10 +179,10 @@ impl Page {
                 "Play animated avatars, emoji and GIFs",
             ],
             Page::Windows => &["Open Rustcord when I sign in to Windows", "Start minimized", "Minimize to tray when I close the window"],
-            Page::StreamerMode => &["Enable Streamer Mode", "Hide personal information", "Hide invite links", "Disable notifications", "Hide window from screen capture"],
+            Page::StreamerMode => &["Streamer mode", "Hide personal information", "Hide invite links", "Disable notifications", "Hide window from screen capture"],
             Page::Privacy => &["Send read receipts"],
             Page::Notifications => &["Desktop notifications", "Flash the taskbar"],
-            Page::VoiceVideo => &["Input Mode", "Voice Activity", "Push to Talk", "Input Sensitivity", "Microphone & Sound", "Mute", "Deafen", "Video", "Camera"],
+            Page::VoiceVideo => &["Input mode", "Voice activity", "Push to talk", "Input sensitivity", "Microphone and sound", "Mute", "Deafen", "Video", "Camera"],
             Page::Advanced => &["Hardware acceleration"],
             Page::ThemeEditor => &[
                 "Base", "Dark", "Light", "Gradient", "Background", "Sidebar", "Server bar", "Surface", "Text", "Muted text", "Accent", "Text on accent", "Message hover",
@@ -286,9 +286,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     cx.view.user_settings_ui.ask_logout |= log_out;
     if cx.view.user_settings_ui.ask_logout {
         let theme = &*cx.theme;
-        let resp = super::dialog(ui.ctx(), theme, "rc_logout", 440.0, "Log Out", |ui| {
-            super::dialog_text(ui, theme, "Are you sure you want to log out?");
-            super::dialog_buttons(ui, theme, "Log Out", true, true)
+        let resp = super::dialog(ui.ctx(), theme, "rc_logout", 440.0, "Log out of Rustcord?", |ui| {
+            super::dialog_text(ui, theme, "You'll need to sign in again, and this device forgets your cached messages.");
+            super::dialog_buttons(ui, theme, "Log out", true, true)
         });
         match resp.inner {
             Some(true) => {
@@ -344,10 +344,10 @@ fn nav(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         ui.separator();
     }
     if !any {
-        hint(ui, cx.theme, "No results");
+        hint(ui, cx.theme, "No settings match. Try another word.");
         ui.separator();
     }
-    nav_item(ui, cx.theme, "Log Out", false, true)
+    nav_item(ui, cx.theme, "Log out", false, true)
 }
 
 /// The page to show for the search `q` (lowercase, trimmed): the open one while it matches,
@@ -437,7 +437,7 @@ fn page(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         Page::ThemeEditor => changed |= theme_editor::show(ui, cx),
         Page::Appearance => {
             changed |= appearance(ui, cx);
-            section(ui, cx.theme, "Message Display");
+            section(ui, cx.theme, "Message display");
             synced::message_display(ui, cx);
             section(ui, cx.theme, "Font");
             if switch_row(
@@ -522,7 +522,7 @@ fn appearance(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         picked = theme_editor::swatches(ui, &themes, cx.theme, false);
         folder_button(ui, cx, &crate::config::paths().themes_dir(), "Themes folder: add your own as .toml files");
         let pal = Pal::new(cx.theme);
-        if super::messages::icon_button(ui, &pal, "✏", "Customize theme", 28.0, false, pal.text).clicked() {
+        if super::messages::vector_button(ui, &pal, Icon::Edit, "Customize theme", 28.0, false, pal.text).clicked() {
             cx.view.settings_page = Page::ThemeEditor;
         }
     });
@@ -560,7 +560,7 @@ fn guild_notifications(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         return;
     }
     section(ui, cx.theme, "Servers");
-    const LEVELS: [&str; 3] = ["All Messages", "Only @mentions", "Nothing"];
+    const LEVELS: [&str; 3] = ["All messages", "Only @mentions", "Nothing"];
     let pal = Pal::new(cx.theme);
     let mut send = None;
     for g in &cx.state.guilds {
@@ -679,14 +679,7 @@ fn field_label(ui: &mut egui::Ui, pal: &Pal, text: &str) {
     ui.add_space(8.0 - ui.spacing().item_spacing.y);
 }
 
-/// The view's one primary button (Save changes, Edit profile) as a widget for `ui.put` /
-/// `ui.add`: ember, no hover change. `primary_button` adds the hover, press and disabled looks.
-fn primary(theme: &Theme, text: &str) -> egui::Button<'static> {
-    let c = &theme.colors;
-    let label = RichText::new(text.to_owned()).font(egui::FontId::new(theme.font.size - 1.0, crate::theme::medium_family())).color(c.accent_text.to_color32());
-    egui::Button::new(label).fill(c.accent.to_color32()).stroke(egui::Stroke::NONE).min_size(vec2(64.0, 32.0))
-}
-
+/// The view's one primary button (Save changes, Edit profile): `messages::button` `Primary`.
 fn primary_button(ui: &mut egui::Ui, theme: &Theme, text: &str, enabled: bool) -> egui::Response {
     super::messages::button(ui, &Pal::new(theme), super::messages::Btn::Primary, text, enabled)
 }

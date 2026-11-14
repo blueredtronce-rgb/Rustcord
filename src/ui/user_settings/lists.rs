@@ -133,9 +133,9 @@ pub(super) fn devices(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     };
     let line = |s: &crate::model::AuthSession| {
         let c = &s.client_info;
-        let title = [c.os.as_deref(), c.platform.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let title = [c.os.as_deref(), c.platform.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(", ");
         let when = day(s.approx_last_used_time.as_deref());
-        let detail = [c.location.as_deref(), Some(when.as_str())].into_iter().flatten().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+        let detail = [c.location.as_deref(), Some(when.as_str())].into_iter().flatten().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(", ");
         (if title.is_empty() { "Unknown device".to_owned() } else { title }, detail, s.id_hash.clone())
     };
     let (current, others): (Vec<_>, Vec<_>) = list.iter().map(line).partition(|(_, _, h)| !me.is_empty() && *h == me);
@@ -155,20 +155,20 @@ pub(super) fn devices(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         hint(ui, cx.theme, "This device could not be told apart, so logging out here is off.");
     }
     for (title, detail, hash) in &others {
-        if card(ui, &pal, title, detail, known.then_some("Log Out")) {
+        if card(ui, &pal, title, detail, known.then_some("Log out")) {
             ask = Some((format!("Log out of {title}?"), vec![hash.clone()]));
         }
     }
     if known && others.len() > 1 {
         ui.add_space(8.0);
-        if small_button(ui, &pal, "Log Out of All Other Devices", pal.danger).clicked() {
+        if small_button(ui, &pal, "Log out of all other devices", pal.danger).clicked() {
             // The endpoint takes at most 64 hashes per call.
             ask = Some(("Log out of all other devices?".into(), others.iter().take(64).map(|o| o.2.clone()).collect()));
         }
     }
     if let Some((title, id_hashes)) = ask {
         let body = "Those sessions end at once; logging in again there needs your password.";
-        cx.view.confirm(title, body, "Log Out", Command::Account(AccountCommand::LogoutSessions { id_hashes }));
+        cx.view.confirm(title, body, "Log out", Command::Account(AccountCommand::LogoutSessions { id_hashes }));
     }
 }
 

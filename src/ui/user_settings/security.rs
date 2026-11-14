@@ -10,7 +10,7 @@
 //! layer (`AccountForm` reset).
 //! OWNERSHIP: account-security engineer.
 
-use super::super::{field_label, finish_op, op_line, op_state, primary};
+use super::super::{field_label, finish_op, op_line, op_state};
 use super::open_account_page;
 use crate::api::account::{BackupCode, CodesNonce, MfaKind, otpauth_uri, totp_secret};
 use crate::auth::Secret;
@@ -18,10 +18,10 @@ use crate::backend::{AccountCommand, Command, MfaPrompt, OpKind};
 use crate::model::{Id, Presence, User};
 use crate::state::account::OpState;
 use crate::ui::icons::Icon;
-use crate::ui::messages::{Pal, icon_button, vector_icon};
-use crate::ui::{UiCx, bold, dialog, dialog_buttons, dialog_closable, dialog_footer, dialog_text};
+use crate::ui::messages::{Btn, Pal, button, vector_button, vector_icon};
+use crate::ui::{UiCx, dialog, dialog_buttons, dialog_closable, dialog_footer, dialog_text};
 use egui::emath::GuiRounding as _;
-use egui::{Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, TextEdit, Vec2, vec2};
+use egui::{Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, TextEdit, Vec2, vec2};
 use qrcodegen::{QrCode, QrCodeEcc};
 use zeroize::Zeroizing;
 
@@ -88,21 +88,22 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, me: &User) {
     demo(cx);
     let (ok, warn) = (crate::ui::presence_color(Presence::Online, &cx.theme.colors), crate::ui::presence_color(Presence::Idle, &cx.theme.colors));
     let mut open = None;
-    crate::ui::section(ui, cx.theme, "Password and Authentication");
+    crate::ui::section(ui, cx.theme, "Password and authentication");
+    ui.add_space(8.0);
     let totp = me.mfa_enabled;
     if totp {
-        chip(ui, pal, Some(Icon::Check), "Multi-factor authentication enabled", ok);
+        chip(ui, pal, Some(Icon::Check), "Multi-factor authentication is on", ok);
         ui.add_space(8.0);
     }
-    if ui.add(primary(cx.theme, "Change Password")).clicked() {
+    if row(ui, pal, "Password", "Changing it signs you out on your other devices.", "Change password", Ok(())).clicked() {
         open = Some(Dialog::Password { current: buf(), new: buf(), confirm: buf() });
     }
-    let (text, button) = if totp {
-        ("Signing in asks for a code from your app.", "Remove Authenticator App")
+    let (text, label) = if totp {
+        ("Signing in asks for a code from your app.", "Remove authenticator app")
     } else {
-        ("Protect your account with a code from an app when you sign in.", "Enable Authenticator App")
+        ("Protect your account with a code from an app when you sign in.", "Set up authenticator app")
     };
-    if row(ui, pal, "Authenticator App", text, button, totp, Ok(())).clicked() {
+    if row(ui, pal, "Authenticator app", text, label, Ok(())).clicked() {
         if totp {
             let body = "Signing in stops asking for a code, and your backup codes stop working.";
             cx.view.confirm("Remove authenticator app?", body, "Remove", Command::Account(AccountCommand::DisableTotp));
@@ -113,13 +114,13 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, me: &User) {
     if totp {
         let sms = me.flags & MFA_SMS != 0;
         let allowed = if sms || me.phone.is_some() { Ok(()) } else { Err("Add a phone number first.") };
-        let button = if sms { "Remove SMS Authentication" } else { "Enable SMS Authentication" };
-        if row(ui, pal, "SMS Backup Authentication", "A text message to your phone can stand in for the app.", button, sms, allowed).clicked() {
+        let label = if sms { "Remove SMS authentication" } else { "Turn on SMS authentication" };
+        if row(ui, pal, "SMS backup authentication", "A text message to your phone can stand in for the app.", label, allowed).clicked() {
             open = Some(Dialog::Sms { enable: !sms, password: buf() });
         }
     }
     open = security_keys(ui, cx, pal).or(open);
-    if totp && row(ui, pal, "Backup Codes", "One-time codes for when you can't use the app.", "View Backup Codes", false, Ok(())).clicked() {
+    if totp && row(ui, pal, "Backup codes", "One-time codes for when you can't use the app.", "View backup codes", Ok(())).clicked() {
         open = Some(Dialog::CodesPassword { password: buf() });
     }
     standing(ui, cx, pal, ok, warn);
@@ -148,33 +149,36 @@ fn reset(cx: &mut UiCx<'_>) {
     cx.state.account.codes_nonce = None;
 }
 
-/// Title and one muted line on the left, a button on the right (`danger`: red outline;
-/// `Err`: disabled, the reason as its tooltip).
-fn row(ui: &mut egui::Ui, pal: &Pal, title: &str, text: &str, button: &str, danger: bool, allowed: Result<(), &str>) -> egui::Response {
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        crate::ui::button_row(ui);
-        let w = (ui.available_width() - 230.0).max(120.0);
-        ui.allocate_ui_with_layout(vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(title).font(bold(pal.size)).color(pal.text));
-            ui.add(egui::Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let b = if danger {
-                egui::Button::new(RichText::new(button).color(pal.danger)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, pal.danger))
-            } else {
-                egui::Button::new(button)
-            };
-            let r = ui.add_enabled(allowed.is_ok(), b.min_size(vec2(64.0, 32.0)));
-            match allowed {
-                Ok(()) => r,
-                Err(why) => r.on_disabled_hover_text(why),
-            }
+/// A setting row (§12): title (ui 14/500) and one muted line on the left, a secondary button on
+/// the right (`Err`: disabled, the reason as its tooltip), a hairline under it. Removing goes
+/// through a confirm with the danger button, so the row's button stays secondary.
+fn row(ui: &mut egui::Ui, pal: &Pal, title: &str, text: &str, label: &str, allowed: Result<(), &str>) -> egui::Response {
+    let r = Frame::new()
+        .inner_margin(Margin::symmetric(0, 12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                crate::ui::button_row(ui);
+                let w = (ui.available_width() - 240.0).max(120.0);
+                ui.allocate_ui_with_layout(vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new(title).font(egui::FontId::new(pal.ui(), crate::theme::medium_family())).color(pal.text));
+                    ui.add(egui::Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let r = button(ui, pal, Btn::Secondary, label, allowed.is_ok());
+                    match allowed {
+                        Ok(()) => r,
+                        Err(why) => r.on_disabled_hover_text(why),
+                    }
+                })
+                .inner
+            })
+            .inner
         })
-        .inner
-    })
-    .inner
+        .inner;
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(line.x_range(), line.center().y, egui::Stroke::new(1.0, pal.tk.rule));
+    r
 }
 
 /// A rounded status chip: `color` text (after an `icon`) on a tint of it.
@@ -198,7 +202,7 @@ fn security_keys(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) -> Option<Dial
         cx.cmd.send(Command::Account(AccountCommand::FetchSecurityKeys));
     }
     let tip = Err("Registering a key needs WebAuthn: use the official app.");
-    row(ui, pal, "Security Keys", "Sign in with a hardware key or passkey.", "Register a Security Key", false, tip);
+    row(ui, pal, "Security keys", "Sign in with a hardware key or passkey.", "Register a security key", tip);
     let mut open = None;
     match &cx.state.account.security_keys {
         None => {
@@ -209,17 +213,17 @@ fn security_keys(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) -> Option<Dial
         }
         Some(Ok(keys)) => {
             for k in keys {
-                Frame::new().fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
+                Frame::new().fill(pal.surface).corner_radius(pal.radius).inner_margin(Margin::symmetric(12, 4)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         vector_icon(ui, Icon::Key, 16.0, pal.muted, pal.surface);
                         ui.add(egui::Label::new(RichText::new(&k.name).color(pal.text)).truncate());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if icon_button(ui, pal, "🗑", "Remove", 28.0, false, pal.danger).clicked() {
+                            if vector_button(ui, pal, Icon::Trash, "Remove", 28.0, false, pal.danger).clicked() {
                                 let body = format!("{} can no longer be used to sign in.", k.name);
                                 cx.view.confirm("Remove security key?", body, "Remove", Command::Account(AccountCommand::DeleteSecurityKey { id: k.id }));
                             }
-                            if icon_button(ui, pal, "✏", "Rename", 28.0, false, pal.text).clicked() {
+                            if vector_button(ui, pal, Icon::Edit, "Rename", 28.0, false, pal.text).clicked() {
                                 open = Some(Dialog::RenameKey { id: k.id, name: k.name.clone() });
                             }
                         });
@@ -234,7 +238,8 @@ fn security_keys(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) -> Option<Dial
 
 /// Account Standing (`FetchStanding` once per opening of the page, read-only).
 fn standing(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ok: Color32, warn: Color32) {
-    crate::ui::section(ui, cx.theme, "Account Standing");
+    crate::ui::section(ui, cx.theme, "Account standing");
+    ui.add_space(8.0);
     super::super::lists::demo(&mut cx.state.account);
     super::super::lists::fetch_once(cx, super::Page::MyAccount, AccountCommand::FetchStanding, |a| a.standing = None);
     match &cx.state.account.standing {
@@ -259,15 +264,15 @@ fn standing(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ok: Color32, warn: 
 
 /// Account Removal: Disable (neutral) and Delete (red); both only explain and open discord.com.
 fn removal(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) -> Option<Dialog> {
-    crate::ui::section(ui, cx.theme, "Account Removal");
-    crate::ui::hint(ui, cx.theme, "Disabling your account means you can recover it at any time after taking this action.");
-    ui.add_space(4.0);
+    crate::ui::section(ui, cx.theme, "Account removal");
+    crate::ui::hint(ui, cx.theme, "You can recover a disabled account at any time by signing in again.");
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if ui.add(egui::Button::new("Disable Account").min_size(vec2(80.0, 32.0))).clicked() {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        if button(ui, pal, Btn::Secondary, "Disable account", true).clicked() {
             return Some(Dialog::Removal { delete: false });
         }
-        let delete = egui::Button::new(RichText::new("Delete Account").color(Color32::WHITE)).fill(pal.danger).min_size(vec2(80.0, 32.0));
-        ui.add(delete).clicked().then_some(Dialog::Removal { delete: true })
+        button(ui, pal, Btn::Danger, "Delete account", true).clicked().then_some(Dialog::Removal { delete: true })
     })
     .inner
 }
@@ -332,11 +337,11 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             let resp = dialog(&ctx, &theme, "rc_change_password", 440.0, "Change your password", |ui| {
                 dialog_text(ui, &theme, "Enter your current password and a new one. Your other devices will be logged out.");
                 ui.add_enabled_ui(!pending, |ui| {
-                    field_label(ui, &pal, "Current Password");
+                    field_label(ui, &pal, "Current password");
                     enter |= entered(&secret_field(ui, "rc_pw_current", current, true, PASSWORD_MAX, ""));
-                    field_label(ui, &pal, "New Password");
+                    field_label(ui, &pal, "New password");
                     enter |= entered(&secret_field(ui, "rc_pw_new", new, true, 72, ""));
-                    field_label(ui, &pal, "Confirm New Password");
+                    field_label(ui, &pal, "Confirm new password");
                     enter |= entered(&secret_field(ui, "rc_pw_confirm", confirm, true, 72, ""));
                 });
                 let problem = if (1..8).contains(&n) {
@@ -350,7 +355,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                     ui.label(RichText::new(p).size(pal.meta()).color(pal.danger));
                 }
                 op_line(ui, &pal, st.as_ref(), "Changing…");
-                dialog_buttons(ui, &theme, "Done", false, valid && !pending)
+                dialog_buttons(ui, &theme, "Change password", false, valid && !pending)
             });
             let go = (resp.inner == Some(true) || enter && valid && !pending).then(|| AccountCommand::ChangePassword { password: secret(current), new_password: secret(new) });
             (resp, go)
@@ -369,7 +374,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             }
             let pending = st == Some(OpState::Pending);
             let mut enter = false;
-            let resp = dialog(&ctx, &theme, "rc_totp_password", 440.0, "Enable Authenticator App", |ui| {
+            let resp = dialog(&ctx, &theme, "rc_totp_password", 440.0, "Set up authenticator app", |ui| {
                 dialog_text(ui, &theme, "Enter your password to continue.");
                 ui.add_enabled_ui(!pending, |ui| enter = entered(&secret_field(ui, "rc_totp_pw", password, true, PASSWORD_MAX, "Password")));
                 op_line(ui, &pal, st.as_ref(), "Checking…");
@@ -382,14 +387,14 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             let st = op_state(cx, OpKind::EnableTotp);
             if let Some(codes) = cx.state.account.backup_codes.take() {
                 finish_op(cx, OpKind::EnableTotp);
-                cx.view.toast("Authenticator app enabled.", false);
+                cx.view.toast("Your authenticator app is set up.", false);
                 *d = Dialog::Codes { codes, regen: None };
                 return true;
             }
             let pending = st == Some(OpState::Pending);
             let ready = code.chars().filter(char::is_ascii_digit).count() == 6;
             let mut enter = false;
-            let resp = dialog(&ctx, &theme, "rc_totp_scan", 520.0, "Enable Authenticator App", |ui| {
+            let resp = dialog(&ctx, &theme, "rc_totp_scan", 520.0, "Set up authenticator app", |ui| {
                 ui.horizontal_top(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(164.0), Sense::hover());
                     if let Some(qr) = qr {
@@ -401,7 +406,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                         let shown: Zeroizing<String> = Zeroizing::new(key.expose().as_bytes().chunks(4).map(|c| std::str::from_utf8(c).unwrap_or_default()).collect::<Vec<_>>().join(" "));
                         ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(shown.as_str()).monospace().color(pal.text));
-                            if ui.add(egui::Button::new("Copy").small()).on_hover_text("Copy the key").clicked() {
+                            if button(ui, &pal, Btn::Secondary, "Copy", true).on_hover_text("Copy the key").clicked() {
                                 ui.ctx().copy_text(key.expose().to_owned());
                             }
                         });
@@ -411,7 +416,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                     });
                 });
                 op_line(ui, &pal, st.as_ref(), "Activating…");
-                dialog_buttons(ui, &theme, "Activate", false, ready && !pending)
+                dialog_buttons(ui, &theme, "Turn on", false, ready && !pending)
             });
             let go = (resp.inner == Some(true) || enter && ready && !pending)
                 .then(|| AccountCommand::EnableTotp { password: password.clone(), secret: key.clone(), code: secret(code) });
@@ -424,7 +429,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                 return false;
             }
             let pending = st == Some(OpState::Pending);
-            let (title, action) = if *enable { ("Enable SMS Authentication", "Enable") } else { ("Remove SMS Authentication", "Remove") };
+            let (title, action) = if *enable { ("Turn on SMS authentication", "Turn on") } else { ("Remove SMS authentication", "Remove") };
             let mut enter = false;
             let resp = dialog(&ctx, &theme, "rc_sms", 440.0, title, |ui| {
                 dialog_text(ui, &theme, "Enter your password to continue.");
@@ -457,11 +462,11 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             }
             let pending = st == Some(OpState::Pending);
             let mut enter = false;
-            let resp = dialog(&ctx, &theme, "rc_codes_pw", 440.0, "View Backup Codes", |ui| {
+            let resp = dialog(&ctx, &theme, "rc_codes_pw", 440.0, "View backup codes", |ui| {
                 dialog_text(ui, &theme, "Enter your password. Discord then emails you a key to see your codes.");
                 ui.add_enabled_ui(!pending, |ui| enter = entered(&secret_field(ui, "rc_codes_pw", password, true, PASSWORD_MAX, "Password")));
                 op_line(ui, &pal, st.as_ref(), "Sending…");
-                dialog_buttons(ui, &theme, "Send Key", false, !password.is_empty() && !pending)
+                dialog_buttons(ui, &theme, "Send key", false, !password.is_empty() && !pending)
             });
             let go = (resp.inner == Some(true) || enter && !password.is_empty()).then(|| AccountCommand::BackupCodesChallenge { password: secret(password) });
             (resp, go)
@@ -476,7 +481,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             let pending = st == Some(OpState::Pending);
             let ready = key.trim().len() >= 6;
             let mut enter = false;
-            let resp = dialog(&ctx, &theme, "rc_codes_key", 440.0, "View Backup Codes", |ui| {
+            let resp = dialog(&ctx, &theme, "rc_codes_key", 440.0, "View backup codes", |ui| {
                 dialog_text(ui, &theme, "Enter the verification key Discord emailed you.");
                 ui.add_enabled_ui(!pending, |ui| enter = entered(&secret_field(ui, "rc_codes_key", key, false, 16, "Key")));
                 op_line(ui, &pal, st.as_ref(), "Checking…");
@@ -492,23 +497,23 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                 (*codes, *regen) = (new, None);
             }
             let mut ask_regen = false;
-            let resp = dialog(&ctx, &theme, "rc_backup_codes", 480.0, "Backup Codes", |ui| {
+            let resp = dialog(&ctx, &theme, "rc_backup_codes", 480.0, "Your backup codes", |ui| {
                 dialog_text(ui, &theme, "Each code works once when you can't use your authenticator app. Keep them somewhere safe.");
                 codes_grid(ui, &pal, codes);
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("Copy").min_size(vec2(64.0, 32.0))).clicked() {
+                    if button(ui, &pal, Btn::Secondary, "Copy", true).clicked() {
                         ui.ctx().copy_text(codes_text(codes).to_string());
                     }
-                    if ui.add(egui::Button::new("Save…").min_size(vec2(64.0, 32.0))).on_hover_text("Save as a text file").clicked() {
+                    if button(ui, &pal, Btn::Secondary, "Save…", true).on_hover_text("Save as a text file").clicked() {
                         save_codes(cx, codes);
                     }
                     if regen.is_some() {
-                        ask_regen = ui.add(egui::Button::new(RichText::new("Generate New Codes").color(pal.danger)).frame(false)).clicked();
+                        ask_regen = button(ui, &pal, Btn::Ghost, "Generate new codes", true).clicked();
                     }
                 });
                 ui.add_space(8.0);
                 // Shown once: nothing to cancel, only Done.
-                dialog_footer(ui, |ui| ui.add(primary(&theme, "Done").min_size(vec2(96.0, 36.0))).clicked().then_some(true))
+                dialog_footer(ui, |ui| button(ui, &pal, Btn::Primary, "Done", true).clicked().then_some(true))
             });
             if ask_regen && let Some((key, nonce)) = regen {
                 let cmd = AccountCommand::ViewBackupCodes { key: key.clone(), nonce: nonce.clone(), regenerate: true };
@@ -520,11 +525,11 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
             (resp, None)
         }
         Dialog::Removal { delete } => {
-            let title = if *delete { "Delete Account" } else { "Disable Account" };
+            let title = if *delete { "Delete your account?" } else { "Disable your account?" };
             let resp = dialog(&ctx, &theme, "rc_removal", 440.0, title, |ui| {
-                let what = if *delete { "Deleting your account can't be undone." } else { "A disabled account can be recovered by logging in again." };
+                let what = if *delete { "Deleting your account can't be undone." } else { "You can recover a disabled account by signing in again." };
                 dialog_text(ui, &theme, what);
-                dialog_text(ui, &theme, "This is done on discord.com – we'll open it in your browser.");
+                dialog_text(ui, &theme, "You do this on discord.com, which opens in your browser.");
                 dialog_buttons(ui, &theme, "Open discord.com", *delete, true)
             });
             if resp.inner == Some(true) {
@@ -614,7 +619,7 @@ fn paint_qr(ui: &egui::Ui, rect: Rect, code: &QrCode) {
 fn method_label(k: MfaKind) -> &'static str {
     match k {
         MfaKind::Totp => "Authenticator",
-        MfaKind::Backup => "Backup Code",
+        MfaKind::Backup => "Backup code",
         MfaKind::Sms => "SMS",
         MfaKind::Password => "Password",
     }
@@ -665,7 +670,7 @@ pub(in crate::ui::user_settings) fn mfa_dialog(ui: &mut egui::Ui, cx: &mut UiCx<
         }
         ui.add_enabled_ui(!prompt.busy, |ui| {
             if need_sms {
-                sms = ui.add(primary(&theme, "Send Code")).clicked();
+                sms = button(ui, &pal, Btn::Secondary, "Send code", true).clicked();
             } else {
                 let (password, max, hint) = match kind {
                     MfaKind::Password => (true, PASSWORD_MAX, "Password"),

@@ -4,7 +4,7 @@
 //! (Activity Privacy, settings 11.3) is on, through op 3.
 //! OWNERSHIP: activities engineer.
 
-use super::super::messages::{Pal, icon_button};
+use super::super::messages::Pal;
 use super::super::{UiCx, one_line, section};
 use super::Page;
 use crate::activity::{ActivityCommand, AddedGame, GameActivity, Window};
@@ -47,7 +47,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                     ui.label(RichText::new(&g.name).color(pal.text));
                     ui.label(RichText::new(&g.exe).size(pal.meta()).color(pal.muted));
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| icon_button(ui, &pal, "🗑", "Remove", 32.0, false, pal.danger).clicked()).inner
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| crate::ui::messages::vector_button(ui, &pal, crate::ui::icons::Icon::Trash, "Remove", 32.0, false, pal.danger).clicked()).inner
             })
             .inner;
         if remove {

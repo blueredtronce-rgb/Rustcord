@@ -137,7 +137,9 @@ pub fn custom_status_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let images = &mut *cx.images;
     let resp = dialog(ctx, theme, "rc_custom_status", 442.0, "Set a custom status", |ui| {
         ui.add_enabled_ui(!pending, |ui| {
-            Frame::new().fill(pal.bg).corner_radius(pal.radius).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
+            // An input (§9): the well fill and a 1 px `edge` border.
+            let well = theme.colors.code_background.to_color32();
+            Frame::new().fill(well).stroke(egui::Stroke::new(1.0, pal.tk.edge)).corner_radius(pal.radius).inner_margin(Margin::symmetric(6, 4)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let button = icon_button(ui, &pal, "", "Choose an emoji", 28.0, f.emoji.is_some(), pal.text);
@@ -152,7 +154,7 @@ pub fn custom_status_modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
                     let w = ui.available_width() - if set { 34.0 } else { 0.0 };
                     let edit = TextEdit::singleline(&mut f.text).char_limit(128).hint_text("What's on your mind?").frame(Frame::NONE).desired_width(w);
                     ui.add(edit);
-                    if set && icon_button(ui, &pal, "×", "Clear", 28.0, false, pal.text).clicked() {
+                    if set && super::super::messages::vector_button(ui, &pal, Icon::Close, "Clear status", 28.0, false, pal.text).clicked() {
                         (f.text, f.emoji) = (String::new(), None);
                     }
                 });
@@ -247,24 +249,26 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
         None => (user_presence(cx.state, me), presence_label(user_presence(cx.state, me))),
     };
     let (custom, custom_emoji) = match current(cx.state, now_ms()).0 {
-        Some(s) => (Some(s.text.clone().unwrap_or_else(|| "Edit Custom Status".into())), s.emoji.clone()),
+        Some(s) => (Some(s.text.clone().unwrap_or_else(|| "Edit custom status".into())), s.emoji.clone()),
         None => (None, None),
     };
     let ctx = ui.ctx().clone();
     let flyout = egui::Id::unique("rc_status_flyout");
     let mut picked = None;
     let (mut edit_status, mut clear_status, mut edit, mut copy_id) = (false, false, false, false);
-    // A 32 px row: hover fill, the label at x 32; `open` keeps the fill (its flyout is open).
+    // A 32 px menu row (§9 menus, ui 14/500): hover fill concentric with its group, the label at
+    // x 32; `open` keeps the fill (its flyout is open).
+    let item_r = pal.radius.saturating_sub(4).max(2);
     let row = |ui: &mut egui::Ui, label: &str, open: bool, right: f32| {
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-        let fill = if open || resp.hovered() || resp.has_focus() { pal.bg.blend(pal.tint()) } else { pal.bg };
-        ui.painter().rect_filled(row, 4, fill);
-        let g = crate::ui::one_line(ui, label, FontId::proportional(pal.size), pal.text, row.width() - 32.0 - right);
+        let fill = if open || resp.hovered() || resp.has_focus() { pal.bg.blend(pal.tk.hover) } else { pal.bg };
+        ui.painter().rect_filled(row, item_r, fill);
+        let g = crate::ui::one_line(ui, label, FontId::new(pal.ui(), crate::theme::medium_family()), pal.text, row.width() - 32.0 - right);
         ui.painter().galley(pos2(row.left() + 32.0, row.center().y - g.size().y / 2.0), g, pal.text);
         (row, fill, resp)
     };
     Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 12 }).show(ui, |ui| {
-        Frame::new().fill(pal.bg).corner_radius(8).inner_margin(4).show(ui, |ui| {
+        Frame::new().fill(pal.bg).corner_radius(pal.radius).inner_margin(4).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let open = egui::Popup::is_id_open(&ctx, flyout);
             let (row_rect, fill, resp) = row(ui, label, open, 24.0);
@@ -290,12 +294,12 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
                         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
                         let bg = ui.visuals().window_fill;
                         let fill = if resp.hovered() || resp.has_focus() { ui.visuals().widgets.hovered.weak_bg_fill } else { bg };
-                        ui.painter().rect_filled(row, 4, fill);
+                        ui.painter().rect_filled(row, item_r, fill);
                         paint_status(ui.painter(), pos2(row.left() + 14.0, row.center().y), 5.0, s.presence(), &c, fill);
                         let label = status_label(s);
                         // The app's menu colours: `pal` may be a themed card's (cosmetics::theme_pal).
                         let text = ui.visuals().text_color();
-                        ui.painter().text(pos2(row.left() + 30.0, row.center().y), Align2::LEFT_CENTER, label, FontId::proportional(pal.size), text);
+                        ui.painter().text(pos2(row.left() + 30.0, row.center().y), Align2::LEFT_CENTER, label, FontId::new(pal.ui(), crate::theme::medium_family()), text);
                         if current_status == Some(s) {
                             icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(pos2(row.right() - 18.0, row.center().y), Vec2::splat(16.0)), text, fill);
                         }
@@ -311,11 +315,11 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
                     }
                 });
 
-            // My custom status (click edits it, × clears it), or Set Custom Status.
-            let label = custom.as_deref().unwrap_or("Set Custom Status");
+            // My custom status (click edits it, × clears it), or Set custom status.
+            let label = custom.as_deref().unwrap_or("Set custom status");
             let (r, fill, resp) = row(ui, label, false, if custom.is_some() { 24.0 } else { 0.0 });
             paint_emoji(ui, cx.images, custom_emoji.as_ref(), pos2(r.left() + 16.0, r.center().y), pal.muted);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if custom.is_some() { "Edit Custom Status" } else { label }));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if custom.is_some() { "Edit custom status" } else { label }));
             edit_status = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
             if custom.is_some() {
                 // Registered after the row, so it takes the click.
@@ -323,33 +327,30 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
                 let resp = ui.interact(x, ui.make_persistent_id("rc_clear_custom_status"), Sense::click());
                 let color = if resp.hovered() { pal.text } else { pal.muted };
                 if resp.hovered() {
-                    ui.painter().circle_filled(x.center(), 10.0, fill.blend(pal.tint()));
+                    ui.painter().circle_filled(x.center(), 10.0, fill.blend(pal.tk.hover));
                 }
                 icons::paint(ui.painter(), Icon::Close, Rect::from_center_size(x.center(), Vec2::splat(16.0)), color, egui::Color32::TRANSPARENT);
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Clear Custom Status"));
-                clear_status = resp.on_hover_text("Clear Custom Status").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Clear custom status"));
+                clear_status = resp.on_hover_text("Clear custom status").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
             }
 
-            let (r, _, resp) = row(ui, "Edit Profile", false, 0.0);
+            let (r, _, resp) = row(ui, "Edit profile", false, 0.0);
             icons::paint(ui.painter(), Icon::Edit, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), Vec2::splat(18.0)), pal.muted, egui::Color32::TRANSPARENT);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Edit Profile"));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Edit profile"));
             edit = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         });
         // Discord's second group. shortcut: no Switch Accounts row until Rustcord has multi-account.
         ui.add_space(8.0);
-        Frame::new().fill(pal.bg).corner_radius(8).inner_margin(4).show(ui, |ui| {
-            let (r, _, resp) = row(ui, "Copy User ID", false, 0.0);
-            // An ID card: a rounded outline with "ID" in it.
-            let card = Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(18.0, 13.0));
-            ui.painter().rect_stroke(card, 2.5, egui::Stroke::new(1.4, pal.muted), egui::StrokeKind::Inside);
-            ui.painter().text(card.center(), Align2::CENTER_CENTER, "ID", crate::ui::bold(8.0), pal.muted);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Copy User ID"));
+        Frame::new().fill(pal.bg).corner_radius(pal.radius).inner_margin(4).show(ui, |ui| {
+            let (r, fill, resp) = row(ui, "Copy user ID", false, 0.0);
+            icons::paint(ui.painter(), Icon::IdCard, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), Vec2::splat(18.0)), pal.muted, fill);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Copy user ID"));
             copy_id = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         });
     });
     if copy_id {
         ui.ctx().copy_text(me.0.to_string());
-        cx.view.toast("User ID copied".to_owned(), false);
+        cx.view.toast("Copied your user ID".to_owned(), false);
     }
     if let Some(status) = picked {
         // Op 3 now, then the settings write (errors: toast); the proto codec is unit-tested

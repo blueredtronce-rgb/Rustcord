@@ -5,7 +5,7 @@
 //! Adding an account happens on the platform's site, not here.
 //! OWNERSHIP: cosmetics-display engineer.
 
-use super::super::messages::{Pal, icon_button};
+use super::super::messages::Pal;
 use super::super::{UiCx, bold, cosmetics, hint, one_line};
 use crate::backend::{Command, SocialCommand};
 use crate::model::ConnectedAccount;
@@ -67,9 +67,9 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, a: &ConnectedAccount) {
         ui.painter().galley(pos2(x, top), name, pal.text);
         ui.painter().galley(pos2(x, top + name_h), sub, pal.muted);
         let mut remove = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(head.right() - 32.0, head.top() + 2.0), head.max)));
-        if icon_button(&mut remove, pal, "🗑", "Remove", 32.0, false, pal.danger).clicked() {
+        if crate::ui::messages::vector_button(&mut remove, pal, crate::ui::icons::Icon::Trash, "Remove", 32.0, false, pal.danger).clicked() {
             let body = format!("Disconnect your {platform} account \"{}\"? Servers you joined through it may remove you.", a.name);
-            cx.view.confirm("Remove Connection", body, "Remove", Command::Social(SocialCommand::RemoveConnection { kind: a.kind.clone(), id: a.id.clone() }));
+            cx.view.confirm("Remove this connection?", body, "Remove", Command::Social(SocialCommand::RemoveConnection { kind: a.kind.clone(), id: a.id.clone() }));
         }
         ui.add_space(6.0);
         let mut visible = a.visibility.unwrap_or(0) == 1;
