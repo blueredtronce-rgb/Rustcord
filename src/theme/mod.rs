@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 mod apply;
 mod fonts;
 mod gradient;
+mod tokens;
 pub(crate) use apply::{append_boxed, icon_family, is_high_contrast, medium_family, semibold_family};
 pub use fonts::{init_fonts, set_discord_font};
 pub use gradient::swatch_mesh;
+pub use tokens::{Mode, Tokens};
 
 /// Settings > Accessibility > Saturation (0–1, f32 bits): applied to every theme colour as it
 /// is drawn (`Rgba::to_color32`), so theme files and the editor keep the real colours.
@@ -179,12 +181,12 @@ impl Default for ThemeColors {
 }
 impl Default for ThemeFont {
     fn default() -> Self {
-        Self { ui_font: String::new(), mono_font: String::new(), size: 14.5 }
+        Self { ui_font: String::new(), mono_font: String::new(), size: 15.0 }
     }
 }
 impl Default for ThemeLayout {
     fn default() -> Self {
-        Self { corner_radius: 6.0, compact: false }
+        Self { corner_radius: 8.0, compact: false }
     }
 }
 impl Default for Theme {
@@ -194,26 +196,28 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Built-in dark theme (default).
+    /// Built-in dark theme (default): blued steel panes, ember only where something needs you
+    /// (docs/DESIGN.md §1-2).
     pub fn ember_dark() -> Self {
         Self {
             name: "Ember Dark".into(),
             dark: true,
             colors: ThemeColors {
-                background: Rgba::rgb(0x22, 0x1e, 0x1c),
-                sidebar: Rgba::rgb(0x1b, 0x18, 0x17),
-                guild_bar: Rgba::rgb(0x14, 0x12, 0x11),
-                surface: Rgba::rgb(0x2d, 0x28, 0x26),
-                text: Rgba::rgb(0xed, 0xe6, 0xe0),
-                text_muted: Rgba::rgb(0xa3, 0x98, 0x90),
+                background: Rgba::rgb(0x23, 0x28, 0x2c),
+                sidebar: Rgba::rgb(0x1c, 0x21, 0x25),
+                guild_bar: Rgba::rgb(0x15, 0x1a, 0x1e),
+                surface: Rgba::rgb(0x2c, 0x32, 0x36),
+                // Forge-lit warm white on cold steel.
+                text: Rgba::rgb(0xec, 0xe9, 0xe4),
+                text_muted: Rgba::rgb(0xab, 0xb4, 0xbc),
                 // The logo's ember (assets/logo.svg), kept clear of `danger` in hue.
-                accent: Rgba::rgb(0xff, 0x7a, 0x3d),
-                accent_text: Rgba::rgb(0x1c, 0x12, 0x0e),
-                message_hover: Rgba::rgb(0x2a, 0x25, 0x23),
-                mention_highlight: Rgba::rgb(0x3e, 0x2a, 0x20),
-                link: Rgba::rgb(0x6c, 0xc3, 0xd5),
-                danger: Rgba::rgb(0xe5, 0x53, 0x4b),
-                code_background: Rgba::rgb(0x19, 0x16, 0x15),
+                accent: Rgba::rgb(0xf6, 0x88, 0x42),
+                accent_text: Rgba::rgb(0x21, 0x11, 0x0a),
+                message_hover: Rgba::rgb(0x26, 0x2b, 0x30),
+                mention_highlight: Rgba::rgb(0x37, 0x37, 0x32),
+                link: Rgba::rgb(0x81, 0xbf, 0xeb),
+                danger: Rgba::rgb(0xfc, 0x6d, 0x6e),
+                code_background: Rgba::rgb(0x18, 0x1d, 0x21),
             },
             font: ThemeFont::default(),
             layout: ThemeLayout::default(),
@@ -226,19 +230,19 @@ impl Theme {
             name: "Paper Light".into(),
             dark: false,
             colors: ThemeColors {
-                background: Rgba::rgb(0xfa, 0xf6, 0xf0),
-                sidebar: Rgba::rgb(0xf1, 0xeb, 0xe3),
-                guild_bar: Rgba::rgb(0xe6, 0xde, 0xd3),
-                surface: Rgba::rgb(0xed, 0xe6, 0xdc),
-                text: Rgba::rgb(0x2b, 0x24, 0x20),
-                text_muted: Rgba::rgb(0x6e, 0x63, 0x5b),
-                accent: Rgba::rgb(0xb4, 0x50, 0x1e),
+                background: Rgba::rgb(0xf9, 0xfb, 0xfd),
+                sidebar: Rgba::rgb(0xea, 0xee, 0xf2),
+                guild_bar: Rgba::rgb(0xda, 0xe0, 0xe6),
+                surface: Rgba::rgb(0xe5, 0xea, 0xef),
+                text: Rgba::rgb(0x1b, 0x21, 0x27),
+                text_muted: Rgba::rgb(0x52, 0x5e, 0x68),
+                accent: Rgba::rgb(0xbc, 0x46, 0x02),
                 accent_text: Rgba::rgb(0xff, 0xff, 0xff),
-                message_hover: Rgba::rgb(0xf3, 0xee, 0xe7),
-                mention_highlight: Rgba::rgb(0xf5, 0xe1, 0xd2),
-                link: Rgba::rgb(0x1f, 0x6f, 0x8b),
-                danger: Rgba::rgb(0xc0, 0x36, 0x2c),
-                code_background: Rgba::rgb(0xef, 0xe9, 0xe1),
+                message_hover: Rgba::rgb(0xf0, 0xf3, 0xf6),
+                mention_highlight: Rgba::rgb(0xee, 0xe7, 0xda),
+                link: Rgba::rgb(0x00, 0x68, 0xa7),
+                danger: Rgba::rgb(0xcc, 0x28, 0x27),
+                code_background: Rgba::rgb(0xec, 0xf0, 0xf3),
             },
             font: ThemeFont::default(),
             layout: ThemeLayout::default(),
@@ -265,7 +269,7 @@ impl Theme {
                 danger: Rgba::rgb(0xff, 0x5c, 0x5c),
                 code_background: Rgba::rgb(0x1c, 0x1c, 0x1c),
             },
-            font: ThemeFont { size: 15.0, ..ThemeFont::default() },
+            font: ThemeFont { size: 16.0, ..ThemeFont::default() },
             layout: ThemeLayout { corner_radius: 4.0, compact: false },
             gradient: None,
         }
@@ -296,6 +300,11 @@ impl Theme {
             .find(|(stem, t)| t.name == name || stem == name)
             .map(|(_, t)| t)
             .unwrap_or_default()
+    }
+
+    /// The derived colour tokens (tokens.rs, docs/DESIGN.md §2.2).
+    pub fn tokens(&self) -> Tokens {
+        Tokens::new(&self.colors)
     }
 
     pub fn is_builtin(&self) -> bool {
@@ -467,6 +476,16 @@ pub fn is_usable_font(path: &Path) -> bool {
     apply::read_font(path).is_some()
 }
 
+/// The tokens of the theme `ThemeApplier::apply` installed last, for shared helpers that only
+/// have a `Ui` (context menus).
+pub fn applied_tokens(ctx: &egui::Context) -> Tokens {
+    ctx.data(|d| d.get_temp(tokens_id())).unwrap_or_else(|| Theme::default().tokens())
+}
+
+fn tokens_id() -> egui::Id {
+    egui::Id::unique("rc_theme_tokens")
+}
+
 /// Name of the font family used for bold text (`RichText::strong` only changes color in
 /// egui 0.37). Always registered by `ThemeApplier::apply` (Windows: Segoe UI Bold;
 /// falls back to the regular UI font if no bold face is available).
@@ -547,7 +566,7 @@ angle = 90").is_err()); // no stops
     fn invalid_color_is_rejected() {
         let good = toml::to_string_pretty(&Theme::ember_dark()).unwrap();
         for bad in ["\"#12345\"", "\"red\"", "\"#gg0000\"", "\"#1234567\""] {
-            let text = good.replacen("background = \"#221e1c\"", &format!("background = {bad}"), 1);
+            let text = good.replacen("background = \"#23282c\"", &format!("background = {bad}"), 1);
             assert_ne!(text, good);
             assert!(parse_theme(&text).is_err(), "{bad} accepted");
         }

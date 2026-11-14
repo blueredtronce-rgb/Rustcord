@@ -1,6 +1,6 @@
 //! Turning a `Theme` into egui fonts, visuals, text styles and spacing.
 
-use super::{BOLD_FAMILY, Rgba, Theme, ThemeApplier, ThemeColors, ThemeFont};
+use super::{BOLD_FAMILY, Mode, Rgba, Theme, ThemeApplier, ThemeColors, ThemeFont};
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Shadow, Stroke, TextStyle, vec2};
 use std::path::Path;
 use std::sync::Arc;
@@ -23,31 +23,51 @@ impl ThemeApplier {
 
         let which = if theme.dark { egui::Theme::Dark } else { egui::Theme::Light };
         ctx.set_theme(which);
+        ctx.data_mut(|d| d.insert_temp(super::tokens_id(), theme.tokens()));
         let visuals = visuals(theme);
-        let size = if theme.font.size.is_finite() { theme.font.size.clamp(6.0, 48.0) } else { 14.5 };
+        let size = if theme.font.size.is_finite() { theme.font.size.clamp(6.0, 48.0) } else { 15.0 };
         let compact = theme.layout.compact;
         ctx.style_mut_of(which, |s| {
             s.visuals = visuals;
-            let prop = |k: f32| FontId::proportional(size * k);
-            s.text_styles.insert(TextStyle::Body, prop(1.0));
-            s.text_styles.insert(TextStyle::Button, prop(1.0));
-            s.text_styles.insert(TextStyle::Small, prop(0.8));
-            s.text_styles.insert(TextStyle::Monospace, FontId::monospace(size * 0.92));
-            s.text_styles.insert(TextStyle::Heading, FontId::new(size * 1.3, super::bold_family()));
+            // Type roles (docs/DESIGN.md §3): body B, ui B-1, meta B-3, title B+5 semibold.
+            let prop = |d: f32| FontId::proportional((size + d).max(6.0));
+            s.text_styles.insert(TextStyle::Body, prop(0.0));
+            s.text_styles.insert(TextStyle::Button, prop(-1.0));
+            s.text_styles.insert(TextStyle::Small, prop(-3.0));
+            s.text_styles.insert(TextStyle::Monospace, FontId::monospace((size - 1.0).max(6.0)));
+            s.text_styles.insert(TextStyle::Heading, FontId::new(size + 5.0, super::semibold_family()));
+            s.interaction.tooltip_delay = 0.3;
 
             let sp = &mut s.spacing;
+            sp.tooltip_width = 240.0;
+            // Overlay bars: hidden until the pointer is over the area, a thin text-coloured
+            // thumb, no track.
+            sp.scroll = egui::style::ScrollStyle {
+                bar_width: 8.0,
+                floating_width: 4.0,
+                handle_min_length: 24.0,
+                bar_inner_margin: 2.0,
+                foreground_color: true,
+                active_handle_opacity: 0.3,
+                interact_handle_opacity: 0.5,
+                active_background_opacity: 0.0,
+                interact_background_opacity: 0.0,
+                ..egui::style::ScrollStyle::floating()
+            };
             if compact {
                 sp.item_spacing = vec2(6.0, 3.0);
-                sp.button_padding = vec2(6.0, 2.0);
+                sp.button_padding = vec2(8.0, 2.0);
                 sp.interact_size = vec2(32.0, 18.0);
                 sp.window_margin = egui::Margin::same(8);
                 sp.menu_margin = egui::Margin::same(4);
                 sp.indent = 14.0;
             } else {
                 sp.item_spacing = vec2(8.0, 6.0);
-                sp.button_padding = vec2(10.0, 5.0);
-                sp.interact_size = vec2(40.0, 22.0);
+                // 12 x 6 around 20 px text: buttons and inputs come out 32 tall (§4).
+                sp.button_padding = vec2(12.0, 6.0);
+                sp.interact_size = vec2(40.0, 24.0);
                 sp.window_margin = egui::Margin::same(12);
+                // Menus and tooltips (egui shares their frame): items concentric at 1.5r - 6.
                 sp.menu_margin = egui::Margin::same(6);
                 sp.indent = 18.0;
             }
@@ -55,76 +75,86 @@ impl ThemeApplier {
     }
 }
 
+/// egui's visuals from the theme and its tokens (docs/DESIGN.md §2, §6, §9): secondary buttons
+/// on `selected`, inputs as wells with an `edge` border, the focus colour on keyboard focus,
+/// floats on `raised` with E2 / E3 shadows (none in high contrast, a strong edge instead).
 fn visuals(theme: &Theme) -> egui::Visuals {
     let c = &theme.colors;
+    let tk = super::Tokens::new(c);
+    let hc = tk.mode == Mode::HighContrast;
+    let light = tk.mode == Mode::Light;
     let mut v = if theme.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
-    let radius = CornerRadius::same(theme.layout.corner_radius.clamp(0.0, 255.0).round() as u8);
+    let r = theme.layout.corner_radius.clamp(0.0, 80.0);
+    let radius = |k: f32| CornerRadius::same((r * k).round() as u8);
     let text = c.text.to_color32();
-    let accent = c.accent.to_color32();
-    let strong = is_high_contrast(c);
-
-    let border = if strong { c.text_muted.to_color32() } else { mix(c.surface, c.text, 0.14) };
-    let border_width = if strong { 1.5 } else { 1.0 };
-    let (button, hover) = if theme.gradient.is_some() {
-        // Translucent text tint: the same as the opaque mix on `surface`, and it lets the
-        // gradient through on the translucent panels (selected rows, buttons).
-        let tint = |a: f32| c.text.to_color32().gamma_multiply(a);
-        (tint(0.06), tint(0.13))
-    } else {
-        (mix(c.surface, c.text, if strong { 0.12 } else { 0.06 }), mix(c.surface, c.text, 0.13))
-    };
+    let well = c.code_background.to_color32();
+    let line_w = if hc { 1.5 } else { 1.0 };
+    let edge = Stroke::new(line_w, tk.edge);
+    // Secondary buttons: `selected`, +4 % / +8 % text on hover / press. Translucent, so the
+    // gradient themes' panels show through.
+    let fill = |extra: f32| text.gamma_multiply(tk.mode.selected_alpha() + extra);
 
     v.override_text_color = None;
     v.weak_text_color = Some(c.text_muted.to_color32());
     v.hyperlink_color = c.link.to_color32();
     v.panel_fill = c.background.to_color32();
-    v.window_fill = c.surface.to_color32();
-    v.window_stroke = Stroke::new(border_width, border);
-    v.extreme_bg_color = c.surface.to_color32();
-    v.text_edit_bg_color = None;
+    v.window_fill = tk.raised;
+    v.window_stroke = if hc { Stroke::new(1.5, c.text_muted.to_color32()) } else { Stroke::new(1.0, tk.rule) };
+    // Wells: inputs, search, code, scroll tracks.
+    v.extreme_bg_color = well;
+    v.text_edit_bg_color = Some(well);
     v.faint_bg_color = mix(c.background, c.text, 0.04);
-    v.code_bg_color = c.code_background.to_color32();
+    v.code_bg_color = well;
     v.error_fg_color = c.danger.to_color32();
-    v.window_corner_radius = radius;
-    v.menu_corner_radius = radius;
-    let shadow_alpha = if theme.dark { 72 } else { 28 };
-    v.window_shadow = Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(shadow_alpha) };
-    v.popup_shadow = Shadow { offset: [0, 3], blur: 10, spread: 0, color: Color32::from_black_alpha(shadow_alpha) };
-    v.text_cursor.stroke = Stroke::new(2.0, accent);
+    v.warn_fg_color = tk.attention;
+    v.interact_cursor = Some(egui::CursorIcon::PointingHand);
+    v.window_corner_radius = radius(2.0);
+    v.menu_corner_radius = radius(1.5);
+    // E3 (modals) and E2 (menus, tooltips, popouts).
+    let shadow = |y: i8, blur: u8, dark: f32, lit: f32| {
+        let a = if light { lit } else { dark };
+        if hc { Shadow::NONE } else { Shadow { offset: [0, y], blur, spread: 0, color: Color32::from_black_alpha((a * 255.0).round() as u8) } }
+    };
+    v.window_shadow = shadow(16, 48, 0.5, 0.18);
+    v.popup_shadow = shadow(8, 24, 0.45, 0.14);
+    v.text_cursor.stroke = Stroke::new(2.0, c.accent.to_color32());
 
-    // Selected text / selected buttons: translucent accent, text tinted towards the accent so
-    // it stays readable; the same stroke outlines a focused text field.
-    v.selection.bg_fill = accent.gamma_multiply(0.42);
-    v.selection.stroke = Stroke::new(1.0, mix(c.text, c.accent, 0.35));
+    // Selected text in temper blue; the stroke is also the label colour of selected buttons and
+    // the border of a focused text field.
+    v.selection.bg_fill = tk.selection;
+    v.selection.stroke = Stroke::new(2.0, text);
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = c.background.to_color32();
     w.noninteractive.weak_bg_fill = c.background.to_color32();
-    w.noninteractive.bg_stroke = Stroke::new(border_width, border); // separators
+    w.noninteractive.bg_stroke = Stroke::new(line_w, if hc { c.text_muted.to_color32() } else { tk.rule }); // separators
     w.noninteractive.fg_stroke = Stroke::new(1.0, text); // label text
 
-    w.inactive.bg_fill = button;
-    w.inactive.weak_bg_fill = button;
-    w.inactive.bg_stroke = Stroke::new(border_width, border);
+    // `bg_fill`: checkbox boxes, slider rails. `weak_bg_fill`: buttons. `bg_stroke`: input,
+    // checkbox and combo box borders (and buttons, which share it in egui).
+    w.inactive.bg_fill = well;
+    w.inactive.weak_bg_fill = fill(0.0);
+    w.inactive.bg_stroke = edge;
     w.inactive.fg_stroke = Stroke::new(1.0, text);
 
-    w.hovered.bg_fill = hover;
-    w.hovered.weak_bg_fill = hover;
-    w.hovered.bg_stroke = Stroke::new(border_width, mix(c.text_muted, c.accent, 0.6));
+    w.hovered.bg_fill = well;
+    w.hovered.weak_bg_fill = fill(0.04);
+    w.hovered.bg_stroke = Stroke::new(line_w, c.text_muted.to_color32());
     w.hovered.fg_stroke = Stroke::new(1.5, text);
 
-    w.active.bg_fill = accent;
-    w.active.weak_bg_fill = accent;
-    w.active.bg_stroke = Stroke::new(border_width, accent);
-    w.active.fg_stroke = Stroke::new(2.0, c.accent_text.to_color32());
+    // Pressed or focused (egui's one state for both): the focus ring, never accent.
+    w.active.bg_fill = well;
+    w.active.weak_bg_fill = fill(0.08);
+    w.active.bg_stroke = Stroke::new(2.0, tk.focus);
+    w.active.fg_stroke = Stroke::new(1.5, text);
 
-    w.open.bg_fill = hover;
-    w.open.weak_bg_fill = hover;
-    w.open.bg_stroke = Stroke::new(border_width, border);
+    w.open.bg_fill = well;
+    w.open.weak_bg_fill = fill(0.04);
+    w.open.bg_stroke = Stroke::new(line_w, c.text_muted.to_color32());
     w.open.fg_stroke = Stroke::new(1.0, text);
 
     for wv in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-        wv.corner_radius = radius;
+        wv.corner_radius = radius(1.0);
         wv.expansion = 0.0;
     }
     v
@@ -149,10 +179,10 @@ pub(super) fn luminance(c: Rgba) -> f32 {
     0.2126 * lin(c.0[0]) + 0.7152 * lin(c.0[1]) + 0.0722 * lin(c.0[2])
 }
 
-/// Opaque sRGB blend `a -> b` (alpha of `a`).
-fn mix(a: Rgba, b: Rgba, t: f32) -> Color32 {
+/// Opaque sRGB blend `a -> b` (alpha of `a`), saturation setting applied.
+pub(super) fn mix(a: Rgba, b: Rgba, t: f32) -> Color32 {
     let ch = |i: usize| (f32::from(a.0[i]) + (f32::from(b.0[i]) - f32::from(a.0[i])) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(ch(0), ch(1), ch(2), a.0[3])
+    Rgba([ch(0), ch(1), ch(2), a.0[3]]).to_color32()
 }
 
 /// egui's default fonts (keeping the emoji/icon fallbacks) with nicer primary faces:
@@ -164,10 +194,10 @@ pub(super) fn build_fonts(font: &ThemeFont, gg: &[(u16, FontData)]) -> FontDefin
     let custom = custom_font(&font.ui_font);
     // A theme's own UI font wins over gg sans.
     let gg = if custom.is_some() { &[][..] } else { gg };
-    let (ui, bold) = match custom {
+    let (ui, semibold_face, bold) = match custom {
         // shortcut: a custom UI font has no bold face; bold text uses the regular face.
-        Some(data) => (Some(data), None),
-        None => (system_font("segoeui.ttf"), system_font("segoeuib.ttf")),
+        Some(data) => (Some(data), None, None),
+        None => (system_font("segoeui.ttf"), system_font("seguisb.ttf"), system_font("segoeuib.ttf")),
     };
     let mono = custom_font(&font.mono_font).or_else(|| system_font("consola.ttf"));
     let mut gg_face = |weight: u16| {
@@ -206,8 +236,14 @@ pub(super) fn build_fonts(font: &ThemeFont, gg: &[(u16, FontData)]) -> FontDefin
     }
     let [_, medium, semibold, gg_bold] = gg_faces;
     let with = |face: Option<String>, chain: &[String]| face.into_iter().chain(chain.iter().cloned()).collect::<Vec<_>>();
+    // 600 without gg sans: Segoe UI Semibold, not Bold.
+    let mut semibold_chain = bold_chain.clone();
+    if let Some(data) = semibold_face {
+        defs.font_data.insert("rc-ui-semibold".into(), Arc::new(data));
+        semibold_chain.insert(0, "rc-ui-semibold".into());
+    }
     defs.families.insert(medium_family(), with(medium, &prop));
-    defs.families.insert(semibold_family(), with(semibold, &bold_chain));
+    defs.families.insert(semibold_family(), with(semibold, &semibold_chain));
     defs.families.insert(FontFamily::Name(BOLD_FAMILY.into()), with(gg_bold, &bold_chain));
     // Box drawing without gg sans: its ━ ─ are short dashes; the provider finds Segoe UI Symbol's.
     defs.families.insert(box_family(), prop.iter().filter(|n| !n.starts_with("gg-sans-")).cloned().collect());
@@ -248,7 +284,7 @@ pub fn append_boxed(job: &mut egui::text::LayoutJob, text: &str, format: &egui::
 }
 
 /// Semibold (600) text, Discord's usual weight for headings and labels: gg sans Semibold, else
-/// the bold face.
+/// Segoe UI Semibold, else the bold face.
 pub fn semibold_family() -> FontFamily {
     FontFamily::Name("rc-semibold".into())
 }
@@ -531,6 +567,8 @@ mod tests {
         }
         let icons = &defs.families[&icon_family()];
         assert!(icons.contains(&"NotoEmoji-Regular".to_string()) && !icons.contains(&OS_EMOJI.to_string()));
+        // Without gg sans, 600 is Segoe UI Semibold (shipped with Windows), not Bold.
+        assert_eq!(defs.families[&semibold_family()][..2], ["rc-ui-semibold", "rc-ui-bold"]);
     }
 
     #[test]

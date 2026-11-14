@@ -65,8 +65,8 @@ impl Theme {
 
     /// Re-derives the colours of a gradient theme from its gradient and dark/light base (§13.3,
     /// §13.4C): surfaces and text tinted in OKLab, the panel tokens the gradient's average under
-    /// the panel overlay, hover / mention translucent so the gradient shows through. Accent and
-    /// danger stay. No-op for flat themes.
+    /// the panel overlay, hover / mention (straw) translucent so the gradient shows through.
+    /// Accent and danger stay. No-op for flat themes.
     pub fn retint(&mut self) {
         let Some(g) = &self.gradient else { return };
         let base = if self.dark { Theme::ember_dark() } else { Theme::paper_light() }.colors;
@@ -89,7 +89,8 @@ impl Theme {
             text_muted: oklab_mix(base.text_muted, text, w_text),
             link: oklab_mix(base.link, text, w_text),
             message_hover: with_alpha(oklab_mix(base.text, text, w_text), 0x0f),
-            mention_highlight: with_alpha(base.accent, 0x21),
+            // Straw, like the flat themes' mention row (ember is kept for brand and action).
+            mention_highlight: with_alpha(if self.dark { super::tokens::ATTENTION.0 } else { super::tokens::ATTENTION.1 }, 0x21),
             ..base
         };
         // Very dark gradients would pass as high contrast (strong borders everywhere).
