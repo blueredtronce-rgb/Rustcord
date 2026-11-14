@@ -113,7 +113,7 @@ pub(super) fn windows(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     let mut toggled = switch_row(ui, cx.theme, "Open Rustcord when I sign in to Windows", None, &mut open);
     let theme = &*cx.theme;
     toggled |= ui
-        .add_enabled_ui(open, |ui| switch_row(ui, theme, "Start minimized", Some("It starts in the notification area."), &mut minimized))
+        .add_enabled_ui(open, |ui| switch_row(ui, theme, "Start minimized", Some("Rustcord starts in the notification area, not as a window."), &mut minimized))
         .inner;
     if toggled && let Err(e) = set_autostart(open, minimized) {
         cx.view.toast(format!("Could not change the startup entry: {e}"), true);
