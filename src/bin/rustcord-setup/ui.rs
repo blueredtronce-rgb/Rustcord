@@ -223,8 +223,9 @@ impl Setup {
             (Mode::Install, Screen::Options) => {
                 let o = &mut self.opts;
                 let rows = group(ui, 3);
-                row_text(ui, rows[0], "Start Rustcord when I sign in", Some("It starts in the notification area."));
-                switch(ui, rows[0], &mut o.autostart, "Start Rustcord when I sign in");
+                // The same words as the app's Windows settings row (docs/DESIGN.md §12).
+                row_text(ui, rows[0], "Open Rustcord when I sign in to Windows", Some("It starts in the notification area."));
+                switch(ui, rows[0], &mut o.autostart, "Open Rustcord when I sign in to Windows");
                 row_text(ui, rows[1], "Create a desktop shortcut", None);
                 switch(ui, rows[1], &mut o.desktop, "Create a desktop shortcut");
                 row_text(ui, rows[2], "Location", Some(&o.dir.display().to_string()));
@@ -242,7 +243,7 @@ impl Setup {
                 ui.painter().rect_filled(bar, 2.0, EDGE.gamma_multiply(0.5));
                 ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * fraction, 4.0)), 2.0, TEXT);
                 ui.add_space(8.0);
-                paragraph(ui, &format!("{} %", (fraction * 100.0).round()), MUTED);
+                paragraph(ui, &format!("{}%", (fraction * 100.0).round()), MUTED);
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
             (Mode::Install, Screen::Done) => paragraph(ui, "Find it in the Start menu, or open it now.", MUTED),
