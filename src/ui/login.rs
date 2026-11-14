@@ -350,15 +350,18 @@ fn tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
 }
 
-/// Full-width segmented control: one rounded track, equal segments, the selected one raised.
-/// Also the settings' one-of-a-few choices (2FA method, plugin filter, profile tabs).
+/// Full-width segmented control (docs/DESIGN.md §9): a well track, equal 32 px segments, the
+/// selected one lifted (`raised` on light themes, `selected` on dark). Also the settings'
+/// one-of-a-few choices (2FA method, plugin filter, profile tabs).
 pub(crate) fn segmented<T: Copy + PartialEq>(ui: &mut egui::Ui, theme: &Theme, value: &mut T, options: &[(T, &str)]) {
-    let c = &theme.colors;
-    let radius = theme.layout.corner_radius;
-    let (track_fill, raised) = segment_fills(theme);
+    let pal = super::messages::Pal::new(theme);
+    let tk = pal.tk;
+    let radius = f32::from(pal.radius);
+    let lifted = if tk.mode == crate::theme::Mode::Light { tk.raised } else { tk.selected };
     let (track, _) = ui.allocate_exact_size(vec2(ui.available_width(), SEGMENT_H), Sense::hover());
-    ui.painter().rect_filled(track, radius + 2.0, track_fill);
-    let inset = 3.0;
+    ui.painter().rect_filled(track, radius, theme.colors.code_background.to_color32());
+    let inset = 2.0;
+    let seg_r = (radius - inset).max(2.0);
     let seg_w = (track.width() - 2.0 * inset) / options.len() as f32;
     for (i, &(v, label)) in options.iter().enumerate() {
         let min = track.min + vec2(inset + i as f32 * seg_w, inset);
@@ -372,32 +375,20 @@ pub(crate) fn segmented<T: Copy + PartialEq>(ui: &mut egui::Ui, theme: &Theme, v
         let hovered = resp.hovered() && ui.is_enabled();
         let painter = ui.painter();
         if selected {
-            painter.rect_filled(rect, radius, raised);
-            painter.rect_stroke(rect, radius, (1.0, c.text.to_color32().gamma_multiply(0.08)), egui::StrokeKind::Inside);
+            painter.rect_filled(rect, seg_r, lifted);
         } else if hovered {
-            painter.rect_filled(rect, radius, raised.gamma_multiply(0.5));
+            painter.rect_filled(rect, seg_r, tk.hover);
         }
         if resp.has_focus() {
-            painter.rect_stroke(rect, radius, (1.5, c.accent.to_color32()), egui::StrokeKind::Inside);
+            super::messages::focus_ring(ui, &pal, rect, seg_r);
         }
         if hovered && !selected {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        let (font, color) = if selected {
-            (super::bold(theme.font.size), c.text)
-        } else {
-            (FontId::proportional(theme.font.size), if hovered { c.text } else { c.text_muted })
-        };
-        painter.text(rect.center(), Align2::CENTER_CENTER, label, font, color.to_color32());
+        let color = if selected || hovered { pal.text } else { pal.muted };
+        let font = FontId::new(pal.ui(), crate::theme::medium_family());
+        painter.text(rect.center(), Align2::CENTER_CENTER, label, font, color);
     }
-}
-
-/// (track, raised) fills: the track is darker than the card and the selected segment lighter,
-/// in light and dark themes alike.
-fn segment_fills(theme: &Theme) -> (Color32, Color32) {
-    let c = &theme.colors;
-    let tint = |t| card_fill(theme).lerp_to_gamma(c.text.to_color32(), t);
-    if theme.dark { (c.background.to_color32(), tint(0.1)) } else { (tint(0.07), Color32::WHITE) }
 }
 
 // ---------------------------------------------------------------------------

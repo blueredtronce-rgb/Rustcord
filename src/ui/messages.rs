@@ -67,23 +67,29 @@ const JOIN_TEMPLATES: [&str; 13] = [
 // Shared helpers (also used by composer.rs and profile.rs)
 // ---------------------------------------------------------------------------
 
-/// Theme colors as egui colors.
+/// Theme colors as egui colors, plus the derived tokens (`tk`, docs/DESIGN.md §2.2) and the
+/// type, radius and focus helpers every view shares.
 #[derive(Clone, Copy)]
 pub(super) struct Pal {
     pub text: Color32,
     pub muted: Color32,
     pub accent: Color32,
     pub surface: Color32,
+    /// Message-row hover (`ThemeColors::message_hover`); other rows and buttons use `tk.hover`.
     pub hover: Color32,
     pub mention: Color32,
     pub link: Color32,
     pub danger: Color32,
     pub bg: Color32,
-    /// Control radius; cards and popups use `card_radius`.
+    /// Control radius r (buttons, inputs, rows); `card_radius` 1.5r, `modal_radius` 2r.
     pub radius: u8,
-    /// Body text size; meta text (timestamps, hints) is `size - 2`.
+    /// Body text size B; the type roles (`meta`, `label`, `title` …) derive from it.
     pub size: f32,
     pub dark: bool,
+    /// Label on `accent` (primary buttons).
+    pub accent_text: Color32,
+    /// raised, hover, selected, rule, edge, focus, positive …, danger_fill, chip, heat, scrim.
+    pub tk: crate::theme::Tokens,
 }
 
 impl Pal {
@@ -100,18 +106,65 @@ impl Pal {
             danger: c.danger.to_color32(),
             bg: c.background.to_color32(),
             radius: t.layout.corner_radius.round().clamp(0.0, 127.0) as u8,
-            size: if t.font.size.is_finite() { t.font.size.clamp(6.0, 48.0) } else { 14.5 },
+            size: if t.font.size.is_finite() { t.font.size.clamp(6.0, 48.0) } else { 15.0 },
             dark: t.dark,
+            accent_text: c.accent_text.to_color32(),
+            tk: t.tokens(),
         }
     }
 
+    /// Container tier (1.5r): channel card, user panel, composer, menus, popouts, pickers.
     pub fn card_radius(&self) -> u8 {
-        self.radius * 2
+        self.radius.saturating_add(self.radius / 2)
     }
 
-    /// Meta text: timestamps, counts, hints.
+    /// Modal tier (2r): modals, profile popout, login panel.
+    pub fn modal_radius(&self) -> u8 {
+        self.radius.saturating_mul(2)
+    }
+
+    // Type roles (§3), all from B = `size`. Weights: `bold`/`semibold_family`/`medium_family`.
+
+    /// B-4, 700: counts, "New", "Live".
+    #[allow(dead_code, reason = "shared type role; the main-window views adopt it")]
+    pub fn badge(&self) -> f32 {
+        self.size - 4.0
+    }
+
+    /// B-3: timestamps, status and activity lines, hints, descriptions.
     pub fn meta(&self) -> f32 {
+        self.size - 3.0
+    }
+
+    /// B-2, 600 muted: categories, member groups, nav groups, field and card labels.
+    pub fn label(&self) -> f32 {
         self.size - 2.0
+    }
+
+    /// B-1: buttons (500), menus, inputs, tooltips.
+    pub fn ui(&self) -> f32 {
+        self.size - 1.0
+    }
+
+    /// B: messages, channel, DM and member names.
+    pub fn body(&self) -> f32 {
+        self.size
+    }
+
+    /// B+1, 600: chat header name, server header, settings section heading, activity name.
+    pub fn heading(&self) -> f32 {
+        self.size + 1.0
+    }
+
+    /// B+5, 600: settings page title, modal title, popout display name.
+    pub fn title(&self) -> f32 {
+        self.size + 5.0
+    }
+
+    /// B+9, 700: login title, full-profile name, DM start name.
+    #[allow(dead_code, reason = "shared type role; login and profile adopt it")]
+    pub fn display(&self) -> f32 {
+        self.size + 9.0
     }
 
     /// Hairlines (header border, date separators, card outlines).
@@ -125,9 +178,10 @@ impl Pal {
     }
 }
 
-/// Quiet icon-only button for compact chrome: muted glyph, tinted on hover/focus; while `on`
-/// (a switched-on toggle) the glyph is bright, never filled or accent. The tooltip is also the
-/// accessible name. Known glyphs paint as vectors (`icons::from_glyph`); "" paints nothing.
+/// Quiet icon-only button for compact chrome (§9): muted icon; on hover the `hot` colour on a
+/// `hover` fill; while `on` (a switched-on toggle) the icon is bright on the `selected` fill,
+/// never accent. The tooltip is also the accessible name. Known glyphs paint as vectors
+/// (`icons::from_glyph`); "" paints nothing.
 pub(super) fn icon_button(ui: &mut egui::Ui, pal: &Pal, icon: &str, tip: &str, side: f32, on: bool, hot: Color32) -> egui::Response {
     button_with(ui, pal, icons::from_glyph(icon).ok_or(icon), tip, side, on, hot)
 }
@@ -141,24 +195,156 @@ fn button_with(ui: &mut egui::Ui, pal: &Pal, icon: Result<Icon, &str>, tip: &str
     let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tip));
     if ui.is_rect_visible(rect) {
-        let hot_now = resp.hovered() || resp.has_focus();
-        if hot_now {
-            ui.painter().rect_filled(rect, pal.radius, pal.tint());
-        }
-        let color = if on { pal.text } else if hot_now { hot } else { pal.muted };
+        let hovered = resp.hovered();
+        let fill = if on { pal.tk.selected } else if hovered { pal.tk.hover } else { Color32::TRANSPARENT };
+        ui.painter().rect_filled(rect, pal.radius, fill);
+        let color = if on { pal.text } else if hovered || resp.has_focus() { hot } else { pal.muted };
         match icon {
             // 20 px in 28-32 px buttons, 16 px in smaller ones.
             Ok(i) => {
-                let bg = if hot_now { pal.bg.blend(pal.tint()) } else { pal.bg };
-                icons::paint(ui.painter(), i, Rect::from_center_size(rect.center(), Vec2::splat((side - 8.0).clamp(16.0, 20.0))), color, bg);
+                icons::paint(ui.painter(), i, Rect::from_center_size(rect.center(), Vec2::splat((side - 8.0).clamp(16.0, 20.0))), color, pal.bg.blend(fill));
             }
             // Words ("Aa") and real emoji.
             Err(text) => {
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new((side - 8.0).min(18.0), crate::theme::icon_family()), color);
             }
         }
+        if resp.has_focus() {
+            focus_ring(ui, pal, rect, f32::from(pal.radius));
+        }
     }
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The keyboard focus ring (§9): 2 px `focus` at a 2 px offset around `rect` (radius + 2).
+/// Draw it while `resp.has_focus()`; rows that fill their column pass `rect.shrink(4.0)` so the
+/// ring stays inside it.
+pub(super) fn focus_ring(ui: &egui::Ui, pal: &Pal, rect: Rect, radius: f32) {
+    ui.painter().rect_stroke(rect.expand(2.0), radius + 2.0, Stroke::new(2.0, pal.tk.focus), egui::StrokeKind::Outside);
+}
+
+/// Animation length for motion that answers an action (§7): `secs`, or 0 with reduced motion
+/// (`user_settings::app::frame` sets `animation_time` to 0 then).
+pub(super) fn motion(ui: &egui::Ui, secs: f32) -> f32 {
+    if ui.style().animation_time > 0.0 { secs } else { 0.0 }
+}
+
+/// Button kinds of §9. One `Primary` per view (ember); `Danger` only for destructive confirms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code, reason = "shared §9 kinds; Secondary / Positive are adopted by the area views")]
+pub(super) enum Btn {
+    Primary,
+    Secondary,
+    Danger,
+    Positive,
+    Ghost,
+}
+
+/// A §9 button: 32 tall (raise with `ui.spacing_mut().interact_size.y`, e.g. 40 in modal
+/// footers), 16 px padding, at least 64 wide, label ui 14/500. Hover and press change the fill
+/// only; keyboard focus draws the focus ring. Disabled filled buttons go grey, never dim orange.
+pub(super) fn button(ui: &mut egui::Ui, pal: &Pal, kind: Btn, text: &str, enabled: bool) -> egui::Response {
+    ui.scope(|ui| {
+        let enabled = enabled && ui.is_enabled();
+        let tk = &pal.tk;
+        let (black, white) = (Color32::BLACK, Color32::WHITE);
+        // (rest, hover, press) fills and the label. Disabled: a neutral fill (`surface` would
+        // vanish on the dark themes' floats, which are `surface` too) and muted text.
+        let filled = |fill: Color32, label: Color32, hover: Color32, press: Color32| {
+            if enabled { ([fill, hover, press], label) } else { ([tk.selected; 3], pal.muted) }
+        };
+        let (fills, label) = match kind {
+            Btn::Primary => filled(pal.accent, pal.accent_text, pal.accent.lerp_to_gamma(white, 0.08), pal.accent.lerp_to_gamma(black, 0.1)),
+            Btn::Danger => filled(tk.danger_fill, tk.danger_label, tk.danger_fill.lerp_to_gamma(black, 0.1), tk.danger_fill.lerp_to_gamma(black, 0.18)),
+            Btn::Positive => filled(tk.positive_fill, tk.positive_label, tk.positive_fill.lerp_to_gamma(black, 0.1), tk.positive_fill.lerp_to_gamma(black, 0.18)),
+            Btn::Secondary => {
+                let w = &ui.visuals().widgets;
+                ([w.inactive.weak_bg_fill, w.hovered.weak_bg_fill, w.active.weak_bg_fill], pal.text)
+            }
+            Btn::Ghost => ([Color32::TRANSPARENT, tk.hover, tk.selected], pal.text),
+        };
+        let filled_kind = matches!(kind, Btn::Primary | Btn::Danger | Btn::Positive);
+        let v = ui.visuals_mut();
+        if filled_kind {
+            // Disabled colours are painted above; no extra fade on top.
+            v.disabled_alpha = 1.0;
+        }
+        let w = &mut v.widgets;
+        for (state, fill) in [&mut w.inactive, &mut w.hovered, &mut w.active].into_iter().zip(fills) {
+            state.weak_bg_fill = fill;
+            state.bg_stroke = Stroke::NONE;
+            state.fg_stroke.color = label;
+        }
+        ui.spacing_mut().button_padding.x = 16.0;
+        let label = RichText::new(text).font(FontId::new(pal.ui(), crate::theme::medium_family()));
+        let min_h = ui.spacing().interact_size.y.max(32.0);
+        let resp = ui.add_enabled(enabled, Button::new(label).min_size(vec2(64.0, min_h)));
+        if resp.has_focus() {
+            focus_ring(ui, pal, resp.rect, f32::from(pal.radius));
+        }
+        resp
+    })
+    .inner
+}
+
+/// Pill switch (§9): 40 x 24. Off: `edge` track, a light knob with a ×; on: `positive` track,
+/// the knob with a check. Slides in 120 ms. `changed()` when clicked.
+pub(super) fn switch(ui: &mut egui::Ui, pal: &Pal, on: &mut bool, label: &str) -> egui::Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(40.0, 24.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *on, label));
+    if ui.is_rect_visible(rect) {
+        let tk = &pal.tk;
+        let t = ui.ctx().animate_bool_with_time(resp.id, *on, motion(ui, 0.12));
+        let track = tk.edge.lerp_to_gamma(tk.positive, t);
+        let off_knob = if tk.mode == crate::theme::Mode::Light { Color32::WHITE } else { pal.text };
+        let knob = off_knob.lerp_to_gamma(tk.on_positive, t);
+        let c = pos2(egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, t), rect.center().y);
+        let p = ui.painter();
+        p.rect_filled(rect, 12.0, track);
+        p.circle_filled(c, 9.0, knob);
+        let glyph = Stroke::new(1.5, track);
+        if t < 0.5 {
+            for d in [vec2(3.0, 3.0), vec2(3.0, -3.0)] {
+                p.line_segment([c - d, c + d], glyph);
+            }
+        } else {
+            p.add(Shape::line(vec![c + vec2(-3.5, 0.0), c + vec2(-1.0, 2.5), c + vec2(3.5, -2.5)], glyph));
+        }
+        if resp.has_focus() {
+            focus_ring(ui, pal, rect, 12.0);
+        }
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A checkbox box (§9) in `rect` (16-20 px): off a 1.5 px `edge` ring, on `positive` with an
+/// `on_positive` check. `radius`: the chip tier (`pal.radius / 2`).
+pub(super) fn paint_checkbox(p: &egui::Painter, tk: &crate::theme::Tokens, rect: Rect, on: bool, radius: f32) {
+    if on {
+        p.rect_filled(rect, radius, tk.positive);
+        let (c, s) = (rect.center(), rect.width() / 20.0);
+        let tick = vec![c + vec2(-5.0, 0.5) * s, c + vec2(-1.5, 4.0) * s, c + vec2(5.0, -3.5) * s];
+        p.add(Shape::line(tick, Stroke::new(2.0 * s, tk.on_positive)));
+    } else {
+        p.rect_stroke(rect, radius, Stroke::new(1.5, tk.edge), egui::StrokeKind::Inside);
+    }
+}
+
+/// A radio circle (§9) in `rect` (16-20 px): off a 1.5 px `edge` ring, on a 2 px `text` ring
+/// with a `text` dot.
+#[allow(dead_code, reason = "shared §9 painter for radio rows (Create channel, menus)")]
+pub(super) fn paint_radio(p: &egui::Painter, pal: &Pal, rect: Rect, on: bool) {
+    let (c, r) = (rect.center(), rect.width() / 2.0);
+    if on {
+        p.circle_stroke(c, r - 1.0, Stroke::new(2.0, pal.text));
+        p.circle_filled(c, r * 0.4, pal.text);
+    } else {
+        p.circle_stroke(c, r - 0.75, Stroke::new(1.5, pal.tk.edge));
+    }
 }
 
 /// Icon on the right of a context-menu row: a vector icon, or a glyph (`icons::from_glyph`
@@ -171,38 +357,68 @@ pub(super) enum MenuIcon {
     Check(bool),
 }
 
-/// Call first inside a context menu: at least 188 px wide, 32 px rows (submenu buttons too).
+/// Call first inside a context menu (§9 menus): 188-320 wide, 32 px rows (submenu buttons
+/// too), row fills concentric with the menu's corners, `hover` on hover and keyboard focus.
 pub(super) fn menu_setup(ui: &mut egui::Ui) {
     ui.set_min_width(188.0);
-    ui.spacing_mut().button_padding = vec2(8.0, 4.0);
-    ui.spacing_mut().interact_size.y = 32.0;
-    ui.spacing_mut().item_spacing.y = 2.0;
+    ui.set_max_width(320.0);
+    let tk = crate::theme::applied_tokens(ui.ctx());
+    let s = ui.style_mut();
+    s.spacing.button_padding = vec2(8.0, 4.0);
+    s.spacing.interact_size.y = 32.0;
+    s.spacing.item_spacing.y = 2.0;
+    let inset = u8::try_from(s.spacing.menu_margin.left).unwrap_or(0);
+    let r = s.visuals.menu_corner_radius.nw.saturating_sub(inset).max(2);
+    let w = &mut s.visuals.widgets;
+    for state in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        state.corner_radius = egui::CornerRadius::same(r);
+    }
+    for state in [&mut w.hovered, &mut w.active, &mut w.open] {
+        state.weak_bg_fill = tk.hover;
+    }
 }
 
-/// Context-menu row: the label left, its icon right, both in `color` (danger for destructive
-/// items). True when clicked (the menu closes itself).
+/// Context-menu row (§9): the label (ui 14/500) left, a 16 px icon right in `text_muted`.
+/// Pass the theme's `danger` as `color` for a destructive item: danger label and icon, and on
+/// hover the `danger_fill` with its label colour. True when clicked (the menu closes itself).
 pub(super) fn menu_item(ui: &mut egui::Ui, text: &str, icon: MenuIcon, color: Color32) -> bool {
     let icon = match icon {
         MenuIcon::Glyph(g) => super::icons::from_glyph(g).map_or(icon, MenuIcon::Icon),
         i => i,
     };
     let glyph = if let MenuIcon::Glyph(g) = icon { g } else { "" };
+    let tk = crate::theme::applied_tokens(ui.ctx());
+    let danger = color == ui.visuals().error_fg_color;
+    let muted = ui.visuals().weak_text_color();
+    let resp = ui
+        .scope(|ui| {
+            let w = &mut ui.visuals_mut().widgets;
+            for state in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                state.fg_stroke.color = color;
+            }
+            if danger {
+                for state in [&mut w.hovered, &mut w.active] {
+                    state.weak_bg_fill = tk.danger_fill;
+                    state.fg_stroke.color = tk.danger_label;
+                }
+            }
+            let font = FontId::new(ui.style().text_styles[&egui::TextStyle::Button].size, crate::theme::medium_family());
+            ui.add(Button::new(RichText::new(text).font(font)).right_text(RichText::new(glyph).family(crate::theme::icon_family()).color(muted)))
+        })
+        .inner;
+    let hot = resp.hovered() || resp.has_focus();
+    let icon_color = if danger { if hot { tk.danger_label } else { color } } else if hot { color } else { muted };
     // Opaque (on the menu fill), so overlapping strokes of an icon don't show darker.
-    let bg = ui.visuals().window_fill;
-    let icon_color = bg.lerp_to_gamma(color, 0.8);
-    let resp = ui.add(Button::new(RichText::new(text).color(color)).right_text(RichText::new(glyph).family(crate::theme::icon_family()).color(icon_color)));
+    let fill = if hot { if danger { tk.danger_fill } else { tk.hover } } else { Color32::TRANSPARENT };
+    let bg = ui.visuals().window_fill.blend(fill);
     let r = Rect::from_center_size(pos2(resp.rect.right() - ui.spacing().button_padding.x - 8.0, resp.rect.center().y), Vec2::splat(16.0));
-    let (p, stroke) = (ui.painter(), Stroke::new(1.5, icon_color));
+    let p = ui.painter();
     match icon {
         MenuIcon::Icon(i) => super::icons::paint(p, i, r, icon_color, bg),
-        MenuIcon::Check(true) => {
-            let b = r.shrink(1.0);
-            p.rect_filled(b, 3, icon_color);
-            let tick = vec![b.left_center() + vec2(3.0, 0.0), b.center_bottom() + vec2(-1.0, -4.0), b.right_top() + vec2(-3.0, 4.0)];
-            p.add(Shape::line(tick, Stroke::new(1.8, ui.visuals().window_fill)));
-        }
-        MenuIcon::Check(false) => {
-            p.rect_stroke(r.shrink(1.0), 3, stroke, egui::StrokeKind::Inside);
+        MenuIcon::Check(on) => {
+            // The chip tier: half the theme's control radius.
+            let chip = f32::from(ui.ctx().global_style().visuals.widgets.inactive.corner_radius.nw / 2);
+            paint_checkbox(p, &tk, r.shrink(1.0), on, chip);
         }
         MenuIcon::Glyph(_) => {}
     }
@@ -266,7 +482,7 @@ pub(super) fn status_chip(ui: &mut egui::Ui, pal: &Pal, dot: Option<Color32>, te
     let (rect, resp) = ui.allocate_exact_size(vec2(16.0 + dot_w + g.size().x, g.size().y + 4.0), Sense::hover());
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
-        p.rect_filled(rect, rect.height() / 2.0, pal.tint());
+        p.rect_filled(rect, rect.height() / 2.0, pal.tk.selected);
         if let Some(c) = dot {
             p.circle_filled(pos2(rect.left() + 11.0, rect.center().y), 3.0, c);
         }
@@ -284,12 +500,17 @@ pub(super) fn small_button(ui: &mut egui::Ui, pal: &Pal, text: &str, color: Colo
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0 + icon_w, g.size().y + 6.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text));
     if ui.is_rect_visible(rect) {
-        let fill = if resp.hovered() || resp.has_focus() { pal.text.gamma_multiply(0.16) } else { pal.tint() };
+        // A small secondary button: `selected`, +4 % text on hover.
+        let w = &ui.visuals().widgets;
+        let fill = if resp.hovered() { w.hovered.weak_bg_fill } else { w.inactive.weak_bg_fill };
         ui.painter().rect_filled(rect, pal.radius, fill);
         if let Some(i) = icon {
             icons::paint(ui.painter(), i, Rect::from_center_size(pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(14.0)), color, Color32::TRANSPARENT);
         }
         ui.painter().galley(pos2(rect.left() + 8.0 + icon_w, rect.center().y - g.size().y / 2.0), g, color);
+        if resp.has_focus() {
+            focus_ring(ui, pal, rect, f32::from(pal.radius));
+        }
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
