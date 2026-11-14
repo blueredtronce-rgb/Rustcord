@@ -124,8 +124,10 @@ helpers, new private modules inside your folder, extra pub helper fns, and `impl
 contract change is unavoidable, make the smallest additive change and report it.
 
 ## Visual direction
-Original look, not a copy of Discord: warm "ember" dark palette with rust-orange accent
-(`theme::Theme::ember_dark`). Layout and interaction follow Discord's web client as of its
+Binding spec: `docs/DESIGN.md` (palette, derived tokens in `theme/tokens.rs`, type roles and
+radius tiers on `ui::messages::Pal`, shared components next to `messages::icon_button`).
+Original look, not a copy of Discord: blued-steel panes with ember only for the brand, the heat
+bar and one primary action (`theme::Theme::ember_dark`). Layout and interaction follow Discord's web client as of its
 2025 refresh (title bar, 40 px squircle server icons whose colours change on hover/selection,
 channel-list card, floating user panel; `ui/sidebar.rs`, `docs/FEATURES_NOTES.md` Part 4), with
 Rustcord's own logo (home button) and theme colors. Never use Discord's logo, wordmark, or blurple as a brand color, and never
