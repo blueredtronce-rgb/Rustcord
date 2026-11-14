@@ -53,11 +53,10 @@ pub(super) fn search_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, width:
     let (rect, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
     let edit_id = text_id().with("edit");
     let focused = ui.memory(|m| m.has_focus(edit_id));
-    // An input (docs/DESIGN.md §9): the well colour with an `edge` border; focused, the focus
-    // ring replaces the border.
-    let well = cx.theme.colors.code_background.to_color32();
-    let stroke = if focused { Stroke::NONE } else { Stroke::new(1.0, pal.tk.edge) };
-    ui.painter().rect(rect, pal.radius, well, stroke, egui::StrokeKind::Inside);
+    // The header's search well (docs/DESIGN.md §10.3): filled, no border at rest; focused, the focus
+    // ring. A gradient theme's translucent header is about the well's colour: a `rule` edge there.
+    let edge = if cx.theme.gradient.is_some() && !focused { Stroke::new(1.0, pal.tk.rule) } else { Stroke::NONE };
+    ui.painter().rect(rect, pal.radius, cx.theme.colors.code_background.to_color32(), edge, egui::StrokeKind::Inside);
     if focused {
         super::messages::focus_ring(ui, pal, rect.shrink(2.0), f32::from(pal.radius.saturating_sub(2)));
     }

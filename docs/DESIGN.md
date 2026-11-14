@@ -615,7 +615,8 @@ Glyphs inside strings lose the glyph and get a painted 14 px icon in front:
 **Header:**
 - Channel icon 20 (§8.4) and name heading 16/600; a 1×20 `rule` divider; topic in ui role
   `text_muted`, one line.
-- Right side: Threads, Pin, Members, then a 32 px search well.
+- Right side: Threads, Pin, Members, then, 8 px on, a 32 px search well: `code_background`, no
+  border at rest (gradient themes: a `rule` edge), the focus ring while focused.
 - The Members toggle uses the icon-button on state.
 
 **Messages:**

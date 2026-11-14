@@ -1156,7 +1156,9 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                 }
                 // Right to left: the search box rightmost.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    search::search_box(ui, cx, pal, search_w, find);
+                    // A scope: the box's text field must not move the row's cursor, so the
+                    // buttons keep the 8 px gap to the whole well.
+                    ui.scope(|ui| search::search_box(ui, cx, pal, search_w, find));
                     if toggle {
                         let on = cx.settings.show_member_list;
                         let hint = if on { "Hide member list" } else { "Show member list" };
