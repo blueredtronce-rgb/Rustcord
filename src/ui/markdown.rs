@@ -364,7 +364,8 @@ impl Md<'_, '_> {
 
     fn timestamp(&self, ui: &mut Ui, unix: i64, style: char, look: Look<'_>) {
         let now = chrono::Utc::now().timestamp();
-        let Some((text, full)) = format_timestamp(unix, style, now) else {
+        let local = unix.checked_mul(1000).and_then(|ms| super::messages::local_at(ui.ctx(), ms));
+        let Some((text, full)) = local.map(|t| format_timestamp(t, unix, style, now)) else {
             ui.label(RichText::new(format!("<t:{unix}:{style}>")).size(look.size).color(look.color));
             return;
         };
@@ -509,9 +510,8 @@ fn fit(rect: Rect, size: egui::Vec2) -> Rect {
     Rect::from_center_size(rect.center(), size * s)
 }
 
-/// (shown text, full date for the tooltip) in the viewer's timezone; None if out of range.
-fn format_timestamp(unix: i64, style: char, now: i64) -> Option<(String, String)> {
-    let t = chrono::DateTime::from_timestamp(unix, 0)?.with_timezone(&chrono::Local);
+/// (shown text, full date for the tooltip) of `unix` at `t`, its time in the viewer's timezone.
+fn format_timestamp(t: chrono::DateTime<chrono::FixedOffset>, unix: i64, style: char, now: i64) -> (String, String) {
     let f = |fmt: &str| t.format(fmt).to_string();
     let text = match style {
         't' => f("%H:%M"),
@@ -524,7 +524,7 @@ fn format_timestamp(unix: i64, style: char, now: i64) -> Option<(String, String)
         'R' => relative_time(unix - now),
         _ => f("%-d %B %Y %H:%M"),
     };
-    Some((text, f("%A, %-d %B %Y %H:%M:%S")))
+    (text, f("%A, %-d %B %Y %H:%M:%S"))
 }
 
 /// "in 3 hours" / "2 days ago"; `delta` = target - now in seconds.
@@ -639,12 +639,17 @@ mod tests {
 
     #[test]
     fn timestamp_formats() {
-        assert!(format_timestamp(i64::MAX, 'f', 0).is_none());
-        let (rel, full) = format_timestamp(1_000_000 + 7200, 'R', 1_000_000).unwrap();
+        let ctx = egui::Context::default();
+        let at = |unix: i64| unix.checked_mul(1000).and_then(|ms| crate::ui::messages::local_at(&ctx, ms));
+        assert!(at(i64::MAX).is_none() && at(8_300_000_000_000).is_none(), "out of range");
+        let (rel, full) = format_timestamp(at(1_007_200).unwrap(), 1_000_000 + 7200, 'R', 1_000_000);
         assert_eq!(rel, "in 2 hours");
         assert!(full.contains("1970"));
-        let (d, _) = format_timestamp(1_618_953_630, 'D', 0).unwrap();
+        let (d, full) = format_timestamp(at(1_618_953_630).unwrap(), 1_618_953_630, 'D', 0);
         assert!(d.contains("April 2021"), "{d}");
+        // The same text as straight from chrono's `Local`.
+        let local = chrono::DateTime::from_timestamp(1_618_953_630, 0).unwrap().with_timezone(&chrono::Local);
+        assert_eq!(full, local.format("%A, %-d %B %Y %H:%M:%S").to_string());
     }
 
     #[test]

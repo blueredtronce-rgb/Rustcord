@@ -567,7 +567,7 @@ pub(super) fn message_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guil
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        let time = format_timestamp(&msg.timestamp);
+                        let time = time_labels(ui.ctx(), &msg.timestamp).header.clone();
                         let time_w = ui.painter().layout_no_wrap(time.clone(), FontId::proportional(pal.meta()), pal.muted).size().x;
                         ui.scope(|ui| {
                             ui.set_max_width((ui.available_width() - time_w - 8.0).max(24.0));
@@ -1282,8 +1282,8 @@ fn list_contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
                 continue;
             }
             let prev = i.checked_sub(1).and_then(|j| msgs.get(j));
-            let group_start = is_group_start(prev, m);
-            let date_sep = prev.is_none_or(|p| local_day(p.id) != local_day(m.id));
+            let date_sep = with_times(&ctx, |t| prev.is_none_or(|p| t.day(p.id) != t.day(m.id)));
+            let group_start = is_group_start(prev, m, date_sep);
             // First unread message; at the list top only if nothing older can be paged in.
             let new_sep = lc.unread_after.is_some_and(|b| m.id > b && prev.map_or(!more_before, |p| p.id <= b));
             let revealed = cx.view.revealed_spoilers.iter().filter(|(mid, _)| *mid == m.id).count();
@@ -1516,7 +1516,7 @@ fn separator(ui: &mut egui::Ui, pal: &Pal, id: Id, date: bool, new: bool) {
         right = new_tag(p, pal, pos2(right, y), Align2::RIGHT_CENTER).left();
     }
     if date {
-        let galley = p.layout_no_wrap(day_label(id), FontId::new(pal.meta(), crate::theme::semibold_family()), color);
+        let galley = p.layout_no_wrap(day_label(ui.ctx(), id), FontId::new(pal.meta(), crate::theme::semibold_family()), color);
         let (mid, half) = (rect.center().x, galley.size().x / 2.0);
         p.hline(rect.left() + 16.0..=mid - half - 12.0, y, stroke);
         p.hline(mid + half + 12.0..=right, y, stroke);
@@ -1661,7 +1661,7 @@ fn system_row(ui: &mut egui::Ui, cx: &UiCx<'_>, lc: &Lcx, msg: &Message, text: &
                 None => job.append(text, 0.0, muted),
             }
             ui.label(job);
-            ui.label(RichText::new(format_timestamp(&msg.timestamp)).size(pal.meta()).color(pal.muted));
+            ui.label(RichText::new(time_labels(ui.ctx(), &msg.timestamp).header.as_str()).size(pal.meta()).color(pal.muted));
         });
     });
 }
@@ -1688,15 +1688,17 @@ fn cozy_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
             let (r, resp) = ui.allocate_exact_size(vec2(GUTTER, ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
             if hovered {
                 let pos = pos2(r.left() + AVATAR, r.center().y);
-                ui.painter().text(pos, Align2::RIGHT_CENTER, short_time(&msg.timestamp), FontId::proportional(lc.pal.meta() - 1.0), lc.pal.muted);
-                resp.on_hover_text(full_time(&msg.timestamp));
+                let t = time_labels(ui.ctx(), &msg.timestamp);
+                ui.painter().text(pos, Align2::RIGHT_CENTER, &t.short, FontId::proportional(lc.pal.meta() - 1.0), lc.pal.muted);
+                resp.on_hover_text(t.full.as_str());
             }
         }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
             if group_start {
                 let bg = row_bg(cx, &lc.pal, msg);
-                author_line(ui, cx, lc, &msg.author, member.as_ref(), (&format_timestamp(&msg.timestamp), &full_time(&msg.timestamp)), bg);
+                let t = time_labels(ui.ctx(), &msg.timestamp);
+                author_line(ui, cx, lc, &msg.author, member.as_ref(), (&t.header, &t.full), bg);
             }
             body(ui, cx, lc, memo, msg, hovered);
         });
@@ -1711,8 +1713,9 @@ fn compact_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, 
         ui.spacing_mut().item_spacing.x = 0.0;
         let row_h = ui.text_style_height(&egui::TextStyle::Body);
         let (r, resp) = ui.allocate_exact_size(vec2(COMPACT_GUTTER, row_h), Sense::hover());
-        ui.painter().text(r.left_center(), Align2::LEFT_CENTER, short_time(&msg.timestamp), FontId::proportional(pal.meta()), pal.muted);
-        resp.on_hover_text(full_time(&msg.timestamp));
+        let t = time_labels(ui.ctx(), &msg.timestamp);
+        ui.painter().text(r.left_center(), Align2::LEFT_CENTER, &t.short, FontId::proportional(pal.meta()), pal.muted);
+        resp.on_hover_text(t.full.as_str());
         // Compact puts the tag before the name.
         if msg.author.bot {
             // The app tag: `chip` fill, `link` badge text, chip radius.
@@ -1862,7 +1865,7 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &M
             }
             if let Some(edited) = &msg.edited_timestamp {
                 // Body size: smaller text would sit off the baseline (rows center their labels).
-                ui.label(RichText::new(" (edited)").color(pal.muted)).on_hover_text(format_timestamp(edited));
+                ui.label(RichText::new(" (edited)").color(pal.muted)).on_hover_text(time_labels(ui.ctx(), edited).header.as_str());
             }
         });
     }
@@ -2167,7 +2170,7 @@ fn embed_text(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: 
 
 fn embed_footer(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, e: &Embed) {
     let text = e.footer.as_ref().map(|f| f.text.clone()).filter(|t| !t.is_empty());
-    let time = e.timestamp.as_deref().map(format_timestamp).filter(|t| !t.is_empty());
+    let time = e.timestamp.as_deref().map(|iso| time_labels(ui.ctx(), iso).header.clone()).filter(|t| !t.is_empty());
     let line = [text, time].into_iter().flatten().collect::<Vec<_>>().join(" • ");
     if line.is_empty() {
         return;
@@ -2886,15 +2889,15 @@ fn is_reply(m: &Message) -> bool {
     m.message_reference.as_ref().is_some_and(|r| r.kind == 0) && (m.kind == 19 || m.referenced_message.is_some())
 }
 
-/// First message of a visual group: other author, > 7 min gap, reply, system message or new day.
-fn is_group_start(prev: Option<&Message>, m: &Message) -> bool {
+/// First message of a visual group: other author, > 7 min gap, reply, system message or `new_day`.
+fn is_group_start(prev: Option<&Message>, m: &Message, new_day: bool) -> bool {
     let Some(p) = prev else { return true };
     p.author.id != m.author.id
         || !normal_kind(p.kind)
         || !normal_kind(m.kind)
         || is_reply(m)
         || m.id.timestamp_ms().saturating_sub(p.id.timestamp_ms()) >= GROUP_GAP_MS
-        || local_day(p.id) != local_day(m.id)
+        || new_day
 }
 
 /// Hash of everything that changes a row's height.
@@ -3146,12 +3149,97 @@ fn local_time(unix_ms: u64) -> Option<chrono::DateTime<chrono::Local>> {
     chrono::DateTime::from_timestamp_millis(unix_ms as i64).map(|t| t.with_timezone(&chrono::Local))
 }
 
-fn local_day(id: Id) -> Option<chrono::NaiveDate> {
-    local_time(id.timestamp_ms()).map(|t| t.date_naive())
+/// Local-time results by input. chrono's `Local` asks the OS for the zone's rules on every
+/// conversion (Windows: GetTimeZoneInformationForYear, ~1 µs) and each row needed several per
+/// pass. All of it is dropped when today's date or the zone's offsets change (checked once a pass).
+#[derive(Default)]
+struct Times {
+    pass: Option<u64>,
+    zone: Option<Zone>,
+    local: HashMap<i64, Option<chrono::DateTime<chrono::FixedOffset>>>,
+    labels: HashMap<String, std::rc::Rc<TimeLabels>>,
 }
 
-fn day_label(id: Id) -> String {
-    local_time(id.timestamp_ms()).map(|t| t.format("%-d %B %Y").to_string()).unwrap_or_default()
+/// Today and the UTC offsets now, on 1 January and on 1 July (seconds).
+// shortcut: a switch between two zones with the same offsets but other DST dates keeps the old
+// times until midnight; reading the zone's rules needs a platform API per OS.
+type Zone = (chrono::NaiveDate, i32, i32, i32);
+
+/// A message time as rows show it: `format_timestamp`, `full_time` (tooltip), `short_time`.
+struct TimeLabels {
+    header: String,
+    full: String,
+    short: String,
+}
+
+thread_local! {
+    static TIMES: std::cell::RefCell<Times> = std::cell::RefCell::default();
+}
+
+impl Times {
+    fn check(&mut self, pass: u64, zone: impl FnOnce() -> Zone) {
+        if self.pass == Some(pass) {
+            return;
+        }
+        self.pass = Some(pass);
+        let zone = Some(zone());
+        if self.zone != zone || self.local.len() + self.labels.len() > 4000 {
+            *self = Times { pass: Some(pass), zone, ..Times::default() };
+        }
+    }
+
+    fn local(&mut self, unix_ms: i64) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+        *self.local.entry(unix_ms).or_insert_with(|| chrono::DateTime::from_timestamp_millis(unix_ms).map(|t| t.with_timezone(&chrono::Local).fixed_offset()))
+    }
+
+    /// The local day a message was sent on.
+    fn day(&mut self, id: Id) -> Option<chrono::NaiveDate> {
+        self.local(id.timestamp_ms() as i64).map(|t| t.date_naive())
+    }
+
+    fn labels(&mut self, iso: &str) -> std::rc::Rc<TimeLabels> {
+        if let Some(l) = self.labels.get(iso) {
+            return l.clone();
+        }
+        let l = std::rc::Rc::new(TimeLabels { header: format_timestamp(iso), full: full_time(iso), short: short_time(iso) });
+        self.labels.insert(iso.to_owned(), l.clone());
+        l
+    }
+}
+
+fn zone_now() -> Zone {
+    use chrono::{Datelike, TimeZone};
+    let now = chrono::Local::now();
+    let at = |month| {
+        let noon = chrono::NaiveDate::from_ymd_opt(now.year(), month, 1).and_then(|d| d.and_hms_opt(12, 0, 0));
+        noon.map_or(0, |t| chrono::Local.offset_from_utc_datetime(&t).local_minus_utc())
+    };
+    (now.date_naive(), now.offset().local_minus_utc(), at(1), at(7))
+}
+
+fn with_times<R>(ctx: &egui::Context, f: impl FnOnce(&mut Times) -> R) -> R {
+    TIMES.with_borrow_mut(|t| {
+        t.check(ctx.cumulative_pass_nr(), zone_now);
+        f(t)
+    })
+}
+
+/// `unix_ms` in the local zone (markdown timestamps, ReplyTimestamp).
+pub(crate) fn local_at(ctx: &egui::Context, unix_ms: i64) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    with_times(ctx, |t| t.local(unix_ms))
+}
+
+/// Today's local date, as of this pass.
+pub(crate) fn today(ctx: &egui::Context) -> Option<chrono::NaiveDate> {
+    with_times(ctx, |t| t.zone.map(|z| z.0))
+}
+
+fn time_labels(ctx: &egui::Context, iso: &str) -> std::rc::Rc<TimeLabels> {
+    with_times(ctx, |t| t.labels(iso))
+}
+
+fn day_label(ctx: &egui::Context, id: Id) -> String {
+    local_at(ctx, id.timestamp_ms() as i64).map(|t| t.format("%-d %B %Y").to_string()).unwrap_or_default()
 }
 
 fn short_time(iso: &str) -> String {
@@ -3187,22 +3275,72 @@ mod tests {
     fn groups_consecutive_messages() {
         let a = msg(NOON, 1);
         let b = msg(NOON + 60_000, 1);
-        assert!(is_group_start(None, &a));
-        assert!(!is_group_start(Some(&a), &b));
+        assert!(is_group_start(None, &a, false));
+        assert!(!is_group_start(Some(&a), &b, false));
+        // A new day.
+        assert!(is_group_start(Some(&a), &b, true));
         // Other author.
-        assert!(is_group_start(Some(&a), &msg(NOON + 60_000, 2)));
+        assert!(is_group_start(Some(&a), &msg(NOON + 60_000, 2), false));
         // 7 minutes apart.
-        assert!(is_group_start(Some(&a), &msg(NOON + GROUP_GAP_MS, 1)));
+        assert!(is_group_start(Some(&a), &msg(NOON + GROUP_GAP_MS, 1), false));
         // Reply.
         let mut reply = b.clone();
         reply.kind = 19;
         reply.message_reference = Some(MessageReference { message_id: Some(a.id), ..Default::default() });
-        assert!(is_group_start(Some(&a), &reply));
+        assert!(is_group_start(Some(&a), &reply, false));
         // System messages stand alone.
         let mut join = b.clone();
         join.kind = 7;
-        assert!(is_group_start(Some(&a), &join));
-        assert!(is_group_start(Some(&join), &msg(NOON + 120_000, 1)));
+        assert!(is_group_start(Some(&a), &join, false));
+        assert!(is_group_start(Some(&join), &msg(NOON + 120_000, 1), false));
+    }
+
+    #[test]
+    fn local_times_match_chrono_and_follow_the_zone() {
+        let ctx = egui::Context::default();
+        let iso = "2026-01-15T23:59:30.123000+00:00";
+        let t = time_labels(&ctx, iso);
+        assert_eq!((t.header.as_str(), t.full.as_str(), t.short.as_str()), (format_timestamp(iso).as_str(), full_time(iso).as_str(), short_time(iso).as_str()));
+        assert_eq!(time_labels(&ctx, "not a time").header, "");
+        let id = msg(NOON + 43_170_000, 1).id;
+        assert_eq!(with_times(&ctx, |t| t.day(id)), local_time(id.timestamp_ms()).map(|t| t.date_naive()));
+        assert_eq!(day_label(&ctx, id), local_time(id.timestamp_ms()).unwrap().format("%-d %B %Y").to_string());
+
+        // Checked once per pass; another day or zone drops everything.
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let mut times = Times::default();
+        times.check(1, || (day, 3600, 3600, 7200));
+        times.local(0);
+        times.labels(iso);
+        times.check(1, || unreachable!("same pass"));
+        times.check(2, || (day, 3600, 3600, 7200));
+        assert_eq!((times.local.len(), times.labels.len()), (1, 1), "same zone and day: kept");
+        times.check(3, || (day, 3600, 3600, 3600));
+        assert!(times.local.is_empty() && times.labels.is_empty(), "other DST rules");
+        times.local(0);
+        times.check(4, || (day.succ_opt().unwrap(), 3600, 3600, 3600));
+        assert!(times.local.is_empty(), "past midnight: Today / Yesterday move");
+    }
+
+    #[test]
+    fn rows_off_screen_keep_recent_heights() {
+        let view = Rect::from_min_max(pos2(0.0, 1000.0), pos2(800.0, 1500.0));
+        let r = RowHeight { fp: 1, h: 100.0, key: 7, at: 10.0 };
+        let keeps = |top: f32, key: u64, now: f64, pinned: bool| keeps_height(&r, top, view, key, now, pinned);
+        // Just above and below the viewport: kept while fresh, at the same layout, unpinned.
+        for top in [880.0, 1520.0] {
+            assert!(keeps(top, 7, 10.1, false));
+            assert!(!keeps(top, 7, 10.0 + REMEASURE_S, false), "stale");
+            assert!(!keeps(top, 8, 10.1, false), "width, scale or fonts changed");
+            assert!(!keeps(top, 7, 10.1, true), "focus, menu or toolbar on it");
+        }
+        // On screen, or within the slack around it: always laid out.
+        for top in [950.0, 1200.0, 1490.0, 890.0, 1510.0] {
+            assert!(!keeps(top, 7, 10.1, false), "{top}");
+        }
+        // Far off: kept whatever its age or layout.
+        assert!(keeps(1000.0 - LAYOUT_MARGIN - 101.0, 8, 99.0, true));
+        assert!(keeps(1501.0 + LAYOUT_MARGIN, 8, 99.0, true));
     }
 
     #[test]
