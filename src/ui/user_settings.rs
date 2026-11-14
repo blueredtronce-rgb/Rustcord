@@ -487,24 +487,22 @@ fn open_in_browser(ui: &mut egui::Ui, section: &str) {
     }
 }
 
-/// What Rustcord can't offer on a page (Discord's empty state): a large muted icon in a disc,
-/// a title, one line why, and the browser link if any. Synced rows may follow under it.
+/// What Rustcord can't offer on a page (§9 empty state): a 48 px muted icon, a heading line,
+/// one sentence why, and the browser link if any. Synced rows may follow under it.
 fn empty_state(ui: &mut egui::Ui, cx: &UiCx<'_>, icon: &str, title: &str, text: &str, section: Option<&str>) {
     let pal = Pal::new(cx.theme);
     ui.add_space(32.0);
     ui.vertical_centered(|ui| {
-        let (rect, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
-        ui.painter().circle_filled(rect.center(), 48.0, pal.surface);
+        let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
         match icons::from_glyph(icon) {
-            Some(i) => icons::paint(ui.painter(), i, egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(48.0)), pal.muted, pal.surface),
+            Some(i) => icons::paint(ui.painter(), i, rect, pal.muted, pal.bg),
             None => {
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::new(44.0, crate::theme::icon_family()), pal.muted);
             }
         }
         ui.add_space(16.0);
-        ui.label(RichText::new(title).font(super::bold(pal.size + 4.0)).color(pal.text));
-        ui.add_space(4.0);
-        ui.add(egui::Label::new(RichText::new(text).color(pal.muted)).wrap());
+        ui.label(RichText::new(title).font(super::semibold(pal.heading())).color(pal.text));
+        ui.add(egui::Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
         if let Some(section) = section {
             ui.add_space(16.0);
             open_in_browser(ui, section);
@@ -675,19 +673,22 @@ fn op_line(ui: &mut egui::Ui, pal: &Pal, state: Option<&OpState>, pending: &str)
     }
 }
 
-/// Uppercase field label ("DISPLAY NAME").
+/// Field label ("Display name", as written): the label role, 8 px above its field.
 fn field_label(ui: &mut egui::Ui, pal: &Pal, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).font(super::bold(pal.size - 2.5)).color(pal.muted));
+    ui.label(RichText::new(text).font(super::semibold(pal.label())).color(pal.muted));
+    ui.add_space(8.0 - ui.spacing().item_spacing.y);
 }
 
-/// Accent-filled button (Save, Edit User Profile).
+/// The view's one primary button (Save changes, Edit profile) as a widget for `ui.put` /
+/// `ui.add`: ember, no hover change. `primary_button` adds the hover, press and disabled looks.
 fn primary(theme: &Theme, text: &str) -> egui::Button<'static> {
     let c = &theme.colors;
-    egui::Button::new(RichText::new(text.to_owned()).color(c.accent_text.to_color32())).fill(c.accent.to_color32()).min_size(vec2(80.0, 32.0))
+    let label = RichText::new(text.to_owned()).font(egui::FontId::new(theme.font.size - 1.0, crate::theme::medium_family())).color(c.accent_text.to_color32());
+    egui::Button::new(label).fill(c.accent.to_color32()).stroke(egui::Stroke::NONE).min_size(vec2(64.0, 32.0))
 }
 
 fn primary_button(ui: &mut egui::Ui, theme: &Theme, text: &str, enabled: bool) -> egui::Response {
-    ui.add_enabled(enabled, primary(theme, text))
+    super::messages::button(ui, &Pal::new(theme), super::messages::Btn::Primary, text, enabled)
 }
 
 /// Folder button that opens `dir` in the file manager (created first); `what` and the path are
@@ -722,42 +723,39 @@ fn bell_button(ui: &mut egui::Ui, pal: &Pal, muted: bool) -> egui::Response {
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A pill switch (Discord's toggle): accent when on. `changed()` when clicked.
+/// The shared pill switch (`messages::switch`, §9). `changed()` when clicked.
 fn switch(ui: &mut egui::Ui, pal: &Pal, on: &mut bool, label: &str) -> egui::Response {
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(40.0, 24.0), Sense::click());
-    if resp.clicked() {
-        *on = !*on;
-        resp.mark_changed();
-    }
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *on, label));
-    if ui.is_rect_visible(rect) {
-        let t = ui.ctx().animate_bool_responsive(resp.id, *on);
-        let off = pal.muted.gamma_multiply(0.45);
-        let fill = if ui.is_enabled() { off.lerp_to_gamma(pal.accent, t) } else { off };
-        ui.painter().rect_filled(rect, 12.0, fill);
-        let x = egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, t);
-        ui.painter().circle_filled(egui::pos2(x, rect.center().y), 9.0, egui::Color32::WHITE);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    super::messages::switch(ui, pal, on, label)
 }
 
-/// A setting row: label left, switch right, an optional hint under it. True when toggled.
+/// A setting row (§12, min 56 tall): the title (ui 14/500) and an optional description (meta,
+/// muted) on the left, the switch on the right level with the title, a `rule` under the row.
+/// True when toggled.
 fn switch_row(ui: &mut egui::Ui, theme: &Theme, label: &str, hint_text: Option<&str>, on: &mut bool) -> bool {
     let pal = Pal::new(theme);
-    ui.add_space(4.0);
-    let changed = ui
-        .horizontal(|ui| {
-            ui.label(RichText::new(label).color(pal.text));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                switch(ui, &pal, on, label).changed()
+    let changed = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(0, 12))
+        .show(ui, |ui| {
+            ui.set_min_height(32.0);
+            ui.horizontal_top(|ui| {
+                let text_w = (ui.available_width() - 40.0 - 16.0).max(80.0);
+                ui.allocate_ui_with_layout(vec2(text_w, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    // Centres the title line on the 24 px switch.
+                    ui.add_space(2.0);
+                    let title = RichText::new(label).font(egui::FontId::new(pal.ui(), crate::theme::medium_family())).color(pal.text);
+                    ui.add(egui::Label::new(title).wrap());
+                    if let Some(h) = hint_text {
+                        ui.add(egui::Label::new(RichText::new(h).size(pal.meta()).color(pal.muted)).wrap());
+                    }
+                });
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| switch(ui, &pal, on, label).changed()).inner
             })
             .inner
         })
         .inner;
-    if let Some(h) = hint_text {
-        hint(ui, theme, h);
-    }
-    ui.add_space(4.0);
+    let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, pal.tk.rule));
     changed
 }
 

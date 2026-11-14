@@ -1099,25 +1099,40 @@ fn confirm_dialog(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     }
 }
 
-/// Shared modal look (FEATURES_NOTES §4.9 generic modal: 442 / 602 / 800 wide, 24 px padding,
-/// dark backdrop): a bold title and a × ("Close"), then `add`. Esc, the × or a click on the
-/// backdrop make `should_close()` true; the caller then clears its `ViewState` field. Narrow
-/// windows shrink it; it sits under the title bar, centred in the room left and at most that
-/// tall, `add` scrolling under the title and above `dialog_footer` / `dialog_buttons`.
+/// Shared modal look (docs/DESIGN.md §9 modals: E3 on the scrim, radius 2r, 24 px padding,
+/// 440 / 520 / 640 wide): the title on the left and a × ("Close") at the top right, then `add`.
+/// Esc, the × or a click on the backdrop make `should_close()` true; the caller then clears its
+/// `ViewState` field. Narrow windows shrink it; it sits under the title bar, centred in the room
+/// left and at most that tall, `add` scrolling under the title and above `dialog_footer` /
+/// `dialog_buttons`.
 pub fn dialog<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width: f32, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
     dialog_closable(ctx, theme, salt, width, title, true, add)
+}
+
+/// A requested dialog width on the spec's tiers (confirm 440, form 520, wide 640); wider ones
+/// (plugin windows) keep theirs.
+fn dialog_width(width: f32) -> f32 {
+    if width > 700.0 {
+        return width;
+    }
+    [440.0, 520.0, 640.0f32].into_iter().min_by(|a, b| (a - width).abs().total_cmp(&(b - width).abs()).then(b.total_cmp(a))).unwrap_or(width)
 }
 
 /// `dialog` without the × while `closable` is false (busy, and Esc would not cancel it either).
 pub fn dialog_closable<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width: f32, title: &str, closable: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
     let pal = messages::Pal::new(theme);
-    let frame = egui::Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(egui::Margin::same(24));
-    let width = width.min(ctx.content_rect().width() - 80.0).max(200.0);
+    let style = ctx.global_style();
+    let frame = egui::Frame::popup(&style)
+        .fill(pal.tk.raised)
+        .shadow(style.visuals.window_shadow)
+        .corner_radius(pal.modal_radius())
+        .inner_margin(egui::Margin::same(24));
+    let width = dialog_width(width).min(ctx.content_rect().width() - 80.0).max(200.0);
     // 12 px under the title bar and above the window bottom (as the profile modal), centred there.
     let max_h = (ctx.content_rect().height() - TITLE_BAR_H - 24.0 - 48.0).max(120.0);
     let id = egui::Id::unique(salt);
     let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, TITLE_BAR_H / 2.0));
-    egui::Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+    egui::Modal::new(id).area(area).frame(frame).backdrop_color(pal.tk.scrim).show(ctx, |ui| {
         ui.set_width(width);
         // An area's ui is only as tall as last frame's contents; the scroll area takes its height
         // from it, so without this the dialog could never grow.
@@ -1125,11 +1140,12 @@ pub fn dialog_closable<R>(ctx: &egui::Context, theme: &Theme, salt: &str, width:
         ui.spacing_mut().item_spacing.y = 8.0;
         let corner = ui.max_rect().right_top();
         ui.scope(|ui| {
-            ui.set_max_width(width - 36.0);
-            ui.label(egui::RichText::new(title).font(bold(pal.size + 5.0)).color(pal.text));
+            ui.set_max_width(width - 40.0);
+            ui.set_min_height(32.0);
+            ui.label(egui::RichText::new(title).font(semibold(pal.title())).color(pal.text));
         });
-        let x = egui::Rect::from_min_size(corner - egui::vec2(28.0, 0.0), egui::Vec2::splat(28.0));
-        if closable && messages::icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(x)), &pal, "×", "Close", 28.0, false, pal.text).clicked() {
+        let x = egui::Rect::from_min_size(corner + egui::vec2(-28.0, -4.0), egui::Vec2::splat(32.0));
+        if closable && messages::vector_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(x)), &pal, icons::Icon::Close, "Close", 32.0, false, pal.text).clicked() {
             ui.close_kind(egui::UiKind::Modal);
         }
         // No fade: it would dim the pinned buttons. Scroll areas inside `add` keep theirs.
@@ -1148,26 +1164,25 @@ pub fn dialog_text(ui: &mut egui::Ui, theme: &Theme, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).color(theme.colors.text_muted.to_color32())).wrap());
 }
 
-/// Cancel + action button, right-aligned at the dialog's bottom. Some(true) = the action
-/// (`danger` colours it red, else accent; disabled unless `enabled`), Some(false) = Cancel.
+/// Ghost "Cancel" + the action, right-aligned at the dialog's bottom. Some(true) = the action
+/// (primary, or danger when `danger`; disabled unless `enabled`), Some(false) = Cancel.
 pub fn dialog_buttons(ui: &mut egui::Ui, theme: &Theme, action: &str, danger: bool, enabled: bool) -> Option<bool> {
-    let c = &theme.colors;
-    let (fill, text) = if danger { (c.danger.to_color32(), egui::Color32::WHITE) } else { (c.accent.to_color32(), c.accent_text.to_color32()) };
+    let pal = messages::Pal::new(theme);
+    let kind = if danger { messages::Btn::Danger } else { messages::Btn::Primary };
     ui.add_space(8.0);
     dialog_footer(ui, |ui| {
-        let go = egui::Button::new(egui::RichText::new(action).color(text)).fill(fill).min_size(egui::vec2(96.0, 36.0));
-        if ui.add_enabled(enabled, go).clicked() {
+        if messages::button(ui, &pal, kind, action, enabled).clicked() {
             return Some(true);
         }
-        let cancel = egui::Button::new("Cancel").frame(false).min_size(egui::vec2(72.0, 36.0));
-        ui.add(cancel).clicked().then_some(false)
+        messages::button(ui, &pal, messages::Btn::Ghost, "Cancel", true).clicked().then_some(false)
     })
 }
 
-/// A dialog's last row, 36 px, right to left. While the body scrolls it stays at the dialog's
-/// bottom (sticky), over the body scrolled under it, so its buttons are always in sight.
+/// A dialog's last row, 40 px, right to left, 12 px between its buttons (40 tall). While the
+/// body scrolls it stays at the dialog's bottom (sticky), over the body scrolled under it, so
+/// its buttons are always in sight.
 pub fn dialog_footer<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let (natural, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+    let (natural, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
     let rect = natural.translate(egui::vec2(0.0, (ui.clip_rect().bottom() - natural.bottom()).min(0.0)));
     if rect != natural {
         let cover = rect.with_min_y(rect.top() - 8.0);
@@ -1178,7 +1193,10 @@ pub fn dialog_footer<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R)
         ui.interact(cover, ui.scope_id().with("rc_dialog_footer"), egui::Sense::click());
     }
     // A child at that spot: the cursor (and the scrolled content's size) stay as allocated above.
-    add(&mut ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center))))
+    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    row.spacing_mut().item_spacing.x = 12.0;
+    row.spacing_mut().interact_size.y = 40.0;
+    add(&mut row)
 }
 
 /// Nav column width of the settings layers (192 px content + 26 px padding).
@@ -1251,60 +1269,72 @@ pub fn settings_layer(
             });
         });
     });
-    // Round × with "ESC" under it, centred in the tools column, 60 px from the top.
+    // Round × (36, `edge` ring) centred in the tools column, 60 px from the top.
     let x = Rect::from_center_size(pos2(right.left() + 40.0 + col_w + 30.0, full.top() + 78.0), vec2(36.0, 36.0));
     let resp = ui.interact(x, ui.make_persistent_id((salt, "close")), egui::Sense::click());
-    let color = if resp.hovered() || resp.has_focus() { c.text } else { c.text_muted }.to_color32();
-    ui.painter().circle_stroke(x.center(), 17.0, egui::Stroke::new(2.0, color));
+    let pal = messages::Pal::new(cx.theme);
+    let hot = resp.hovered() || resp.has_focus();
+    let color = if hot { c.text } else { c.text_muted }.to_color32();
+    if resp.hovered() {
+        ui.painter().circle_filled(x.center(), 18.0, pal.tk.hover);
+    }
+    ui.painter().circle_stroke(x.center(), 17.5, egui::Stroke::new(1.0, if hot { color } else { pal.tk.edge }));
     icons::paint(ui.painter(), icons::Icon::Close, Rect::from_center_size(x.center(), vec2(20.0, 20.0)), color, egui::Color32::TRANSPARENT);
-    ui.painter().text(x.center_bottom() + vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, "ESC", bold(11.0), color);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close"));
+    if resp.has_focus() {
+        messages::focus_ring(ui, &pal, x, 18.0);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close settings"));
     let esc = ui.input(|i| i.key_pressed(egui::Key::Escape))
         && !egui::Popup::is_any_open(ui.ctx())
         && cx.view.profile_card.is_none()
         && !cx.view.dialog_open();
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || esc
+    resp.on_hover_text("Close settings (Esc)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || esc
 }
 
-/// Small uppercase heading over a group of nav rows ("USER SETTINGS").
+/// Heading over a group of nav rows ("User settings"): the label role, muted, as written.
 pub fn nav_heading(ui: &mut egui::Ui, theme: &Theme, text: &str) {
-    ui.add_space(6.0);
-    let color = theme.colors.text_muted.to_color32();
-    ui.add(egui::Label::new(egui::RichText::new(text.to_uppercase()).font(bold(theme.font.size - 3.0)).color(color)).selectable(false).truncate());
+    let pal = messages::Pal::new(theme);
+    ui.add_space(8.0);
+    ui.add(egui::Label::new(egui::RichText::new(text).font(semibold(pal.label())).color(pal.muted)).selectable(false).truncate());
 }
 
-/// One 32 px nav row of a settings layer (selected: the sidebar's selected fill; `danger`: red
-/// text, e.g. Log Out). True when clicked.
+/// One 32 px nav row of a settings layer (selected: the `selected` fill; `danger`: red text,
+/// e.g. Log out). True when clicked.
 pub fn nav_item(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool, danger: bool) -> bool {
-    let c = &theme.colors;
+    let pal = messages::Pal::new(theme);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
-    let (selected_fill, hover_fill) = sidebar::row_fills(ui, c);
     let hot = resp.hovered() || resp.has_focus();
-    let fill = if selected { selected_fill } else if hot { hover_fill } else { egui::Color32::TRANSPARENT };
-    ui.painter().rect_filled(rect, theme.layout.corner_radius, fill);
-    let color = if danger { c.danger } else if selected || hot { c.text } else { c.text_muted }.to_color32();
-    let g = one_line(ui, label, egui::FontId::proportional(theme.font.size), color, rect.width() - 20.0);
+    let fill = if selected { pal.tk.selected } else if resp.hovered() { pal.tk.hover } else { egui::Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, pal.radius, fill);
+    let color = if danger { pal.danger } else if selected || hot { pal.text } else { pal.muted };
+    let font = egui::FontId::new(pal.body(), crate::theme::medium_family());
+    let g = one_line(ui, label, font, color, rect.width() - 20.0);
     ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, color);
+    if resp.has_focus() {
+        messages::focus_ring(ui, &pal, rect, f32::from(pal.radius));
+    }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// Page title at the top of a settings page.
+/// Page title at the top of a settings page (the title role).
 pub fn page_title(ui: &mut egui::Ui, theme: &Theme, text: &str) {
-    ui.label(egui::RichText::new(text).font(bold(theme.font.size + 5.0)).color(theme.colors.text.to_color32()));
+    let pal = messages::Pal::new(theme);
+    ui.label(egui::RichText::new(text).font(semibold(pal.title())).color(pal.text));
     ui.add_space(8.0);
 }
 
-/// Section heading inside a settings page (uppercase, muted, with a rule under it).
+/// Section heading inside a settings page: the heading role, 32 px above, no rule.
 pub fn section(ui: &mut egui::Ui, theme: &Theme, title: &str) {
-    ui.add_space(22.0);
-    ui.label(egui::RichText::new(title.to_uppercase()).font(bold(theme.font.size - 2.0)).color(theme.colors.text_muted.to_color32()));
-    ui.separator();
+    let pal = messages::Pal::new(theme);
+    ui.add_space(32.0 - ui.spacing().item_spacing.y);
+    ui.label(egui::RichText::new(title).font(semibold(pal.heading())).color(pal.text));
 }
 
-/// One muted hint line under a setting (only where the control needs explaining).
+/// One muted hint line under a setting (only where the control needs explaining): meta role.
 pub fn hint(ui: &mut egui::Ui, theme: &Theme, text: &str) {
-    ui.label(egui::RichText::new(text).size(theme.font.size - 1.5).color(theme.colors.text_muted.to_color32()));
+    let pal = messages::Pal::new(theme);
+    ui.label(egui::RichText::new(text).size(pal.meta()).color(pal.muted));
 }
 
 /// Test hook `RUSTCORD_OPEN=modal:<name>`: create-thread / new-post (the open channel), profile
@@ -1357,12 +1387,12 @@ pub fn rgb(c: u32) -> egui::Color32 {
     egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
-/// Status dot color (presence, connection state). Status colors are semantic, so only DnD
-/// and offline follow the theme.
+/// Status dot color (presence, connection state): online `positive`, idle `attention`, Do not
+/// disturb `danger`, offline muted (docs/DESIGN.md §2.2); streaming is `Tokens::live`.
 pub fn presence_color(p: Presence, c: &ThemeColors) -> egui::Color32 {
     match p {
-        Presence::Online => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
-        Presence::Idle => egui::Color32::from_rgb(0xe0, 0xa2, 0x1b),
+        Presence::Online => crate::theme::Tokens::new(c).positive,
+        Presence::Idle => crate::theme::Tokens::new(c).attention,
         Presence::Dnd => c.danger.to_color32(),
         Presence::Offline => c.text_muted.to_color32(),
     }
@@ -1377,6 +1407,11 @@ pub fn button_row(ui: &mut egui::Ui) {
 /// Bold font of the given size.
 pub fn bold(size: f32) -> egui::FontId {
     egui::FontId::new(size, crate::theme::bold_family())
+}
+
+/// Semibold (600) font of the given size: titles, headings, labels (docs/DESIGN.md §3).
+pub fn semibold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, crate::theme::semibold_family())
 }
 
 /// Single-line galley, truncated with "…" at `max_width`.
@@ -1398,6 +1433,12 @@ pub fn avatar_at(ui: &mut egui::Ui, images: &mut images::ImageCache, url: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialog_widths_snap_to_the_three_tiers() {
+        let snapped: Vec<f32> = [442.0, 460.0, 480.0, 520.0, 602.0, 800.0].into_iter().map(dialog_width).collect();
+        assert_eq!(snapped, [440.0, 440.0, 520.0, 520.0, 640.0, 800.0]);
+    }
 
     #[test]
     fn parse_window_size() {
