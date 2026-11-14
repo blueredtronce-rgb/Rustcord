@@ -182,8 +182,18 @@ pub fn server_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, title: 
     let tip = pos2(pill.right() - 14.0, pill.center().y + if menu_open { -2.0 } else { 2.0 });
     let dy = if menu_open { 4.0 } else { -4.0 };
     ui.painter().add(Shape::line(vec![tip + vec2(-4.0, dy), tip, tip + vec2(4.0, dy)], Stroke::new(1.5, color)));
-    let g = one_line(ui, title.as_str(), bold(cx.theme.font.size + 1.0), color, pill.width() - 40.0);
-    ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, color);
+    // The server's mark (verified, partnered, boost level) before the name, with its tooltip.
+    let guild = cx.state.guild(guild_id);
+    let mark = guild.and_then(|g| icons::guild_mark(&g.features, g.premium_tier).map(|m| (m, mark_tip(m, g.premium_subscription_count))));
+    let left = if mark.is_some() { 30.0 } else { 8.0 };
+    if let Some(((icon, _), tip)) = &mark {
+        let r = Rect::from_center_size(pos2(pill.left() + 16.0, pill.center().y), Vec2::splat(16.0));
+        let bg = if menu_open || resp.hovered() { row_fills(ui, &c).1 } else { c.sidebar.to_color32() };
+        icons::paint(ui.painter(), *icon, r, color, bg);
+        ui.interact(r, ui.make_persistent_id(("guild_header_mark", guild_id)), Sense::hover()).on_hover_text(tip);
+    }
+    let g = one_line(ui, title.as_str(), bold(cx.theme.font.size + 1.0), color, pill.width() - 32.0 - left);
+    ui.painter().galley(pos2(pill.left() + left, pill.center().y - g.size().y / 2.0), g, color);
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, menu_open, &title));
     let set = if resp.secondary_clicked() || demo_menu() { Some(egui::SetOpenCommand::Bool(true)) } else { resp.clicked().then_some(egui::SetOpenCommand::Toggle) };
     egui::Popup::menu(&resp).open_memory(set).gap(4.0).show(|ui| header_menu(ui, cx, guild_id));
@@ -194,6 +204,16 @@ pub fn server_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, title: 
         if clicked {
             open(cx, Modal::Invite { guild_id, channel_id: ch });
         }
+    }
+}
+
+/// Tooltip of a server mark: its label, a boost level with the count ("Boost level 2, 9 boosts").
+pub(super) fn mark_tip((icon, label): (Icon, &str), boosts: u32) -> String {
+    match boosts {
+        0 => label.to_owned(),
+        _ if matches!(icon, Icon::Verified | Icon::Partnered) => label.to_owned(),
+        1 => format!("{label}, 1 boost"),
+        n => format!("{label}, {n} boosts"),
     }
 }
 
@@ -1383,6 +1403,40 @@ mod tests {
         assert_eq!(parse_code("hTKzmak").as_deref(), Some("hTKzmak"));
         assert_eq!(parse_code("not a code"), None);
         assert_eq!(parse_code("x"), None);
+    }
+
+    #[test]
+    fn join_form_answers_fill_every_field() {
+        use serde_json::json;
+        let fields = vec![
+            json!({"field_type":"TERMS","label":"Rules","values":["Be kind."],"required":true,"automations":null,"extra":7}),
+            json!({"field_type":"TEXT_INPUT","label":"Why?","required":true}),
+            json!({"field_type":"PARAGRAPH","label":"More","required":false}),
+            json!({"field_type":"MULTIPLE_CHOICE","label":"From","choices":["A","B"],"required":true}),
+        ];
+        let answers = |terms, text: &str, choice| vec![Answer::Terms(terms), Answer::Text(text.into()), Answer::Text(String::new()), Answer::Choice(choice)];
+        let out = filled(&fields, &answers(true, "  Tools  ", Some(1))).expect("all required answered");
+        assert_eq!(out[0]["response"], json!(true));
+        assert_eq!(out[0]["extra"], json!(7), "unknown keys go back unchanged");
+        assert_eq!(out[1]["response"], json!("Tools"), "trimmed");
+        assert_eq!(out[2]["response"], serde_json::Value::Null, "optional, unanswered");
+        assert_eq!(out[3]["response"], json!(1), "the choice's index");
+        assert_eq!(filled(&fields, &answers(false, "x", Some(0))), None, "rules not accepted");
+        assert_eq!(filled(&fields, &answers(true, "   ", Some(0))), None, "blank text");
+        assert_eq!(filled(&fields, &answers(true, "x", None)), None, "no choice");
+        assert_eq!(filled(&fields, &answers(true, "x", Some(2))), None, "no such choice");
+        let long = filled(&fields, &answers(true, &"a".repeat(400), Some(0))).unwrap();
+        assert_eq!(long[1]["response"].as_str().map(str::len), Some(150));
+        let odd = vec![json!({"field_type":"VERIFICATION","label":"?","required":false})];
+        assert_eq!(filled(&odd, &[Answer::Text(String::new())]), None, "a kind Rustcord can't show");
+    }
+
+    #[test]
+    fn mark_tooltips_count_boosts() {
+        assert_eq!(mark_tip((Icon::BoostTier2, "Boost level 2"), 9), "Boost level 2, 9 boosts");
+        assert_eq!(mark_tip((Icon::BoostTier1, "Boost level 1"), 1), "Boost level 1, 1 boost");
+        assert_eq!(mark_tip((Icon::BoostTier1, "Boost level 1"), 0), "Boost level 1");
+        assert_eq!(mark_tip((Icon::Verified, "Verified server"), 14), "Verified server");
     }
 
     #[test]

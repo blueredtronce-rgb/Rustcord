@@ -60,6 +60,7 @@ const PAD: f32 = 16.0;
 pub fn guild_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     user_panel_space(ui, cx, "guild_bar_panel_space");
     demo_folders(ui, cx.state);
+    demo_boost(cx.state);
     save_folders(ui.ctx(), cx);
     egui::ScrollArea::vertical()
         .id_salt("guild_bar")
@@ -224,7 +225,7 @@ fn folder(ui: &mut egui::Ui, cx: &mut UiCx<'_>, f: &GuildFolder, index: usize, b
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, open, format!("Folder {name}")));
     let dragging = dragged(ui.ctx()).is_some();
     if !dragging {
-        side_tooltip(&resp, &name);
+        side_tooltip(&resp, &name, None);
     }
     if resp.clicked() {
         ui.data_mut(|d| d.insert_temp(open_key, !open));
@@ -274,11 +275,27 @@ fn demo_folders(ui: &egui::Ui, state: &mut AppState) {
     });
 }
 
+/// RUSTCORD_NAV_DEMO=boost: server marks as READY would bring them: the first server boost level
+/// 2 with 9 boosts, the second verified, the third partnered (and level 1, 3 boosts).
+fn demo_boost(state: &mut AppState) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if ONCE.is_completed() || !nav_demo("boost") {
+        return;
+    }
+    ONCE.call_once(|| {
+        let marks: [(&[&str], u8, u32); 3] = [(&[], 2, 9), (&["VERIFIED"], 0, 0), (&["PARTNERED"], 1, 3)];
+        for (g, (features, tier, count)) in state.guilds.iter_mut().zip(marks) {
+            (g.features, g.premium_tier, g.premium_subscription_count) = (features.iter().map(|f| (*f).to_owned()).collect(), tier, count);
+        }
+    });
+}
+
 /// Test hook `RUSTCORD_NAV_DEMO=<comma list>`: navigation / social states offline mode can't
 /// reach, none sends a request. `folders` / `folder-open` (server-bar folders), `mentions`
 /// (inbox mentions from cached messages), `profile` (loaded profiles: bio, pronouns, mutual
 /// servers and friends, a note), `tab:<online|all|pending|blocked|add>` (Friends tab), `icons`
-/// (every vector icon over the window, `icons::sheet`).
+/// (every vector icon over the window, `icons::sheet`), `no-tray` (Linux: the settings page as
+/// without a tray host, `user_settings/app.rs`).
 pub(super) fn nav_demo(flag: &str) -> bool {
     nav_flags().split(',').any(|f| f.trim() == flag)
 }
@@ -354,11 +371,20 @@ fn heat_bar(p: &egui::Painter, pill: Rect, text: Color32, heat: [Color32; 3]) {
     p.add(mesh);
 }
 
-/// Server-bar tooltip: the name in bold, right of the icon.
-fn side_tooltip(resp: &egui::Response, text: &str) {
+/// Server-bar tooltip: the name in bold, right of the icon; a server's `mark` (verified,
+/// partnered, boost level: `icons::guild_mark`) 16 px before it.
+fn side_tooltip(resp: &egui::Response, text: &str, mark: Option<Icon>) {
     let mut tip = egui::Tooltip::for_enabled(resp);
     tip.popup = tip.popup.align(egui::RectAlign::RIGHT).align_alternatives(&[]).gap(12.0);
-    tip.show(|ui| ui.label(egui::RichText::new(text).family(crate::theme::bold_family())));
+    tip.show(|ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if let Some(icon) = mark {
+                super::messages::vector_icon(ui, icon, 16.0, ui.visuals().text_color(), ui.visuals().window_fill());
+            }
+            ui.label(egui::RichText::new(text).family(crate::theme::bold_family()));
+        });
+    });
 }
 
 fn home_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
@@ -372,7 +398,7 @@ fn home_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     decorate(ui, &c, row, icon, &resp, (selected, false), cx.state.dm_unread_count());
 
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, "Direct messages"));
-    side_tooltip(&resp, "Direct messages");
+    side_tooltip(&resp, "Direct messages", None);
     if resp.clicked() {
         cx.state.select_guild(None);
         cx.view.settings_open = false;
@@ -391,6 +417,7 @@ fn guild_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, badges: &HashMap<I
     let name = if g.name.is_empty() { "Unavailable server".to_owned() } else { g.name.clone() };
     let selected = cx.state.selected_guild == Some(id);
     let (unread, mentions) = badges.get(&id).copied().unwrap_or_default();
+    let mark = icons::guild_mark(&g.features, g.premium_tier);
 
     let (row, icon, resp, morph) = icon_slot(ui, ("guild", id), selected);
     let drag = dragged(ui.ctx());
@@ -407,14 +434,16 @@ fn guild_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, badges: &HashMap<I
     }
     decorate(ui, &c, row, icon, &resp, (selected, unread), mentions);
 
-    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, &name));
+    // "Rust Workshop, boost level 2".
+    let label = mark.map_or_else(|| name.clone(), |(_, what)| format!("{name}, {}", what.to_lowercase()));
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, &label));
     if let Some(d) = drag {
         let merge = (d != id && matches!(slot, Slot::Top(_))).then_some(GuildDrop::NewFolder { with: id });
         if let Some(t) = zone(ui.ctx().pointer_latest_pos(), icon, slot, merge) {
             *target = Some(t);
         }
     } else {
-        side_tooltip(&resp, &if unavailable { format!("{name} (unavailable)") } else { name.clone() });
+        side_tooltip(&resp, &if unavailable { format!("{name} (unavailable)") } else { name.clone() }, mark.map(|m| m.0));
     }
     if resp.clicked() {
         cx.state.select_guild(Some(id));
@@ -436,7 +465,7 @@ fn add_server_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         ui.painter().rect_stroke(icon.expand(2.0), ICON_R + 2.0, Stroke::new(2.0, crate::theme::applied_tokens(ui.ctx()).focus), egui::StrokeKind::Outside);
     }
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a server"));
-    side_tooltip(&resp, "Add a server");
+    side_tooltip(&resp, "Add a server", None);
     if resp.clicked() {
         server_menu::open(cx, super::Modal::JoinServer);
     }

@@ -382,6 +382,26 @@ The rest are drawn on the same rules from these shapes:
 - `Eye` / `EyeOff`.
 - `Lock` / `Unlock`.
 - `Boost`: a faceted gem.
+- Server marks (`icons::guild_mark`, one before a server's name: verified, else partnered, else
+  the boost level; monochrome in the context's `text`, §8.2):
+  - `Verified`: a seal (disc r 7.75 at (12,12) plus 12 discs r 2.25 on radius 7.75, every
+    30°) with a check cut in `bg`, stroke 2, (8,12.25)→(10.75,15)→(16.25,9.25).
+  - `Partnered`: the same seal; cut: two rings r 2.75, stroke 1.75, at (10.25,12) and
+    (13.75,12); under 18 px one ring r 3.75.
+  - `BoostTier1`: a solid gem (7.5,4)(16.5,4)(20.5,9)(12,20.5)(3.5,9), its girdle
+    (3.5,9)→(20.5,9) cut, stroke 1.5.
+  - `BoostTier2`: ring r 9 around a small solid gem (9.5,7.5)(14.5,7.5)(16.75,10.25)(12,16.75)
+    (7.25,10.25).
+  - `BoostTier3`: a disc r 10 with that small gem cut out.
+- Quests (`ui/quests.rs`, the DM list's Quests row):
+  - `Quest`: a medal, filled: disc r 5.5 at (12,15.5) under two crossing ribbon quads
+    (6.5,2.5)(10.5,2.5)(13,10.5)(9.5,11.5) and its mirror about x 12, a 1.5-unit `bg` gap
+    between ribbons and disc.
+  - `Orb`: disc r 8.5 at (12,12) with a `bg` crescent highlight (disc r 3 at (9,9) minus disc
+    r 3 at (10.25,10.25)).
+  - `Gift`: box (3.5,11)–(20.5,21) r 1.5 and lid (2.5,7.5)–(21.5,11) r 1, filled, a `bg` gap
+    x 11.25..12.75 through both; bow loops are rings r 2.75 at (9.25,5) and (14.75,5),
+    stroke 1.75.
 - `Camera` / `CameraOff`.
 - `Screen`: monitor plus an up arrow.
 - `Hangup`.

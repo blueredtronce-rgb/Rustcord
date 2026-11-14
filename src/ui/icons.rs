@@ -553,6 +553,36 @@ fn eye(k: &mut Pen) {
     k.disc(12.0, 12.0, 2.75);
 }
 
+/// The small gem inside the boost level 2 / 3 marks.
+const SMALL_GEM: [P; 5] = [(9.5, 7.5), (14.5, 7.5), (16.75, 10.25), (12.0, 16.75), (7.25, 10.25)];
+
+/// The scalloped seal of the verified / partnered marks: a disc with 12 bumps (extent 10).
+fn seal(k: &mut Pen) {
+    k.disc(12.0, 12.0, 7.75);
+    for i in 0..12 {
+        let (s, c) = (30.0 * i as f32).to_radians().sin_cos();
+        k.disc(12.0 + 7.75 * c, 12.0 + 7.75 * s, 2.25);
+    }
+}
+
+/// The one mark a server shows before its name (rail tooltip, header, tag card): verified, else
+/// partnered, else its boost level 1-3, with its label. Monochrome like every icon (§8.2).
+pub(crate) fn guild_mark(features: &[String], premium_tier: u8) -> Option<(Icon, &'static str)> {
+    let has = |f: &str| features.iter().any(|x| x == f);
+    Some(if has("VERIFIED") {
+        (Icon::Verified, "Verified server")
+    } else if has("PARTNERED") {
+        (Icon::Partnered, "Partnered server")
+    } else {
+        match premium_tier {
+            1 => (Icon::BoostTier1, "Boost level 1"),
+            2 => (Icon::BoostTier2, "Boost level 2"),
+            3 => (Icon::BoostTier3, "Boost level 3"),
+            _ => return None,
+        }
+    })
+}
+
 /// Monitor outline and stand (desktop, screen share).
 fn monitor(k: &mut Pen) {
     k.rrect_line(2.5, 4.0, 21.5, 16.5, 2.0);
@@ -967,6 +997,59 @@ fn draw(k: &mut Pen, icon: Icon, locked: bool) {
             k.disc(12.0, 7.75, 1.4);
             k.line(&[(12.0, 11.0), (12.0, 16.5)]);
         }
+        Verified => {
+            seal(k);
+            k.cut(|k| k.line(&[(8.0, 12.25), (10.75, 15.0), (16.25, 9.25)]));
+        }
+        Partnered => {
+            seal(k);
+            k.cut(|k| {
+                if k.small {
+                    k.ring(12.0, 12.0, 3.75);
+                } else {
+                    k.width(1.75);
+                    k.ring(10.25, 12.0, 2.75);
+                    k.ring(13.75, 12.0, 2.75);
+                }
+            });
+        }
+        BoostTier1 => {
+            k.fill(&[(7.5, 4.0), (16.5, 4.0), (20.5, 9.0), (12.0, 20.5), (3.5, 9.0)]);
+            k.cut(|k| {
+                k.width(1.5);
+                k.line(&[(3.5, 9.0), (20.5, 9.0)]);
+            });
+        }
+        BoostTier2 => {
+            k.ring(12.0, 12.0, 9.0);
+            k.fill(&SMALL_GEM);
+        }
+        BoostTier3 => {
+            k.disc(12.0, 12.0, 10.0);
+            k.cut(|k| k.fill(&SMALL_GEM));
+        }
+        Play => k.fill(&[(7.0, 4.5), (19.5, 12.0), (7.0, 19.5)]),
+        Pause => {
+            k.rrect(6.0, 4.5, 10.0, 19.5, 1.0);
+            k.rrect(14.0, 4.5, 18.0, 19.5, 1.0);
+        }
+        Download => {
+            k.line(&[(12.0, 3.5), (12.0, 15.0)]);
+            k.line(&[(7.5, 10.5), (12.0, 15.0), (16.5, 10.5)]);
+            k.line(&[(4.0, 16.0), (4.0, 20.0), (20.0, 20.0), (20.0, 16.0)]);
+        }
+        Expand => {
+            k.line(&[(3.5, 9.0), (3.5, 3.5), (9.0, 3.5)]);
+            k.line(&[(15.0, 3.5), (20.5, 3.5), (20.5, 9.0)]);
+            k.line(&[(20.5, 15.0), (20.5, 20.5), (15.0, 20.5)]);
+            k.line(&[(9.0, 20.5), (3.5, 20.5), (3.5, 15.0)]);
+        }
+        Collapse => {
+            k.line(&[(9.0, 3.5), (9.0, 9.0), (3.5, 9.0)]);
+            k.line(&[(15.0, 3.5), (15.0, 9.0), (20.5, 9.0)]);
+            k.line(&[(20.5, 15.0), (15.0, 15.0), (15.0, 20.5)]);
+            k.line(&[(3.5, 15.0), (9.0, 15.0), (9.0, 20.5)]);
+        }
         ArrowLeft => {
             k.line(&[(4.0, 12.0), (20.0, 12.0)]);
             k.line(&[(10.0, 6.0), (4.0, 12.0), (10.0, 18.0)]);
@@ -1197,6 +1280,13 @@ mod tests {
         assert_eq!(activity(2), Icon::Listening);
         assert_eq!(activity(4), Icon::Playing);
         assert_eq!(Icon::Mic.off(), Icon::MicOff);
+        let f = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(guild_mark(&f(&["PARTNERED", "VERIFIED"]), 3).map(|m| m.0), Some(Icon::Verified), "verified first");
+        assert_eq!(guild_mark(&f(&["PARTNERED"]), 3), Some((Icon::Partnered, "Partnered server")));
+        assert_eq!(guild_mark(&f(&["COMMUNITY"]), 2), Some((Icon::BoostTier2, "Boost level 2")));
+        assert_eq!(guild_mark(&[], 1).map(|m| m.0), Some(Icon::BoostTier1));
+        assert_eq!(guild_mark(&[], 0), None);
+        assert_eq!(guild_mark(&[], 4), None, "no such level");
         // `ALL` lists every variant in order (`Flag` stays last).
         assert_eq!(Icon::ALL.len(), Icon::Flag as usize + 1);
         assert!(Icon::ALL.iter().enumerate().all(|(i, x)| *x as usize == i));
