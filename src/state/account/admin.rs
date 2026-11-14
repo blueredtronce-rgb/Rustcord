@@ -11,6 +11,7 @@ use crate::model::{Id, Overwrite, perm};
 
 const MANAGE_GUILD: &str = "You need the Manage Server permission.";
 const MANAGE_CHANNELS: &str = "You need the Manage Channels permission.";
+const CREATE_CHANNELS: &str = "You can't create channels in this server. Ask an admin for the Manage Channels permission.";
 const MANAGE_ROLE: &str = "You need the Manage Roles permission, and the role must be below your highest role.";
 const GRANT: &str = "You can only grant permissions you have yourself.";
 const EVERYONE: &str = "The @everyone role can't be deleted, moved or assigned.";
@@ -45,7 +46,7 @@ impl AppState {
             C::UpdateGuild { guild_id, .. } => need(guild(*guild_id), perm::MANAGE_GUILD, MANAGE_GUILD),
             // In a category its overwrites count.
             C::CreateChannel { guild_id, parent_id, .. } => {
-                need(parent_id.map_or_else(|| guild(*guild_id), channel), perm::MANAGE_CHANNELS, MANAGE_CHANNELS)
+                need(parent_id.map_or_else(|| guild(*guild_id), channel), perm::MANAGE_CHANNELS, CREATE_CHANNELS)
             }
             C::UpdateChannel { channel_id, .. } | C::DeleteChannel { channel_id } => {
                 need(channel(*channel_id), perm::MANAGE_CHANNELS, MANAGE_CHANNELS)
@@ -259,7 +260,7 @@ mod tests {
         s.channels.get_mut(&TEXT).unwrap().permission_overwrites = vec![deny];
         assert_eq!(s.account_check(&AccountCommand::DeleteChannel { channel_id: TEXT }), Err(MANAGE_CHANNELS));
         let create = AccountCommand::CreateChannel { guild_id: G, name: "c".into(), kind: 0, parent_id: Some(TEXT) };
-        assert_eq!(s.account_check(&create), Err(MANAGE_CHANNELS));
+        assert_eq!(s.account_check(&create), Err(CREATE_CHANNELS));
         let create_top = AccountCommand::CreateChannel { guild_id: G, name: "c".into(), kind: 0, parent_id: None };
         assert_eq!(s.account_check(&create_top), Ok(()));
     }
