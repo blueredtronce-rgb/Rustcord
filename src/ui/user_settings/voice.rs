@@ -58,7 +58,9 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     if !f.listed {
         f.listed = true;
         cx.cmd.send(Command::ListVoiceDevices);
-        cx.cmd.send(Command::Video(VideoCommand::ListCameras));
+        if capture::SUPPORTED {
+            cx.cmd.send(Command::Video(VideoCommand::ListCameras));
+        }
     }
 
     // Devices: two columns when there is room.
@@ -87,7 +89,9 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
         }
         if crate::ui::messages::vector_button(ui, &pal, crate::ui::icons::Icon::Refresh, "Refresh devices", 28.0, false, pal.text).clicked() {
             cx.cmd.send(Command::ListVoiceDevices);
-            cx.cmd.send(Command::Video(VideoCommand::ListCameras));
+            if capture::SUPPORTED {
+                cx.cmd.send(Command::Video(VideoCommand::ListCameras));
+            }
         }
     };
     // Stacked when narrow: a wrapping row does not wrap a sized `vertical` child.
@@ -181,6 +185,13 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
 
     section(ui, cx.theme, "Video");
     field_label(ui, &pal, "Camera");
+    if !capture::SUPPORTED {
+        hint(ui, cx.theme, capture::NO_CAMERA);
+        let f = &mut cx.view.user_settings_ui.voice;
+        let save = f.dirty && !ui.input(|i| i.pointer.any_down());
+        f.dirty &= !save;
+        return save;
+    }
     let cams = &cx.state.voice.video.cameras;
     let camera = &mut cx.settings.camera;
     let shown = camera.as_deref().and_then(|id| cams.iter().find(|c| c.id == id)).map_or("Default", |c| c.name.as_str());

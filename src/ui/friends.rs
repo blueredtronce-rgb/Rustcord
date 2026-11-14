@@ -586,7 +586,10 @@ fn call_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id) {
     let verb = if cx.state.call_in(dm) { "Join" } else { "Start" };
     let text = cx.theme.colors.text.to_color32();
     for (video, what, icon) in [(false, "Voice", Icon::Phone), (true, "Video", Icon::Camera)] {
-        if menu_item(ui, &format!("{verb} {what} Call"), MenuIcon::Icon(icon), text) {
+        // Linux / macOS: no camera yet, so no video call (disabled with the reason).
+        let item = ui.add_enabled_ui(!video || crate::voice::video::capture::SUPPORTED, |ui| menu_item(ui, &format!("{verb} {what} Call"), MenuIcon::Icon(icon), text));
+        let _ = item.response.on_disabled_hover_text(crate::voice::video::capture::NO_VIDEO_CALL);
+        if item.inner {
             super::dm_call::open_and_join(cx, dm, video);
         }
     }

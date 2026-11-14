@@ -1678,10 +1678,12 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let w = (row.width() - 8.0) / 2.0;
     let colors = (base.blend(c.text.to_color32().gamma_multiply(0.06)), c.text.to_color32(), c.danger.to_color32());
     let cam = cx.state.voice.video.camera_on;
-    let camera = super::call::MediaButton { icon: Icon::Camera, tip: if cam { "Turn off camera" } else { "Turn on camera" }, on: cam, red: false, slashed: false, enabled: true };
+    // Linux / macOS: no camera or screen capture yet (disabled with the reason).
+    use crate::voice::video::capture::{NO_CAMERA, NO_SHARE, SUPPORTED};
+    let camera = super::call::MediaButton { icon: Icon::Camera, tip: if !SUPPORTED { NO_CAMERA } else if cam { "Turn off camera" } else { "Turn on camera" }, on: cam, red: false, slashed: false, enabled: SUPPORTED };
     // Lit from the Go Live click on (still connecting): a click cancels it.
     let share = cx.state.voice.video.sharing();
-    let screen = super::call::MediaButton { icon: Icon::Screen, tip: if share { "Stop streaming" } else { "Share your screen" }, on: share, red: false, slashed: false, enabled: true };
+    let screen = super::call::MediaButton { icon: Icon::Screen, tip: if !SUPPORTED { NO_SHARE } else if share { "Stop streaming" } else { "Share your screen" }, on: share, red: false, slashed: false, enabled: SUPPORTED };
     let radius = cx.theme.layout.corner_radius;
     if camera.show(ui, Rect::from_min_size(pos2(row.left(), row.bottom() + 8.0), vec2(w, 32.0)), radius, "voice_camera", colors).clicked() {
         super::call::toggle_camera(cx);

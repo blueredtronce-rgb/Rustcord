@@ -17,7 +17,7 @@ use super::{UiCx, bold, call, one_line, presence_color};
 use crate::backend::{Command, CommandSender};
 use crate::model::{Channel, Id, Presence, VoiceState};
 use crate::state::AppState;
-use crate::voice::video::VideoCommand;
+use crate::voice::video::{VideoCommand, capture};
 use egui::{Align2, Color32, CursorIcon, Rect, Role, Sense, Stroke, Vec2, WidgetInfo, pos2, vec2};
 use std::time::{Duration, Instant};
 
@@ -81,16 +81,18 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch
     }
     let verb = if cx.state.call_in(ch) { "Join" } else { "Start" };
     for (video, icon) in [(true, Icon::Camera), (false, Icon::Phone)] {
-        let tip = format!("{verb} {} Call", if video { "Video" } else { "Voice" });
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
-        resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, &tip));
-        let hot = resp.hovered() || resp.has_focus();
+        // Linux / macOS: no camera yet, so no video call (disabled with the reason).
+        let enabled = !video || capture::SUPPORTED;
+        let tip = if enabled { format!("{verb} {} Call", if video { "Video" } else { "Voice" }) } else { capture::NO_VIDEO_CALL.to_owned() };
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(32.0), if enabled { Sense::click() } else { Sense::hover() });
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, &tip));
+        let hot = enabled && (resp.hovered() || resp.has_focus());
         if hot {
             ui.painter().rect_filled(rect, pal.radius, pal.tint());
         }
-        let (color, bg) = if hot { (pal.text, pal.bg.blend(pal.tint())) } else { (pal.muted, pal.bg) };
+        let (color, bg) = if hot { (pal.text, pal.bg.blend(pal.tint())) } else { (pal.muted.gamma_multiply(if enabled { 1.0 } else { 0.4 }), pal.bg) };
         icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), Vec2::splat(20.0)), color, bg);
-        if resp.on_hover_text(tip.as_str()).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        if resp.on_hover_text(tip.as_str()).on_hover_cursor(if enabled { CursorIcon::PointingHand } else { CursorIcon::Default }).clicked() && enabled {
             join(cx, ch, video);
         }
     }
@@ -218,7 +220,10 @@ fn waiting(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
         let r = Rect::from_min_size(pos2(x, top), vec2(w, 36.0));
         x += w + gap;
         let text = egui::RichText::new(label).color(fg).font(egui::FontId::new(cx.theme.font.size - 1.0, crate::theme::medium_family()));
-        if ui.put(r, egui::Button::new(text).fill(fill).corner_radius(cx.theme.layout.corner_radius)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        let button = egui::Button::new(text).fill(fill).corner_radius(cx.theme.layout.corner_radius);
+        // Linux / macOS: no camera yet (disabled with the reason).
+        let resp = ui.add_enabled_ui(!video || capture::SUPPORTED, |ui| ui.put(r, button)).inner.on_disabled_hover_text(capture::NO_VIDEO_CALL);
+        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
             join(cx, ch, video);
         }
     }
@@ -276,8 +281,11 @@ pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
                     ui.add_space(20.0);
                     let (row, _) = ui.allocate_exact_size(vec2(176.0, 48.0), Sense::hover());
                     let buttons = [(None, tk.danger_fill, "Decline", Icon::Hangup), (Some(true), tk.positive_fill, "Accept with video", Icon::Camera), (Some(false), tk.positive_fill, "Accept", Icon::Phone)];
+                    // Linux / macOS: no camera yet, so no Accept with video; the rest centred.
+                    let buttons: Vec<_> = buttons.into_iter().filter(|b| capture::SUPPORTED || b.0 != Some(true)).collect();
+                    let left = row.left() + (row.width() - (buttons.len() as f32 * 64.0 - 16.0)) / 2.0;
                     for (i, (what, fill, tip, icon)) in buttons.into_iter().enumerate() {
-                        let r = Rect::from_min_size(pos2(row.left() + i as f32 * 64.0, row.top()), Vec2::splat(48.0));
+                        let r = Rect::from_min_size(pos2(left + i as f32 * 64.0, row.top()), Vec2::splat(48.0));
                         if round_button(ui, r, fill, tip, icon).clicked() {
                             action = Some(what);
                         }

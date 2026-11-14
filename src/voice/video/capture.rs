@@ -30,6 +30,14 @@ use tokio::sync::mpsc::error::TrySendError;
 
 #[cfg(not(windows))]
 const UNSUPPORTED: &str = "Video capture is only available on Windows.";
+/// Camera and screen share sending work here (Windows only for now: Linux needs PipeWire /
+/// V4L2, macOS ScreenCaptureKit / AVFoundation). The UI disables those controls otherwise;
+/// watching others' video works everywhere.
+pub const SUPPORTED: bool = cfg!(windows);
+/// Tooltips of the disabled controls.
+pub const NO_CAMERA: &str = if cfg!(target_os = "macos") { "Camera isn't available on macOS yet." } else { "Camera isn't available on Linux yet." };
+pub const NO_SHARE: &str = if cfg!(target_os = "macos") { "Screen sharing isn't available on macOS yet." } else { "Screen sharing isn't available on Linux yet." };
+pub const NO_VIDEO_CALL: &str = if cfg!(target_os = "macos") { "Video calls aren't available on macOS yet." } else { "Video calls aren't available on Linux yet." };
 /// The transport dropped its end (its connection ended) while I was still capturing.
 const CLOSED: &str = "The video connection closed.";
 /// A resized window's new size must hold this long before the encoder restarts at it (each

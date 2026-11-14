@@ -23,7 +23,7 @@ use crate::backend::{Command, CommandSender};
 use crate::model::{Id, Presence, VoiceState};
 use crate::state::AppState;
 use crate::voice::video::stream::{CONNECT_TIMEOUT, parse_stream_key, stream_key};
-use crate::voice::video::{MonitorInfo, ScreenSource, VideoCommand, VideoFrames, VideoKey, WindowInfo};
+use crate::voice::video::{MonitorInfo, ScreenSource, VideoCommand, VideoFrames, VideoKey, WindowInfo, capture};
 use egui::{Color32, CursorIcon, FontId, Rect, Role, Sense, Stroke, StrokeKind, TextureHandle, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -690,9 +690,12 @@ fn controls(ui: &mut egui::Ui, cx: &mut UiCx<'_>, bar: Rect) {
     let (connected, cam, share) = (v.connected, v.video.camera_on, v.video.sharing());
     let (mute, deaf) = (cx.view.self_mute || cx.view.self_deaf, cx.view.self_deaf);
     let wait = |tip| if connected { tip } else { "Connecting…" };
+    // Linux / macOS: no camera or screen capture yet (disabled with the reason).
+    let send = connected && capture::SUPPORTED;
+    let unsupported = |tip: &'static str, no: &'static str| if capture::SUPPORTED { tip } else { no };
     let buttons = [
-        MediaButton { icon: Icon::Camera, tip: wait(if cam { "Turn off camera" } else { "Turn on camera" }), on: cam, red: false, slashed: false, enabled: connected },
-        MediaButton { icon: Icon::Screen, tip: wait(if share { "Stop streaming" } else { "Share your screen" }), on: share, red: false, slashed: false, enabled: connected },
+        MediaButton { icon: Icon::Camera, tip: unsupported(wait(if cam { "Turn off camera" } else { "Turn on camera" }), capture::NO_CAMERA), on: cam, red: false, slashed: false, enabled: send },
+        MediaButton { icon: Icon::Screen, tip: unsupported(wait(if share { "Stop streaming" } else { "Share your screen" }), capture::NO_SHARE), on: share, red: false, slashed: false, enabled: send },
         MediaButton { icon: Icon::Mic, tip: if mute { "Unmute" } else { "Mute" }, on: false, red: false, slashed: mute, enabled: true },
         MediaButton { icon: Icon::Headphones, tip: if deaf { "Undeafen" } else { "Deafen" }, on: false, red: false, slashed: deaf, enabled: true },
         MediaButton { icon: Icon::Hangup, tip: "Disconnect", on: false, red: true, slashed: false, enabled: true },

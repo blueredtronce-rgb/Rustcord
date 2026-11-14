@@ -161,6 +161,7 @@ impl SendLimits {
 
 /// Pixel layout of a captured frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code, reason = "made by the capture sources, Windows only (capture::SUPPORTED)"))]
 pub enum PixelFormat {
     /// 4 bytes per pixel: B, G, R, A/X (Windows Graphics Capture, MF RGB32).
     Bgra,
