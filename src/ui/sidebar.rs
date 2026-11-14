@@ -38,6 +38,10 @@ const HEADER_H: f32 = 49.0;
 /// Account row of the floating user panel, and the voice section above it while in a call.
 const ACCOUNT_H: f32 = 56.0;
 const VOICE_PANEL_H: f32 = 56.0;
+/// A user panel text column narrower than this shows my activity alone, without the custom
+/// status and its divider, so the activity name gets the line. The default window's column is
+/// 151 px and keeps both (docs/DESIGN.md §10.5).
+const PANEL_STATUS_MIN_W: f32 = 140.0;
 /// Camera / screen-share buttons under it once connected: 32 px + 8 px gap.
 const VOICE_BUTTONS_H: f32 = 40.0;
 /// Gap between the floating user panel and the window's left / bottom edges.
@@ -1770,7 +1774,7 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let username = me.as_ref().filter(|_| hot && !cx.settings.streamer.hides_personal()).map(|u| (None, u.username.clone()));
     let (lead, line) = match (username, shown) {
         (Some(u), _) => (None, Some(u)),
-        (None, Some(a)) => (Some(a), status_text(cx.state.chat.my_custom_status.as_ref(), None)),
+        (None, Some(a)) => (Some(a), status_text(cx.state.chat.my_custom_status.as_ref(), None).filter(|_| max_w >= PANEL_STATUS_MIN_W)),
         (None, None) => (None, Some(line)),
     };
     // Name 14/600 over the meta line (docs/DESIGN.md §10.5).
@@ -1788,12 +1792,18 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let mut sub_right = x;
     if let Some(a) = lead {
         let side = 14.0;
-        let icon = Rect::from_min_size(pos2(x, sub_y + (sub_h - side) / 2.0), Vec2::splat(side));
-        icons::paint(ui.painter(), icons::activity(a.kind), icon, presence_color(Presence::Online, &c), base);
-        x = icon.right() + 4.0;
+        let full = one_line(ui, a.name.as_str(), sub_font.clone(), muted, f32::INFINITY).size().x;
+        // A narrow panel (720 px window) drops the icon only when that shows the whole name (the
+        // tooltip still says "Playing …"); otherwise the icon stays and the name is cut after it.
+        if !(max_w < PANEL_STATUS_MIN_W && full + side + 4.0 > end - x && full <= end - x) {
+            let icon = Rect::from_min_size(pos2(x, sub_y + (sub_h - side) / 2.0), Vec2::splat(side));
+            icons::paint(ui.painter(), icons::activity(a.kind), icon, presence_color(Presence::Online, &c), base);
+            x = icon.right() + 4.0;
+        }
         let g = one_line(ui, a.name.as_str(), sub_font.clone(), muted, end - x);
-        x += g.size().x;
-        ui.painter().galley(pos2(icon.right() + 4.0, sub_y), g, muted);
+        let w = g.size().x;
+        ui.painter().galley(pos2(x, sub_y), g, muted);
+        x += w;
         sub_right = x;
         if line.is_some() && end - x > 24.0 {
             let mid = sub_y + sub_h / 2.0;
