@@ -223,10 +223,23 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   target flashed). Composer (ui/composer.rs): `attach` (tray with sample files and an error),
   `upload` (an upload in flight), `typing` (two people typing), `gif` (GIF tab with placeholder
   category tiles; its Trending tile lists placeholder results), `ac` / `ac-channel` / `ac-emoji` (`@` / `#` / `:` autocomplete open), `cooldown`
-  (send cooldown), `drop` (drag-and-drop overlay). None of them sends a request.
+  (send cooldown), `drop` (drag-and-drop overlay). Media (ui/viewer.rs `demo`, files seeded into
+  the fixture's disk cache by `python tests/fixtures/make_fixture.py media`): `media` adds the
+  fixture media to the open channel (demo.png and demo.gif at the top of the loaded history, a
+  gifv embed with a WebM upload showing the can't-play card, demo.mp4 at the bottom), `viewer` /
+  `viewer-zoom` open the lightbox on demo.png fitted / at 1:1, `viewer-video` on demo.mp4 paused
+  at 1.0 s, `player` pauses the inline demo.mp4 at 1.0 s, `play` plays it muted (frames arrive from the
+  worker: use `RUSTCORD_SCREENSHOT_FRAME=90`; `RUSTCORD_POINTER` over a gifv plays it). None of
+  them sends a request.
 - `RUSTCORD_NAV_DEMO=<comma list>` (ui/sidebar.rs `nav_demo`): navigation / social states
   offline mode can't reach, none sends a request: `folders` / `folder-open` (server bar
-  folders), `mentions` (inbox mentions from cached messages), `profile` (loaded profiles),
+  folders), `mentions` (inbox mentions from cached messages), `profile` (loaded profiles; with
+  `badge:<i>` the i-th shown badge's info popover opens once; with
+  `tag-card:<member|join|apply|applied|invite|private|loading|error>` and
+  `RUSTCORD_OPEN=card:<user id>` that user wears a server tag whose card opens once in that
+  state, `ui/guild_card.rs` `demo`), `boost` (server marks: the first server boost level 2 with
+  9 boosts, the second verified, the third partnered; the rail tooltip shows them with
+  `RUSTCORD_POINTER` on a server tile, the header without),
   `tab:<online|all|pending|blocked|add>` (Friends tab), `settings` (sample devices, authorized apps
   and consents on those Settings pages, two sample security keys),
   `account:<password|totp|scan|sms|codes-key|codes|mfa|removal>` (that My Account security dialog
