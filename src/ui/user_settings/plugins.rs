@@ -1,16 +1,17 @@
-//! Settings > Plugins (Vencord's layout): search, All / Enabled / Disabled, a two-column grid (one
-//! in narrow windows) of cards (name, one line of description, switch; a gear opens the plugin's
-//! options in the card).
+//! Settings > Plugins: search, All / On / Off, "3 of 48 turned on", then one divided row per
+//! plugin (name, two lines of description, a gear that opens its options under the row, the
+//! switch), docs/DESIGN.md §12.
 //! Values live in plugins.toml (`crate::plugins`), not in `config::Settings`.
 //! OWNERSHIP: plugins engineer.
 
-use super::super::messages::{Pal, icon_button};
+use super::super::icons::{self, Icon};
+use super::super::messages::{Btn, Pal, button, icon_button, vector_button};
 use super::{switch, switch_row};
 use crate::plugins::{self, META, Meta, Opt, OptKind};
-use crate::ui::{UiCx, bold, hint};
-use egui::{Align, ComboBox, Frame, Label, Layout, Margin, RichText, Slider, Stroke, TextEdit, vec2};
+use crate::ui::{UiCx, hint, semibold};
+use egui::{Align, ComboBox, Frame, Label, Layout, Margin, RichText, Sense, Slider, Stroke, TextEdit, vec2};
 
-const FILTERS: [(usize, &str); 3] = [(0, "All"), (1, "Enabled"), (2, "Disabled")];
+const FILTERS: [(usize, &str); 3] = [(0, "All"), (1, "On"), (2, "Off")];
 
 fn query_id() -> egui::Id {
     egui::Id::unique("rc_plugins_query")
@@ -33,23 +34,16 @@ fn matches(m: &Meta, q: &str) -> bool {
 pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let pal = Pal::new(cx.theme);
     hint(ui, cx.theme, "Vencord's plugins, rebuilt into Rustcord. They only change this app; none sends anything on its own.");
-    ui.add_space(8.0);
+    ui.add_space(16.0 - ui.spacing().item_spacing.y);
     // Test hook RUSTCORD_PLUGIN_SEARCH=<text>: the search filled in (screenshots).
     let mut q: String = ui.data(|d| d.get_temp(query_id())).unwrap_or_else(|| std::env::var("RUSTCORD_PLUGIN_SEARCH").unwrap_or_default());
     let mut filter: usize = ui.data(|d| d.get_temp(filter_id())).unwrap_or(0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let seg_w = ui.available_width().min(480.0) / 2.0;
-        let search_w = (ui.available_width() - seg_w - 8.0).max(120.0);
-        Frame::new().fill(pal.surface).corner_radius(pal.radius).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
-            ui.add(TextEdit::singleline(&mut q).hint_text("Search plugins").frame(Frame::NONE).desired_width(search_w - 20.0));
-        });
-        // The login screen's segmented control, like every one-of-a-few choice in settings.
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let seg_w = ui.available_width().min(480.0) * 0.4;
+        let search_w = (ui.available_width() - seg_w - 12.0).max(120.0);
+        search_field(ui, &pal, cx.theme.colors.code_background.to_color32(), &mut q, search_w);
         ui.allocate_ui(vec2(seg_w, 36.0), |ui| crate::ui::login::segmented(ui, cx.theme, &mut filter, &FILTERS));
-    });
-    ui.data_mut(|d| {
-        d.insert_temp(query_id(), q.clone());
-        d.insert_temp(filter_id(), filter);
     });
     let on_count = META.iter().filter(|m| plugins::enabled(m.id)).count();
     let list: Vec<&Meta> = META
@@ -62,77 +56,106 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         })
         .collect();
     ui.add_space(4.0);
-    let counter = if list.len() == META.len() { format!("{on_count} of {} on", META.len()) } else { format!("{} shown · {on_count} on", list.len()) };
-    hint(ui, cx.theme, &counter);
-    ui.add_space(8.0);
+    hint(ui, cx.theme, &format!("{on_count} of {} turned on", META.len()));
+    ui.add_space(4.0);
     if list.is_empty() {
-        ui.label(RichText::new("No plugin matches.").color(pal.muted));
-        return;
-    }
-    let gap = 12.0;
-    // Two columns while each gets 250 px (Vencord's minmax(250px, 1fr)).
-    let cols = if ui.available_width() >= 2.0 * 250.0 + gap { 2 } else { 1 };
-    // Two columns: a common minimum height; one: each card as tall as its text.
-    let min_h = if cols > 1 { 72.0 } else { 0.0 };
-    let col_w = ((ui.available_width() - gap * (cols - 1) as f32) / cols as f32).floor();
-    for pair in list.chunks(cols) {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            for m in pair {
-                ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Min), |ui| card(ui, cx, &pal, m, pair, min_h));
+        // §9 empty state: what is missing, what to do, the one button that does it.
+        ui.add_space(32.0);
+        ui.vertical_centered(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+            icons::paint(ui.painter(), Icon::Search, r, pal.muted, pal.bg);
+            ui.add_space(16.0);
+            ui.label(RichText::new("No plugins match").font(semibold(pal.heading())).color(pal.text));
+            ui.label(RichText::new("Try another word, or show every plugin.").size(pal.meta()).color(pal.muted));
+            ui.add_space(16.0);
+            if button(ui, &pal, Btn::Secondary, "Show all plugins", true).clicked() {
+                (q, filter) = (String::new(), 0);
             }
         });
-        ui.add_space(gap - ui.spacing().item_spacing.y);
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(query_id(), q);
+        d.insert_temp(filter_id(), filter);
+    });
+    for m in list {
+        row(ui, cx, &pal, m);
     }
 }
 
-fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta, row: &[&Meta], min_h: f32) {
+/// The search well (§9 inputs, 32 px for search and filters): `well` fill, 1 px `edge` border,
+/// the Search icon inside at the left; the focus ring replaces the border.
+fn search_field(ui: &mut egui::Ui, pal: &Pal, well: egui::Color32, q: &mut String, w: f32) {
+    let frame = Frame::new().fill(well).corner_radius(pal.radius).inner_margin(Margin { left: 8, right: 12, top: 0, bottom: 0 });
+    let out = frame.show(ui, |ui| {
+        // Inner width: `w` minus the frame's 20 px margins; the field gets what the icon leaves.
+        let inner = (w - 20.0).max(80.0);
+        ui.set_min_size(vec2(inner, 36.0));
+        ui.set_max_width(inner);
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            super::super::messages::vector_icon(ui, Icon::Search, 16.0, pal.muted, well);
+            ui.add(TextEdit::singleline(q).hint_text("Search plugins").frame(Frame::NONE).desired_width(inner - 24.0))
+        })
+        .inner
+    });
+    let (rect, edit) = (out.response.rect, out.inner);
+    if edit.has_focus() {
+        super::super::messages::focus_ring(ui, pal, rect, f32::from(pal.radius));
+    } else {
+        let edge = if edit.hovered() { pal.muted } else { pal.tk.edge };
+        ui.painter().rect_stroke(rect, pal.radius, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    }
+}
+
+/// One plugin row: name (15/600) and up to two lines of description on the left, the gear (if it
+/// has options) and the switch on the right, a hairline under it; the options open under it.
+fn row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, m: &Meta) {
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id(m))).unwrap_or(false);
     let mut on = plugins::enabled(m.id);
-    Frame::new()
-        .fill(pal.surface)
-        .stroke(Stroke::new(1.0, if on { pal.accent.gamma_multiply(0.45) } else { pal.line() }))
-        .corner_radius(pal.card_radius())
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.set_min_height(min_h);
-            ui.spacing_mut().item_spacing.y = 6.0;
-            // Switch and gear first (right to left), the name gets what is left (elided, the full
-            // name on hover), so narrow cards never draw controls over it.
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if switch(ui, pal, &mut on, m.name).changed() {
-                        if !on && m.id == plugins::Plugin::MessageLogger {
-                            plugins::message_logger::purge(cx.state);
-                        }
-                        save(cx, plugins::set(m.id, "enabled", toml::Value::Boolean(on)));
-                    }
-                    let has_opts = !m.opts.is_empty() || m.id == plugins::Plugin::TextReplace;
-                    if has_opts && icon_button(ui, pal, "⚙", "Options", 24.0, open, pal.text).clicked() {
-                        open = !open;
-                    }
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(Label::new(RichText::new(m.name).font(bold(pal.size)).color(pal.text)).truncate());
-                    });
-                });
+    let has_opts = !m.opts.is_empty() || m.id == plugins::Plugin::TextReplace;
+    Frame::new().inner_margin(Margin::symmetric(0, 12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            let controls = 40.0 + if has_opts { 24.0 + 8.0 } else { 0.0 };
+            let text_w = (ui.available_width() - controls - 16.0).max(80.0);
+            ui.allocate_ui_with_layout(vec2(text_w, 0.0), Layout::top_down(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add(Label::new(RichText::new(m.name).font(semibold(pal.body())).color(pal.text)).truncate());
+                let mut job = egui::text::LayoutJob::simple(m.description.to_owned(), egui::FontId::proportional(pal.meta()), pal.muted, text_w);
+                job.wrap.max_rows = 2;
+                let g = ui.painter().layout_job(job);
+                let (r, resp) = ui.allocate_exact_size(g.size(), Sense::hover());
+                let elided = g.elided;
+                ui.painter().galley(r.min, g, pal.muted);
+                if elided {
+                    resp.on_hover_text(m.description);
+                }
             });
-            let desc = |m: &Meta| RichText::new(m.description).size(pal.meta()).color(pal.muted);
-            let h = ui.add(Label::new(desc(m)).wrap()).rect.height();
-            // As tall as the row's longest description, so the cards of a row end level.
-            let wrap = Some(egui::TextWrapMode::Wrap);
-            let row_h = row.iter().map(|o| egui::WidgetText::from(desc(o)).into_galley(ui, wrap, ui.available_width(), egui::FontSelection::Default).size().y);
-            ui.add_space(row_h.fold(h, f32::max) - h);
-            if open {
-                ui.separator();
-                for o in m.opts {
-                    option(ui, cx, pal, m, o);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if switch(ui, pal, &mut on, m.name).changed() {
+                    if !on && m.id == plugins::Plugin::MessageLogger {
+                        plugins::message_logger::purge(cx.state);
+                    }
+                    save(cx, plugins::set(m.id, "enabled", toml::Value::Boolean(on)));
                 }
-                if m.id == plugins::Plugin::TextReplace {
-                    text_rules(ui, cx, pal);
+                if has_opts && vector_button(ui, pal, Icon::Gear, &format!("{} settings", m.name), 24.0, open, pal.text).clicked() {
+                    open = !open;
                 }
-            }
+            });
         });
+        if open {
+            ui.add_space(4.0);
+            for o in m.opts {
+                option(ui, cx, pal, m, o);
+            }
+            if m.id == plugins::Plugin::TextReplace {
+                text_rules(ui, cx, pal);
+            }
+        }
+    });
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, pal.tk.rule));
     ui.data_mut(|d| d.insert_temp(open_id(m), open));
 }
 
@@ -147,11 +170,10 @@ fn text_rules(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
     if !list.is_empty() {
         // Column labels over the two fields.
         let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), egui::Sense::hover());
-        for (k, t) in ["FIND", "REPLACE WITH"].into_iter().enumerate() {
-            ui.painter().text(egui::pos2(head.left() + k as f32 * (w + gap), head.center().y), egui::Align2::LEFT_CENTER, t, bold(pal.size - 2.5), pal.muted);
+        for (k, t) in ["Find", "Replace with"].into_iter().enumerate() {
+            ui.painter().text(egui::pos2(head.left() + k as f32 * (w + gap), head.center().y), egui::Align2::LEFT_CENTER, t, semibold(pal.label()), pal.muted);
         }
     }
-    let on_text = cx.theme.colors.accent_text.to_color32();
     for (i, r) in list.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             for (k, (text, hint_text)) in [(&mut r.find, "Find"), (&mut r.replace, "Replace with")].into_iter().enumerate() {
@@ -159,18 +181,13 @@ fn text_rules(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
                 changed |= resp.changed();
                 store |= resp.lost_focus();
             }
+            // A toggled icon button (§9): on = bright on the `selected` fill; the tooltip says which.
             let tip = if r.case { "Match case: on" } else { "Match case: off" };
-            let aa = icon_button(ui, pal, "Aa", tip, 24.0, r.case, pal.text);
-            if r.case {
-                // On: an accent chip, so on and off read apart at a glance.
-                ui.painter().rect_filled(aa.rect, pal.radius, pal.accent);
-                ui.painter().text(aa.rect.center(), egui::Align2::CENTER_CENTER, "Aa", egui::FontId::new(16.0, crate::theme::icon_family()), on_text);
-            }
-            if aa.clicked() {
+            if icon_button(ui, pal, "Aa", tip, 24.0, r.case, pal.text).clicked() {
                 r.case = !r.case;
                 (changed, store) = (true, true);
             }
-            if icon_button(ui, pal, "×", "Remove rule", 24.0, false, pal.danger).clicked() {
+            if vector_button(ui, pal, Icon::Close, "Remove rule", 24.0, false, pal.danger).clicked() {
                 remove = Some(i);
             }
         });
@@ -179,7 +196,7 @@ fn text_rules(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         list.remove(i);
         (changed, store) = (true, true);
     }
-    if ui.button("Add rule").clicked() {
+    if button(ui, pal, Btn::Secondary, "Add rule", true).clicked() {
         list.push(Rule::default());
         (changed, store) = (true, true);
     }
