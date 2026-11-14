@@ -11,7 +11,13 @@ directly as a **user** client. Not a port of the official client.
   context exists; each MB of texture costs ~2.7 MB private (hence the 12 MB texture budget and
   idle eviction in `ui/images.rs`); all of `AppState` is < 10 MB even for a large account.
 - egui repaints only on input/events (reactive). Never call `request_repaint()` every frame;
-  animations use `request_repaint_after(next_frame_delay)`.
+  animations use `request_repaint_after(next_frame_delay)`. A plain `request_repaint()` costs
+  egui two passes, so wakes from other threads use `request_repaint_after(1 ms)`: a backend
+  event (`EventSink::send`, a burst shares the pass) and a video frame (`FrameWriter::write`)
+  each wake one pass; `RustcordApp::settle_after_events` adds one more pass only if the event
+  pass moved a widget (hover, the chat's stick-to-bottom and area sizes use the previous pass's
+  rects). UI code that must show a state change on the next pass without moving a widget
+  requests its own repaint.
 - Windows first; cross-platform where it costs nothing (`#[cfg(windows)]` for Win32-only code
   with a no-op fallback).
 
@@ -81,7 +87,7 @@ cargo check
  (eframe)                              │
  AppState  ◄────────────────────────── ├──► gateway::spawn ── WebSocket ── gateway.discord.gg
  ImageCache   BackendEvent (std mpsc   │
-              + request_repaint)       └──► cache::images::ImageLoader ── cdn/media.discordapp, static.klipy.com
+              + request_repaint_after) └──► cache::images::ImageLoader ── cdn/media.discordapp, static.klipy.com
 ```
 - `state::AppState` is owned by the UI thread; it is pure data + logic (no I/O, no egui).
 - `backend.rs` defines `Command`/`BackendEvent` (the only UI<->network contract).
