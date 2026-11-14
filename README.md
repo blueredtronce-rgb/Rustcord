@@ -16,16 +16,16 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/main.png" width="820" alt="Rustcord main window with server bar, channels, chat and user panel">
+  <img src="docs/screenshots/main.png" width="820" alt="Rustcord main window: server bar, channel list with text, announcement, forum, media and voice channel icons, chat, and a member list showing a game, a detected game and Spotify">
 </p>
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/profile.png" alt="Account popout with status menu and badges"></td>
+    <td><img src="docs/screenshots/profile.png" alt="Profile card with a game activity: art, details, party size and elapsed time"></td>
     <td><img src="docs/screenshots/plugins.png" alt="Settings page with the built-in plugins"></td>
   </tr>
   <tr>
-    <td align="center">Account popout, nameplate and avatar decoration</td>
+    <td align="center">Profile card with a game activity</td>
     <td align="center">Settings → Plugins (Vencord-style, built in)</td>
   </tr>
 </table>
@@ -64,6 +64,20 @@
 - Discord-web layout (own branding): server bar with folders and drag & drop, own title bar
   and window buttons, floating user panel, "new messages" bar, jump to present, message
   context menu.
+- Its own look (`docs/DESIGN.md`): steel-blue panes with ember orange only for the brand and
+  the main action, one type scale, and Rustcord's own vector icon set drawn in code. Channel
+  icons read like Discord's (`#` for text, a speaker for voice, megaphone, forum, media,
+  stage, rules) with lock and age-restricted variants; no icon files are copied from Discord.
+- Activities like Discord's: games with their art, party size and elapsed time, Spotify with
+  album art and a progress bar, streaming, watching; detected games show the game's icon, or
+  a controller when there is none. Member list, DMs, friends and profile cards show them.
+- Game detection (Windows): every 15 s Rustcord looks at the running programs and matches
+  them against Discord's list of detectable games and the games you added in Settings →
+  Registered games ("Add it!" picks an open window). Others see your game only while
+  Settings → Activity privacy → "Share detected activity" is on (synced with your account,
+  like in the official app); your added games stay on this PC.
+- Notification-area (tray) icon, close to tray, start when you sign in to Windows, and a
+  per-user installer (see [Install](#install)).
 - File uploads (button, drag & drop, paste), emoji and GIF pickers, `@ # :` autocomplete,
   typing indicator, online status + custom status, pins, search, mark unread.
 - Threads (sidebar rows, thread panel, create), forum/media channels (posts, tags, new post).
@@ -132,19 +146,27 @@ memory after sending them. The QR login uses a new RSA key per code that only li
 
 ## Install
 
-Run `Rustcord-Setup-<version>.exe`. It installs for your Windows user only (no administrator
-rights), like Discord: the app goes to `%LOCALAPPDATA%\Programs\Rustcord`, with a Start menu
-shortcut, an optional desktop shortcut and an entry in Settings → Apps. "Start Rustcord when I
-sign in" (on by default) starts it hidden in the notification area. Running the setup again
-updates Rustcord in place; a running Rustcord is asked to quit first.
+Get `Rustcord-Setup-<version>.exe` from this repository's Releases page once one is
+published, or build it yourself (see below). The setup is a single exe built from
+Rustcord's own code (about 23 MB with the app inside); no installer tools are involved.
+
+Run it. It installs for your Windows user only (no administrator rights), like Discord: the
+app goes to `%LOCALAPPDATA%\Programs\Rustcord`, with a Start menu shortcut, an optional
+desktop shortcut and an entry in Settings → Apps. "Open Rustcord when I sign in to Windows"
+(on by default) starts it hidden in the notification area. Running the setup again updates
+Rustcord in place; a running Rustcord is asked to quit first. `--silent` installs with the
+default options without a window.
 
 The setup is not code-signed, so Windows SmartScreen may say "Windows protected your PC".
 Select **More info**, then **Run anyway**.
 
 While Rustcord runs, its icon sits in the notification area: click it to open the window,
-right-click it for Mute, Deafen and Quit Rustcord. Closing the window keeps Rustcord running
-there (notifications and voice keep working); Settings → Windows Settings turns that off and
-sets the sign-in start. Starting Rustcord again brings the running window to the front.
+right-click it for Open Rustcord, Mute, Deafen and Quit Rustcord. Closing the window
+(the × in the title bar) only hides it: Rustcord keeps running there, so notifications and
+voice keep working. Settings → Windows settings has "Minimize to tray when I close the window"
+(turn it off to quit on close), "Open Rustcord when I sign in to Windows" and "Start
+minimized". Starting Rustcord again brings the running window to the front;
+`rustcord.exe --quit` quits the running one.
 
 To uninstall, use Settings → Apps → Rustcord → Uninstall. "Also delete my local data and sign
 out" also removes the settings, the cache and the saved login.
@@ -203,6 +225,9 @@ cargo run --example export_icons
 | Local profile overrides | `…\config\overrides\` (`overrides.toml` + image copies) | `…/overrides/` | `…/overrides/` |
 | Cache (snapshot, images) | `%LOCALAPPDATA%\Rustcord\cache\` | `~/.cache/rustcord/` | `~/Library/Caches/Rustcord/` |
 | Login token | Windows Credential Manager (generic credential `user-token.Rustcord`) | Secret Service | Keychain |
+| Added games, saved games list | `…\config\games.json`, `…\cache\detectable.tsv` | – | – |
+| Installed app (setup) | `%LOCALAPPDATA%\Programs\Rustcord\` | – | – |
+| Start at sign-in | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Rustcord` | – | – |
 
 The token is never written to a file or a log. Logging out deletes it from the credential
 store and deletes the cache. `RUSTCORD_HOME=<dir>` moves config and cache to `<dir>/config`
@@ -218,6 +243,7 @@ desktop_notifications = true
 send_read_acks = true         # mark viewed channels read on your account (syncs other devices)
 show_member_list = true
 animate_others = "hover"      # "always" | "hover" – animated avatars/emoji of others
+minimize_to_tray = true       # × hides the window to the notification area (Quit is in the tray menu)
 # client_build_number = 0     # optional: sent in the client properties
 # system_locale = "en-US"
 ```
@@ -272,11 +298,12 @@ Settings → Local profile: pick any image/GIF as your banner and a GIF, APNG or
 |---|---|---|---|---|
 | 1 – core | 44 ms | 163 ms | 94.5 MB | 0 % |
 | 2 – customization | 45 ms | 154 ms | 94.6 MB (104 MB with animated avatar + banner) | 0 % (7 % of one core with an always-animating avatar) |
-| 3 – logo & polish (final) | 30 ms (466 ms on the first, cold run) | 155 ms | 95.6 MB (103.6 MB with animated avatar + banner) | 0 % |
+| 3 – logo & polish | 30 ms (466 ms on the first, cold run) | 155 ms | 95.6 MB (103.6 MB with animated avatar + banner) | 0 % |
+| 4 – installer, tray, activities & new look | 161 ms (GL context ready) | 174 ms | 102.3 MB (87.6 MB private) | 0 % (game detection: ~16 ms CPU per 15 s scan) |
 
 Measured on a Ryzen 7 5825U, Windows 11, median of 5 runs. These runs had no network images
 loaded; with a live connection, avatars and attachments add to RAM (textures are capped at a
-24 MB budget and evicted when unused).
+12 MB budget and evicted when unused).
 
 ## Developer notes
 
