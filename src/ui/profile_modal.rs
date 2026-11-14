@@ -95,8 +95,7 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
     let ot = look.overflow_top(width);
     let room = screen_h - super::TITLE_BAR_H - 2.0 * MARGIN - ot;
     let side = if room < 480.0 { 88.0 } else { AVATAR };
-    // No banner image or colour: just room for the avatar's upper half.
-    let banner_h = if banner_url.is_none() && fill.is_none() { side / 2.0 + 24.0 } else if room < 480.0 { 72.0 } else if screen_h < 600.0 { 96.0 } else { BANNER };
+    let banner_h = if room < 480.0 { 72.0 } else if screen_h < 600.0 { 96.0 } else { BANNER };
     let rest_id = egui::Id::unique(("rc_profile_modal_rest", banner_h.to_bits()));
     let rest = ctx.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(banner_h + 250.0);
     let short = room - rest < 80.0;
@@ -141,7 +140,7 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
                 match banner_url.as_deref().and_then(|u| cx.images.get(ui.ctx(), u, 600, animated)) {
                     Some(tex) => super::profile::paint_banner(ui.painter(), rect, top, tex, look.theme.map(|_| cosmetics::theme_veil(pal.dark))),
                     None => {
-                        ui.painter().rect_filled(rect, top, fill.unwrap_or(egui::Color32::TRANSPARENT));
+                        ui.painter().rect_filled(rect, top, super::profile::band_fill(fill, &pal, look.theme.is_some()));
                     }
                 }
                 let center = pos2(rect.left() + 24.0 + side / 2.0, rect.bottom());

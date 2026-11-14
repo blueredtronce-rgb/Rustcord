@@ -772,7 +772,8 @@ Playing                                     <- label role: "Playing" / "Listenin
 **Profile popout** (profile.rs; fixes reference 2.webp)
 - Fixed width 340. Max height = window − 32, then it scrolls.
 - Role chips wrap per chip (profile.rs:342-345 `role_pills`).
-- Banner: the image, else the user's accent colour, else `raised`. Never flat grey-blue.
+- Banner band (always there; the avatar overlaps its bottom edge): the image, else the user's
+  accent colour, else `selected` over `raised`. A themed card's gradient is the band.
 - Badges stay hidden until their icons load. No grey placeholder circles.
 - Sections ("About me", "Member since", "Roles", "Note") use the label role, 16 apart. No hairline
   after each section.

@@ -162,7 +162,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
     let top = CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
 
     let (banner_url, fill) = banner(cx, user, guild_id, is_me);
-    let banner_h = if banner_url.is_some() { 106.0 } else if fill.is_some() { 60.0 } else { 48.0 };
+    let banner_h = if banner_url.is_some() { 106.0 } else { 60.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(WIDTH, banner_h), Sense::hover());
     let animated = banner_animates(cx, banner_url.as_deref(), is_me, ui.rect_contains_pointer(rect));
     let shown = banner_url.as_deref().unwrap_or_default();
@@ -176,7 +176,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
     match banner_url.and_then(|url| cx.images.get(ui.ctx(), &url, 600, animated)) {
         Some(tex) => paint_banner(ui.painter(), rect, top, tex, theme.map(|_| cosmetics::theme_veil(pal.dark))),
         None => {
-            ui.painter().rect_filled(rect, top, fill.unwrap_or(egui::Color32::TRANSPARENT));
+            ui.painter().rect_filled(rect, top, band_fill(fill, pal, theme.is_some()));
         }
     }
 
@@ -528,8 +528,7 @@ pub(super) fn member_since(user_id: Id) -> String {
 
 /// (image url, colour under or instead of it) of a user's banner: my local override, the
 /// loaded profile's (server profile first), the cached user's. The colour: the profile theme,
-/// else the user's accent colour; None = no banner at all (the card shows through, a shorter
-/// top: never a flat grey block, docs/DESIGN.md §12).
+/// else the user's accent colour; None = `band_fill`'s fallback.
 pub(super) fn banner(cx: &UiCx<'_>, user: &User, guild_id: Option<Id>, is_me: bool) -> (Option<String>, Option<egui::Color32>) {
     let profile = profile_modal::loaded(cx, user.id, guild_id);
     let local = is_me.then(|| cx.overrides.url(Kind::Banner)).flatten();
@@ -544,6 +543,13 @@ pub(super) fn banner(cx: &UiCx<'_>, user: &User, guild_id: Option<Id>, is_me: bo
     });
     let color = profile.and_then(|p| p.theme_colors()).map(|(primary, _)| primary).or(user.accent_color);
     (url, color.map(rgb))
+}
+
+/// The banner band's fill under or instead of its image: the user's colour, else a step off
+/// the card (`selected` over `raised`), so every card keeps the band the avatar overlaps
+/// (docs/DESIGN.md §12). A themed card's own gradient is the band there.
+pub(super) fn band_fill(fill: Option<Color32>, pal: &Pal, themed: bool) -> Color32 {
+    fill.unwrap_or(if themed { Color32::TRANSPARENT } else { pal.tk.selected })
 }
 
 /// Whether the banner `url` animates: my local one per its setting (or while `hovered`),
@@ -738,6 +744,19 @@ mod tests {
         assert_eq!(chips_shown(&widths[..6], 100.0, 3, 30.0), 6);
         assert_eq!(chips_shown(&widths, 100.0, usize::MAX, 30.0), 40);
         assert_eq!(chips_shown(&[], 100.0, 3, 30.0), 0);
+    }
+
+    #[test]
+    fn every_card_keeps_its_banner_band() {
+        let red = Color32::from_rgb(200, 0, 0);
+        for theme in &crate::theme::Theme::builtins()[..3] {
+            let pal = Pal::new(theme);
+            assert_eq!(band_fill(Some(red), &pal, false), red);
+            // No colour: still a band, a visible step off the raised card.
+            assert_ne!(pal.tk.raised.blend(band_fill(None, &pal, false)), pal.tk.raised, "{}", theme.name);
+            // A themed card's gradient is the band.
+            assert_eq!(band_fill(None, &pal, true), Color32::TRANSPARENT);
+        }
     }
 
     #[test]
