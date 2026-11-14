@@ -277,6 +277,11 @@ struct GuildWire {
     mfa_level: u8,
     rules_channel_id: Option<Id>,
     #[serde(deserialize_with = "null_default")]
+    features: Vec<String>,
+    /// Top level even with CLIENT_STATE_V2 (not in `properties`).
+    #[serde(deserialize_with = "null_default")]
+    premium_subscription_count: u32,
+    #[serde(deserialize_with = "null_default")]
     roles: Vec<Role>,
     #[serde(deserialize_with = "null_default")]
     emojis: Vec<CustomEmoji>,
@@ -306,6 +311,8 @@ impl GuildWire {
             default_message_notifications: self.default_message_notifications,
             unavailable: self.unavailable,
             premium_tier: self.premium_tier,
+            features: self.features,
+            premium_subscription_count: self.premium_subscription_count,
             mfa_level: self.mfa_level,
             rules_channel_id: self.rules_channel_id,
             voice_states: self.voice_states,
@@ -319,9 +326,12 @@ impl GuildWire {
             g.owner_id = p.owner_id;
             g.default_message_notifications = p.default_message_notifications;
             g.premium_tier = p.premium_tier;
+            g.features = p.features;
             g.mfa_level = p.mfa_level;
             g.rules_channel_id = p.rules_channel_id;
         }
+        // Only what the UI reads: a big guild lists ~40 features.
+        g.features.retain(|f| matches!(f.as_str(), "VERIFIED" | "PARTNERED"));
         // Channels and voice states inside guild dispatches may lack guild_id.
         for c in &mut g.channels {
             c.guild_id = Some(g.id);
@@ -1122,6 +1132,24 @@ mod tests {
 
     fn ev(t: &str, d: &str) -> Vec<GatewayEvent> {
         dispatch(t, format!(r#"{{"op":0,"t":"{t}","d":{d}}}"#).as_bytes(), Id(1)).unwrap()
+    }
+
+    #[test]
+    fn guild_marks_from_properties_and_flat_guilds() {
+        // CLIENT_STATE_V2: features and tier in `properties`, the boost count at the top level.
+        let r = ready_of(
+            r#"{"t":"READY","s":1,"op":0,"d":{"user":{"id":"1","username":"me"},"session_id":"s",
+            "guilds":[{"id":"10","premium_subscription_count":9,
+              "properties":{"id":"10","name":"N","features":["VERIFIED","NEWS","COMMUNITY"],"premium_tier":2}}]}}"#,
+        );
+        let g = &r.data.guilds[0];
+        assert_eq!((g.features.as_slice(), g.premium_tier, g.premium_subscription_count), (&["VERIFIED".to_owned()][..], 2, 9));
+        let out = ev("GUILD_UPDATE", r#"{"id":"10","name":"N","features":["PARTNERED","BANNER"],"premium_tier":1,"premium_subscription_count":3}"#);
+        let [GatewayEvent::GuildUpdate(g)] = &out[..] else { panic!("{out:?}") };
+        assert_eq!((g.features.as_slice(), g.premium_tier, g.premium_subscription_count), (&["PARTNERED".to_owned()][..], 1, 3));
+        let out = ev("GUILD_UPDATE", r#"{"id":"10","name":"N","features":null,"premium_subscription_count":null}"#);
+        let [GatewayEvent::GuildUpdate(g)] = &out[..] else { panic!("{out:?}") };
+        assert!(g.features.is_empty() && g.premium_subscription_count == 0);
     }
 
     fn wrap(d: &str) -> Vec<u8> {

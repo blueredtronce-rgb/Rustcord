@@ -583,6 +583,12 @@ pub struct Guild {
     /// Boost tier 0-3 (upload limit: 50 MiB at 2, 100 MiB at 3).
     #[serde(deserialize_with = "null_default")]
     pub premium_tier: u8,
+    /// Only the features the UI reads (gateway/normalize.rs keeps VERIFIED / PARTNERED).
+    #[serde(deserialize_with = "null_default", skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    /// Boosts (tooltip "Boost level 2, 9 boosts").
+    #[serde(deserialize_with = "null_default")]
+    pub premium_subscription_count: u32,
     /// 1 = moderation needs 2FA (`AppState::guild_permissions` drops the elevated bits).
     #[serde(deserialize_with = "null_default")]
     pub mfa_level: u8,
@@ -1666,6 +1672,64 @@ pub struct Consents {
 #[serde(default)]
 pub struct Consent {
     pub consented: bool,
+}
+
+/// `GET /guilds/{g}/profile`: what the server tag card shows (docs/GUILD_CARD_NOTES.md).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct GuildProfile {
+    pub id: Id,
+    #[serde(deserialize_with = "null_default")]
+    pub name: String,
+    pub icon_hash: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub member_count: u32,
+    #[serde(deserialize_with = "null_default")]
+    pub online_count: u32,
+    pub description: Option<String>,
+    /// "#rrggbb".
+    pub brand_color_primary: Option<String>,
+    pub tag: Option<String>,
+    /// `clan-badges/{g}/{hash}.png`.
+    pub badge_hash: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub traits: Vec<GuildTrait>,
+    /// Community features only: COMMUNITY, DISCOVERABLE, PARTNERED, VERIFIED,
+    /// MEMBER_VERIFICATION_GATE_ENABLED, MEMBER_VERIFICATION_MANUAL_APPROVAL.
+    #[serde(deserialize_with = "null_default")]
+    pub features: Vec<String>,
+    /// 1 public, 2 invite only, 3 public, anyone may apply.
+    #[serde(deserialize_with = "null_default")]
+    pub visibility: u8,
+    /// `discovery-splashes/{g}/{hash}.png`.
+    pub custom_banner_hash: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub premium_subscription_count: u32,
+    #[serde(deserialize_with = "null_default")]
+    pub premium_tier: u8,
+}
+
+/// A guild profile's trait chip ("Rust", with a unicode emoji; custom emoji are not allowed).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct GuildTrait {
+    pub emoji_name: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub label: String,
+    #[serde(deserialize_with = "null_default")]
+    pub position: u32,
+}
+
+/// `GET /guilds/{g}/member-verification`: the rules / application form.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MemberVerification {
+    pub version: Option<String>,
+    pub description: Option<String>,
+    /// Kept raw: `PUT /guilds/{g}/requests/@me` sends every field object back unchanged, plus
+    /// its `response`.
+    #[serde(deserialize_with = "null_default")]
+    pub form_fields: Vec<serde_json::Value>,
 }
 
 /// `GET /invites/{code}`, `GET /guilds/{g}/invites` entries, `POST /channels/{c}/invites`.

@@ -1518,6 +1518,8 @@ fn merge_guild(old: &mut Guild, new: Guild) {
     }
     old.default_message_notifications = new.default_message_notifications;
     old.premium_tier = new.premium_tier;
+    old.features = new.features;
+    old.premium_subscription_count = new.premium_subscription_count;
     old.mfa_level = new.mfa_level;
     old.rules_channel_id = new.rules_channel_id;
     old.unavailable = false;
@@ -2485,6 +2487,12 @@ mod tests {
         // GUILD_UPDATE merges; an absent role list doesn't wipe roles.
         s.apply_gateway(GatewayEvent::GuildUpdate(Box::new(Guild { id: G, name: "New".into(), owner_id: Id(999), ..Default::default() })), None);
         assert_eq!((s.guilds[0].name.as_str(), s.guilds[0].roles.len()), ("New", 3));
+        // The boost mark follows GUILD_UPDATE (features and count are replaced, not kept).
+        let marked = Guild { id: G, features: vec!["VERIFIED".into()], premium_tier: 2, premium_subscription_count: 9, ..Default::default() };
+        s.apply_gateway(GatewayEvent::GuildUpdate(Box::new(marked)), None);
+        assert_eq!((s.guilds[0].features.len(), s.guilds[0].premium_subscription_count), (1, 9));
+        s.apply_gateway(GatewayEvent::GuildUpdate(Box::new(Guild { id: G, ..Default::default() })), None);
+        assert_eq!((s.guilds[0].features.len(), s.guilds[0].premium_subscription_count, s.guilds[0].name.as_str()), (0, 0, "New"));
         // A repeated GUILD_CREATE replaces the channel list and repairs the selection.
         let g = Guild { id: G, name: "New".into(), owner_id: Id(999), channels: vec![chan(Id(260), 0, None, 0)], ..Default::default() };
         s.apply_gateway(GatewayEvent::GuildCreate(Box::new(g)), None);
