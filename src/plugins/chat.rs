@@ -109,9 +109,10 @@ pub fn reply_time(ui: &mut egui::Ui, rm: &Message, size: f32, color: Color32) {
     if !enabled(Plugin::ReplyTimestamp) {
         return;
     }
-    let Ok(t) = chrono::DateTime::parse_from_rfc3339(&rm.timestamp) else { return };
-    let t = t.with_timezone(&chrono::Local);
-    let text = if t.date_naive() == chrono::Local::now().date_naive() { t.format("%H:%M").to_string() } else { t.format("%d.%m.%Y").to_string() };
+    // Through the chat rows' local-time cache: chrono's `Local` reads the zone rules per call.
+    let ctx = ui.ctx().clone();
+    let Some(t) = chrono::DateTime::parse_from_rfc3339(&rm.timestamp).ok().and_then(|t| crate::ui::messages::local_at(&ctx, t.timestamp_millis())) else { return };
+    let text = if Some(t.date_naive()) == crate::ui::messages::today(&ctx) { t.format("%H:%M").to_string() } else { t.format("%d.%m.%Y").to_string() };
     ui.add(egui::Label::new(egui::RichText::new(text).size(size).color(color)).selectable(false)).on_hover_text(t.format("%A, %d %B %Y %H:%M").to_string());
 }
 
