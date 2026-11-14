@@ -124,12 +124,14 @@ pub struct Settings {
     pub streamer: StreamerMode,
     /// Keybinds the user changed: action name -> shortcut ("Ctrl+Shift+M"; "" = none).
     pub keybinds: std::collections::BTreeMap<String, String>,
-    /// Windows Settings: the HKCU Run value exists (written only when toggled).
-    pub open_on_startup: bool,
-    /// Windows Settings: started at sign-in = start minimized (`--minimized` in the Run value).
-    pub start_minimized: bool,
-    /// Windows Settings: the title bar's × minimizes instead of quitting.
-    pub close_minimizes: bool,
+    // Open at sign-in / start minimized are not kept here: the Windows Settings page reads the
+    // HKCU Run value itself. Older files' `open_on_startup`, `start_minimized` and
+    // `close_minimizes` (× minimized to the taskbar, off by default) are ignored.
+    /// Windows Settings: closing the window (×, Alt+F4) hides it to the tray; Quit is in the
+    /// tray menu.
+    pub minimize_to_tray: bool,
+    /// The "still running in the tray" balloon was shown (once).
+    pub tray_hint_shown: bool,
     /// Notifications > Taskbar flashing on a notification while the window is in the background.
     pub flash_taskbar: bool,
 }
@@ -203,9 +205,8 @@ impl Default for Settings {
             reduced_motion: false,
             streamer: StreamerMode::default(),
             keybinds: Default::default(),
-            open_on_startup: false,
-            start_minimized: true,
-            close_minimizes: false,
+            minimize_to_tray: true,
+            tray_hint_shown: false,
             flash_taskbar: true,
         }
     }
@@ -287,6 +288,20 @@ mod tests {
         let old: Settings = toml::from_str("theme = \"Ember Dark\"\n[streamer]\nenabled = true\n").unwrap();
         assert_eq!((old.zoom, old.flash_taskbar, old.streamer.enabled, old.streamer.hide_personal_info), (1.0, true, true, true));
         assert!(old.streamer.hides_invites() && !old.streamer.hide_from_capture);
+    }
+
+    #[test]
+    fn old_window_settings_migrate_to_the_tray_default() {
+        // Every file saved before the tray wrote `close_minimizes = false` (its default), so it
+        // says nothing about a choice: the new default (hide to the tray) applies either way.
+        for old in ["close_minimizes = false\nopen_on_startup = true\nstart_minimized = false\n", "close_minimizes = true\n", ""] {
+            let s: Settings = toml::from_str(old).unwrap();
+            assert!(s.minimize_to_tray && !s.tray_hint_shown, "{old:?}");
+            let saved = toml::to_string_pretty(&s).unwrap();
+            assert!(saved.contains("minimize_to_tray = true") && !saved.contains("close_minimizes"));
+        }
+        let off: Settings = toml::from_str("minimize_to_tray = false\ntray_hint_shown = true\n").unwrap();
+        assert!(!off.minimize_to_tray && off.tray_hint_shown);
     }
 
     #[test]

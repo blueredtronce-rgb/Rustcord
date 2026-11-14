@@ -1,10 +1,59 @@
-//! Desktop notifications.
-//! Windows: a tray icon (Shell_NotifyIconW) on a dedicated thread showing balloon/toast
-//! notifications; no extra crates (windows-sys only). Other platforms: no-op for now.
+//! Desktop integration: the notification-area (tray) icon, balloon / toast notifications and
+//! the single-instance check.
 //!
-//! OWNERSHIP: notify implementer.
+//! Windows (windows-sys only, no extra crates), on the thread "rustcord-tray", which owns a
+//! hidden window:
+//! - The icon (the flat mark, icon resource 2) shows while Rustcord runs. A left click, or a
+//!   click on a balloon, opens the window; the right-click menu has Open Rustcord, Mute, Deafen
+//!   and Quit Rustcord. Clicks reach the UI thread as `TrayAction`s plus a repaint
+//!   (`take_actions`, read in `App::logic`, which also runs while the window is hidden).
+//! - Balloons are rate limited: one at a time, the rest summed up (`Coalescer`).
+//! - Single instance per data dir: a named mutex (`claim_instance`); a second start posts
+//!   "show" (or "quit", `--quit`) to the running one's tray window (`signal_running`).
+//!
+//! Other platforms: no tray and no notifications yet; every start runs.
+//!
+//! OWNERSHIP: desktop engineer.
 
-/// Show a notification (non-blocking). Title/body are truncated to the platform limits.
+use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+/// A tray click (or a message from a second start) for the UI thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayAction {
+    Show,
+    ToggleMute,
+    ToggleDeafen,
+    Quit,
+}
+
+static ACTIONS: Mutex<Vec<TrayAction>> = Mutex::new(Vec::new());
+static WAKE: OnceLock<egui::Context> = OnceLock::new();
+/// The panel's voice toggles, for the menu's check marks: bit 0 muted, bit 1 deafened.
+static VOICE: AtomicU8 = AtomicU8::new(0);
+
+/// Puts the icon in the notification area (once, at startup). Tray clicks wake `ctx`.
+pub fn start(ctx: &egui::Context) {
+    let _ = WAKE.set(ctx.clone());
+    #[cfg(windows)]
+    imp::start();
+}
+
+/// The tray icon is up (or coming up), so a closed window can wait there.
+pub fn has_tray() -> bool {
+    #[cfg(windows)]
+    {
+        imp::has_tray()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Show a notification (non-blocking; only once `start` ran). Title/body are truncated to the
+/// platform limits.
 pub fn show(title: &str, body: &str) {
     #[cfg(windows)]
     imp::show(title, body);
@@ -18,89 +67,304 @@ pub fn shutdown() {
     imp::shutdown();
 }
 
+/// Tray clicks since the last call, oldest first.
+pub fn take_actions() -> Vec<TrayAction> {
+    std::mem::take(&mut *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The panel's mute / deafen state, shown as check marks in the tray menu.
+pub fn set_voice_state(muted: bool, deafened: bool) {
+    VOICE.store(u8::from(muted) | (u8::from(deafened) << 1), Ordering::Relaxed);
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn push(action: TrayAction) {
+    ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).push(action);
+    if let Some(ctx) = WAKE.get() {
+        ctx.request_repaint();
+    }
+}
+
+/// Name of the single-instance mutex and the tray window class for a data dir: runs with
+/// another data dir (`RUSTCORD_HOME`, tests, screenshots) never see each other.
+pub fn instance_name(data_dir: &Path) -> String {
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(data_dir.to_string_lossy().to_lowercase().as_bytes());
+    format!("Rustcord-{}", hash[..8].iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn my_instance_name() -> &'static str {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| instance_name(&crate::config::paths().config_dir))
+}
+
+/// True when no other Rustcord runs with this data dir; this process then holds it until it
+/// exits.
+pub fn claim_instance() -> bool {
+    #[cfg(windows)]
+    {
+        imp::claim_instance()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// Asks the Rustcord that holds this data dir to come to the front, or to quit (`quit`; then
+/// waits until it has exited, at most 20 s). False when none answered within 5 s.
+pub fn signal_running(quit: bool) -> bool {
+    #[cfg(windows)]
+    {
+        imp::signal_running(quit)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = quit;
+        false
+    }
+}
+
 #[cfg(windows)]
 mod imp {
+    use super::{TrayAction, push};
+    use std::cell::RefCell;
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering::SeqCst};
+    use std::sync::mpsc::{self, Sender};
     use std::time::{Duration, Instant};
-    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::{CreateMutexW, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
     use windows_sys::Win32::UI::Shell::{
-        NIF_ICON, NIF_INFO, NIF_TIP, NIIF_RESPECT_QUIET_TIME, NIIF_USER, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW, Shell_NotifyIconW,
+        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_RESPECT_QUIET_TIME, NIIF_USER, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT,
+        NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, HICON, HWND_MESSAGE, IDI_APPLICATION, IMAGE_ICON, LR_SHARED,
-        LoadIconW, LoadImageW, MSG, PM_REMOVE, PeekMessageW, SM_CXSMICON, SM_CYSMICON, TranslateMessage,
+        AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW,
+        GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON, IDI_APPLICATION, IMAGE_ICON, KillTimer, LR_SHARED, LoadIconW, LoadImageW, MF_CHECKED,
+        MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow,
+        SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WM_USER,
+        WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     /// At most one balloon per this interval; messages in between are summarized.
     const MIN_GAP: Duration = Duration::from_secs(3);
 
-    enum Msg {
-        Show(String, String),
-        Shutdown(Sender<()>),
+    /// Icon callbacks.
+    const WM_TRAY: u32 = WM_APP + 1;
+    /// `show` queued balloons.
+    const WM_BALLOON: u32 = WM_APP + 2;
+    /// From another process (`signal_running`), so the values must stay fixed.
+    const WM_SHOW_APP: u32 = WM_APP + 3;
+    const WM_QUIT_APP: u32 = WM_APP + 4;
+    /// `shutdown`.
+    const WM_STOP: u32 = WM_APP + 5;
+    const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
+    const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
+    const FLUSH_TIMER: usize = 1;
+    const ID_OPEN: usize = 1;
+    const ID_MUTE: usize = 2;
+    const ID_DEAFEN: usize = 3;
+    const ID_QUIT: usize = 4;
+
+    const NOT_STARTED: u8 = 0;
+    const STARTING: u8 = 1;
+    const RUNNING: u8 = 2;
+    const FAILED: u8 = 3;
+    static STATE: AtomicU8 = AtomicU8::new(NOT_STARTED);
+    /// The tray window (`HWND` as usize); 0 until it exists and after `shutdown`.
+    static WINDOW: AtomicUsize = AtomicUsize::new(0);
+    static PENDING: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    static STOPPED: Mutex<Option<Sender<()>>> = Mutex::new(None);
+    static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+    thread_local! {
+        /// The tray thread's icon state, for the window procedure.
+        static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
     }
 
-    enum Worker {
-        NotStarted,
-        Running(Sender<Msg>),
-        Stopped,
+    pub fn start() {
+        if STATE.compare_exchange(NOT_STARTED, STARTING, SeqCst, SeqCst).is_ok()
+            && std::thread::Builder::new().name("rustcord-tray".into()).spawn(run).is_err()
+        {
+            STATE.store(FAILED, SeqCst);
+        }
     }
 
-    static WORKER: Mutex<Worker> = Mutex::new(Worker::NotStarted);
+    pub fn has_tray() -> bool {
+        matches!(STATE.load(SeqCst), STARTING | RUNNING)
+    }
 
     pub fn show(title: &str, body: &str) {
-        let mut worker = WORKER.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(*worker, Worker::NotStarted) {
-            let (tx, rx) = mpsc::channel();
-            let spawned = std::thread::Builder::new().name("rustcord-tray".into()).spawn(move || run(rx));
-            *worker = if spawned.is_ok() { Worker::Running(tx) } else { Worker::Stopped };
+        if !has_tray() {
+            return;
         }
-        if let Worker::Running(tx) = &*worker {
-            let _ = tx.send(Msg::Show(title.to_owned(), body.to_owned()));
-        }
+        PENDING.lock().unwrap_or_else(|e| e.into_inner()).push((title.to_owned(), body.to_owned()));
+        // Not there yet: `run` picks the queue up once the window exists.
+        post(WINDOW.load(SeqCst), WM_BALLOON);
     }
 
     pub fn shutdown() {
-        let previous = std::mem::replace(&mut *WORKER.lock().unwrap_or_else(|e| e.into_inner()), Worker::Stopped);
-        if let Worker::Running(tx) = previous {
-            let (ack_tx, ack_rx) = mpsc::channel();
-            // Wait briefly so the icon is really gone before the process exits (no ghost icon).
-            if tx.send(Msg::Shutdown(ack_tx)).is_ok() {
-                let _ = ack_rx.recv_timeout(Duration::from_secs(1));
-            }
+        let hwnd = WINDOW.swap(0, SeqCst);
+        if hwnd == 0 {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        *STOPPED.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        // Wait briefly so the icon is really gone before the process exits (no ghost icon).
+        if post(hwnd, WM_STOP) {
+            let _ = rx.recv_timeout(Duration::from_secs(1));
         }
     }
 
-    fn run(rx: Receiver<Msg>) {
-        let Some(tray) = Tray::create() else { return };
-        let mut coalescer = Coalescer::default();
-        loop {
-            tray.pump();
-            // Block without a timeout while nothing is pending: the window gets no callbacks, so idle stays at zero wakeups.
-            let received = match coalescer.next_flush(Instant::now()) {
-                Some(wait) => rx.recv_timeout(wait),
-                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            };
-            match received {
-                Ok(Msg::Show(title, body)) => {
-                    if let Some((t, b)) = coalescer.push(Instant::now(), title, body) {
-                        tray.balloon(&t, &b);
+    fn post(hwnd: usize, msg: u32) -> bool {
+        // SAFETY: posting to a window handle is safe even if it has gone meanwhile.
+        hwnd != 0 && unsafe { PostMessageW(hwnd as HWND, msg, 0, 0) } != 0
+    }
+
+    pub fn claim_instance() -> bool {
+        let name = wide(&format!(r"Local\{}", super::my_instance_name()));
+        // SAFETY: a NUL-terminated name; the handle stays open until the process exits.
+        unsafe {
+            let mutex = CreateMutexW(null(), 0, name.as_ptr());
+            if !mutex.is_null() && GetLastError() == ERROR_ALREADY_EXISTS {
+                CloseHandle(mutex);
+                return false;
+            }
+        }
+        // Also when the mutex could not be made at all: better two windows than none.
+        true
+    }
+
+    pub fn signal_running(quit: bool) -> bool {
+        let class = wide(super::my_instance_name());
+        // The running one may still be creating its tray window.
+        for _ in 0..50 {
+            // SAFETY: plain Win32 calls with valid arguments; the process handle is closed.
+            unsafe {
+                let hwnd = FindWindowW(class.as_ptr(), null());
+                if !hwnd.is_null() {
+                    let mut pid = 0;
+                    GetWindowThreadProcessId(hwnd, &mut pid);
+                    // The user just started this process, so it may hand the foreground on.
+                    AllowSetForegroundWindow(pid);
+                    let process = if quit { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) } else { null_mut() };
+                    PostMessageW(hwnd, if quit { WM_QUIT_APP } else { WM_SHOW_APP }, 0, 0);
+                    if !process.is_null() {
+                        WaitForSingleObject(process, 20_000);
+                        CloseHandle(process);
                     }
+                    return true;
                 }
-                Ok(Msg::Shutdown(ack)) => {
-                    drop(tray);
-                    let _ = ack.send(());
-                    return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    fn run() {
+        let Some(tray) = Tray::create() else {
+            STATE.store(FAILED, SeqCst);
+            return;
+        };
+        let hwnd = tray.hwnd as usize;
+        TRAY.with(|t| *t.borrow_mut() = Some(tray));
+        WINDOW.store(hwnd, SeqCst);
+        STATE.store(RUNNING, SeqCst);
+        // Balloons asked for while the window was being created.
+        post(hwnd, WM_BALLOON);
+        let mut msg = MSG::default();
+        // SAFETY: the standard message loop of the thread that owns the window; it blocks, so an
+        // idle tray costs no wakeups.
+        unsafe {
+            while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        if let Some(ack) = STOPPED.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = ack.send(());
+        }
+    }
+
+    unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        match msg {
+            // Version 4: the event in the low word of lParam, the click point in wParam.
+            WM_TRAY => match (lparam & 0xffff) as u32 {
+                NIN_SELECT | NIN_KEYSELECT | NIN_BALLOONUSERCLICK => push(TrayAction::Show),
+                WM_CONTEXTMENU => menu(hwnd, (wparam & 0xffff) as i16 as i32, ((wparam >> 16) & 0xffff) as i16 as i32),
+                _ => {}
+            },
+            WM_SHOW_APP => push(TrayAction::Show),
+            WM_QUIT_APP => push(TrayAction::Quit),
+            WM_BALLOON | WM_TIMER => with_tray(|t| t.balloons(msg == WM_TIMER)),
+            WM_STOP => {
+                // Dropping the tray removes the icon.
+                TRAY.with(|t| t.borrow_mut().take());
+                // SAFETY: our own window, destroyed once, on its thread.
+                unsafe {
+                    DestroyWindow(hwnd);
+                    PostQuitMessage(0);
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
             }
-            if let Some((t, b)) = coalescer.flush(Instant::now()) {
-                tray.balloon(&t, &b);
+            // Explorer restarted: the icon is gone, add it again.
+            m if m != 0 && m == TASKBAR_CREATED.load(SeqCst) => with_tray(|t| {
+                t.add();
+            }),
+            // SAFETY: the default handling for everything else.
+            _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+        0
+    }
+
+    /// Short borrows only: the menu's modal loop runs this window procedure again.
+    fn with_tray(f: impl FnOnce(&mut Tray)) {
+        TRAY.with(|t| {
+            if let Some(tray) = t.borrow_mut().as_mut() {
+                f(tray);
             }
+        });
+    }
+
+    /// The right-click menu at the click point; the choice goes to the UI thread.
+    fn menu(hwnd: HWND, x: i32, y: i32) {
+        let voice = super::VOICE.load(SeqCst);
+        let check = |on: bool| if on { MF_CHECKED } else { 0 };
+        let items = [
+            (ID_OPEN, "Open Rustcord", MF_STRING),
+            (ID_MUTE, "Mute", MF_STRING | check(voice & 1 != 0)),
+            (ID_DEAFEN, "Deafen", MF_STRING | check(voice & 2 != 0)),
+            (0, "", MF_SEPARATOR),
+            (ID_QUIT, "Quit Rustcord", MF_STRING),
+        ];
+        // SAFETY: a menu created, shown and destroyed here, with NUL-terminated labels that
+        // outlive the calls.
+        let picked = unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return;
+            }
+            let labels: Vec<Vec<u16>> = items.iter().map(|i| wide(i.1)).collect();
+            for (item, label) in items.iter().zip(&labels) {
+                AppendMenuW(menu, item.2, item.0, if item.2 == MF_SEPARATOR { null() } else { label.as_ptr() });
+            }
+            SetMenuDefaultItem(menu, ID_OPEN as u32, 0);
+            // In front first, or the menu stays open when clicking elsewhere.
+            SetForegroundWindow(hwnd);
+            let picked = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, hwnd, null());
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+            DestroyMenu(menu);
+            picked as usize
+        };
+        match picked {
+            ID_OPEN => push(TrayAction::Show),
+            ID_MUTE => push(TrayAction::ToggleMute),
+            ID_DEAFEN => push(TrayAction::ToggleDeafen),
+            ID_QUIT => push(TrayAction::Quit),
+            _ => {}
         }
     }
 
@@ -149,23 +413,38 @@ mod imp {
         }
     }
 
-    /// Hidden message-only window + tray icon, owned by the worker thread.
+    /// The hidden window's icon, owned by the tray thread.
     struct Tray {
         hwnd: HWND,
         /// The flat mark in the notification area.
         icon: HICON,
         /// The app icon on balloons / toasts.
         app_icon: HICON,
+        coalescer: Coalescer,
     }
 
     impl Tray {
         fn create() -> Option<Self> {
-            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let class = wide(super::my_instance_name());
+            let title = wide(crate::config::APP_NAME);
             // SAFETY: plain Win32 calls with valid, NUL-terminated arguments; the handles are
             // only used on this thread.
             unsafe {
                 let module = GetModuleHandleW(null());
-                let hwnd = CreateWindowExW(0, class.as_ptr(), null(), 0, 0, 0, 0, 0, HWND_MESSAGE, null_mut(), module, null());
+                let wc = WNDCLASSEXW {
+                    cbSize: size_of::<WNDCLASSEXW>() as u32,
+                    lpfnWndProc: Some(wndproc),
+                    hInstance: module,
+                    lpszClassName: class.as_ptr(),
+                    ..Default::default()
+                };
+                if RegisterClassExW(&wc) == 0 {
+                    return None;
+                }
+                TASKBAR_CREATED.store(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()), SeqCst);
+                // Hidden and top-level (not message-only): it gets the TaskbarCreated broadcast,
+                // and a second start finds it by its class name.
+                let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, 0, 0, null_mut(), null_mut(), module, null());
                 if hwnd.is_null() {
                     return None;
                 }
@@ -178,8 +457,10 @@ mod imp {
                 }
                 let mark = LoadImageW(module, std::ptr::without_provenance(2), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
                 let icon = if mark.is_null() { app_icon } else { mark };
-                let tray = Tray { hwnd, icon, app_icon };
-                tray.add().then_some(tray)
+                let tray = Tray { hwnd, icon, app_icon, coalescer: Coalescer::default() };
+                // Fails while the taskbar is not up yet (early at sign-in): TaskbarCreated adds it then.
+                tray.add();
+                Some(tray)
             }
         }
 
@@ -194,11 +475,41 @@ mod imp {
 
         fn add(&self) -> bool {
             let mut data = self.data();
-            data.uFlags = NIF_ICON | NIF_TIP;
+            data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+            data.uCallbackMessage = WM_TRAY;
             data.hIcon = self.icon;
             fill_wide(&mut data.szTip, crate::config::APP_NAME);
             // SAFETY: `data` is a fully initialized NOTIFYICONDATAW with the right cbSize.
-            unsafe { Shell_NotifyIconW(NIM_ADD, &data) != 0 }
+            unsafe {
+                if Shell_NotifyIconW(NIM_ADD, &data) == 0 {
+                    return false;
+                }
+                // Version 4: NIN_SELECT for clicks, the menu point in wParam.
+                data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+                Shell_NotifyIconW(NIM_SETVERSION, &data) != 0
+            }
+        }
+
+        /// Shows what `show` queued and what the rate limit held back; arms the timer for the rest.
+        fn balloons(&mut self, timer: bool) {
+            let now = Instant::now();
+            // SAFETY: our window's timer, on its thread.
+            if timer {
+                unsafe { KillTimer(self.hwnd, FLUSH_TIMER) };
+            }
+            let queued = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+            for (title, body) in queued {
+                if let Some((t, b)) = self.coalescer.push(now, title, body) {
+                    self.balloon(&t, &b);
+                }
+            }
+            if let Some((t, b)) = self.coalescer.flush(now) {
+                self.balloon(&t, &b);
+            }
+            if let Some(wait) = self.coalescer.next_flush(now) {
+                // SAFETY: as above.
+                unsafe { SetTimer(self.hwnd, FLUSH_TIMER, wait.as_millis().clamp(1, u32::MAX as u128) as u32, None) };
+            }
         }
 
         fn balloon(&self, title: &str, body: &str) {
@@ -217,28 +528,18 @@ mod imp {
                 }
             }
         }
-
-        fn pump(&self) {
-            let mut msg = MSG::default();
-            // SAFETY: standard message loop on the thread that owns the window.
-            unsafe {
-                while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-            }
-        }
     }
 
     impl Drop for Tray {
         fn drop(&mut self) {
             let data = self.data();
-            // SAFETY: handles were created by this thread and are destroyed exactly once.
-            unsafe {
-                Shell_NotifyIconW(NIM_DELETE, &data);
-                DestroyWindow(self.hwnd);
-            }
+            // SAFETY: removes our own icon (the window is destroyed by WM_STOP).
+            unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
         }
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
     }
 
     /// Copies `s` into a fixed UTF-16 buffer with a terminating NUL.
@@ -325,5 +626,30 @@ mod imp {
             // Quiet for long enough: shown immediately again.
             assert_eq!(c.push(s(9001), "t9".into(), "b9".into()), Some(msg(9)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instance_name_follows_the_data_dir() {
+        let user = instance_name(Path::new(r"C:\Users\ann\AppData\Roaming\Rustcord\config"));
+        assert!(user.starts_with("Rustcord-") && user.len() == "Rustcord-".len() + 16, "{user}");
+        // Windows paths are case-insensitive: the same folder is the same instance.
+        assert_eq!(user, instance_name(Path::new(r"C:\USERS\Ann\AppData\Roaming\Rustcord\config")));
+        // A test run's RUSTCORD_HOME never meets the user's Rustcord.
+        assert_ne!(user, instance_name(Path::new(r"C:\Temp\fx4\shot\config")));
+        assert_ne!(instance_name(Path::new(r"C:\a\config")), instance_name(Path::new(r"C:\b\config")));
+    }
+
+    #[test]
+    fn tray_actions_queue_in_order() {
+        push(TrayAction::ToggleMute);
+        push(TrayAction::Show);
+        let got = take_actions();
+        assert!(got.ends_with(&[TrayAction::ToggleMute, TrayAction::Show]), "{got:?}");
+        assert!(take_actions().is_empty());
     }
 }

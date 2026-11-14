@@ -1,16 +1,18 @@
 //! App settings kept on this device (`config::Settings`, docs/SETTINGS_NOTES.md §3 "L"):
 //! Accessibility, Windows Settings, Streamer Mode; and `frame`, the per-frame
 //! hook that applies them: zoom (Ctrl +/−/0 included, kept in `Settings::zoom`), reduced motion,
-//! the global keybinds (mute, deafen, Streamer Mode), start minimized, close button minimizes.
-//! OWNERSHIP: user-settings engineer.
+//! the global keybinds (mute, deafen, Streamer Mode); `logic`, the window's tray life (close to
+//! the tray, tray menu, `--minimized`), which also runs while the window is hidden.
+//! OWNERSHIP: user-settings engineer; Windows Settings and `logic`: desktop engineer.
 
 use super::super::messages::Pal;
-use super::super::{UiCx, hint, section};
+use super::super::{UiCx, ViewState, hint, section};
 use super::keybinds::{self, Bind};
 use super::switch_row;
-use crate::backend::Command;
-use crate::config::AnimateMode;
-use egui::{RichText, Slider};
+use crate::backend::{Command, CommandSender};
+use crate::config::{AnimateMode, Settings};
+use crate::notify::TrayAction;
+use egui::{RichText, Slider, ViewportCommand};
 
 /// Accessibility (this device): saturation, role colours, chat text size, zoom, message
 /// spacing, motion. True when the settings changed.
@@ -97,59 +99,53 @@ fn released(r: &egui::Response) -> bool {
     r.drag_stopped() || (r.changed() && !r.dragged())
 }
 
-/// Windows Settings: open on startup (the HKCU Run value, written only when toggled), start
-/// minimized, close button minimizes.
+/// Windows Settings: open at sign-in and start minimized (the HKCU Run value itself, read each
+/// time the page draws: the installer or another copy may have changed it), minimize to tray.
 pub(super) fn windows(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     if !cfg!(windows) {
         hint(ui, cx.theme, "Only on Windows.");
         return false;
     }
-    let s = &mut *cx.settings;
-    let mut changed = false;
     section(ui, cx.theme, "System startup");
-    let open = switch_row(ui, cx.theme, "Open Rustcord when I sign in", None, &mut s.open_on_startup);
+    let run = autostart();
+    let mut open = run.is_some();
+    let mut minimized = run.as_deref().is_none_or(|cmd| cmd.contains("--minimized"));
+    let mut toggled = switch_row(ui, cx.theme, "Open Rustcord when I sign in to Windows", None, &mut open);
     let theme = &*cx.theme;
-    let minimized = ui
-        .add_enabled_ui(s.open_on_startup, |ui| switch_row(ui, theme, "Start minimized", None, &mut s.start_minimized))
+    toggled |= ui
+        .add_enabled_ui(open, |ui| switch_row(ui, theme, "Start minimized", Some("It starts in the notification area."), &mut minimized))
         .inner;
-    if open || minimized {
-        match run_at_sign_in(s.open_on_startup, s.start_minimized) {
-            Ok(()) => changed = true,
-            Err(e) => {
-                // Not written: show the switch as it is.
-                s.open_on_startup ^= open;
-                s.start_minimized ^= minimized;
-                cx.view.toast(format!("Could not change the startup entry: {e}"), true);
-            }
-        }
+    if toggled && let Err(e) = set_autostart(open, minimized) {
+        cx.view.toast(format!("Could not change the startup entry: {e}"), true);
     }
     section(ui, cx.theme, "Window");
-    changed |= switch_row(ui, cx.theme, "Close button minimizes", Some("Quit from the taskbar's right-click menu then."), &mut s.close_minimizes);
-    changed
+    switch_row(
+        ui,
+        cx.theme,
+        "Minimize to tray when I close the window",
+        Some("Rustcord keeps running in the notification area. Quit it from the tray icon."),
+        &mut cx.settings.minimize_to_tray,
+    )
 }
 
-/// The HKCU `…\CurrentVersion\Run` value "Rustcord" (via reg.exe: no registry feature needed for
-/// one write on a click): this exe, with `--minimized` when `minimized`; removed when `!on`.
-fn run_at_sign_in(on: bool, minimized: bool) -> Result<(), String> {
+/// The command line of the HKCU Run value "Rustcord", if there is one.
+fn autostart() -> Option<String> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut cmd = std::process::Command::new("reg");
-        if on {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let data = format!("\"{}\"{}", exe.display(), if minimized { " --minimized" } else { "" });
-            cmd.args(["add", KEY, "/v", crate::config::APP_NAME, "/t", "REG_SZ", "/d", &data, "/f"]);
-        } else {
-            cmd.args(["delete", KEY, "/v", crate::config::APP_NAME, "/f"]);
-        }
-        let out = cmd.creation_flags(CREATE_NO_WINDOW).output().map_err(|e| e.to_string())?;
-        // Removing a value that is already gone is fine.
-        if !out.status.success() && on {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
-        }
-        Ok(())
+        crate::winreg::autostart(crate::config::APP_NAME)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Writes the Run value for this exe (`--minimized` when `minimized`), or removes it.
+fn set_autostart(on: bool, minimized: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        crate::winreg::set_autostart(crate::config::APP_NAME, on.then_some(exe.as_path()), minimized)
     }
     #[cfg(not(windows))]
     {
@@ -199,24 +195,62 @@ pub(in crate::ui) fn frame(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     if cx.view.screen == super::super::Screen::Main && !keybinds::recording(ctx) {
         save |= global_keys(ctx, cx);
     }
-    // Started at sign-in (`--minimized` in the Run value): to the taskbar on the first frame.
-    let started_id = egui::Id::unique("rc_started");
-    if !ctx.data(|d| d.get_temp::<bool>(started_id).unwrap_or(false)) {
-        ctx.data_mut(|d| d.insert_temp(started_id, true));
-        if std::env::args().any(|a| a == "--minimized") {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
-    }
     exclude_from_capture(ctx, cx.settings.streamer.enabled && cx.settings.streamer.hide_from_capture);
-    if cx.settings.close_minimizes && ctx.input(|i| i.viewport().close_requested()) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-    }
     if save
         && let Err(e) = cx.settings.save()
     {
         cx.view.toast(format!("Could not save settings: {e}"), true);
     }
+}
+
+/// The window's tray life, every pass (`RustcordApp::logic`), also while it is hidden: tray
+/// menu clicks, closing to the tray (× and Alt+F4) unless quitting, `--minimized` at startup;
+/// and the mute state for the tray menu's check marks.
+pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &CommandSender, settings: &mut Settings) {
+    let quitting = egui::Id::unique("rc_quitting");
+    let started = egui::Id::unique("rc_started");
+    if !ctx.data(|d| d.get_temp::<bool>(started).unwrap_or(false)) {
+        ctx.data_mut(|d| d.insert_temp(started, true));
+        // Started at sign-in (`--minimized` in the Run value): straight to the tray.
+        if crate::notify::has_tray() && std::env::args().any(|a| a == "--minimized") {
+            to_tray(ctx);
+        }
+    }
+    for action in crate::notify::take_actions() {
+        match action {
+            TrayAction::Show => {
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+            }
+            TrayAction::ToggleMute | TrayAction::ToggleDeafen => toggle_voice(view, cmd, action == TrayAction::ToggleMute),
+            TrayAction::Quit => {
+                ctx.data_mut(|d| d.insert_temp(quitting, true));
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+        }
+    }
+    let quit = ctx.data(|d| d.get_temp::<bool>(quitting).unwrap_or(false));
+    // Without a tray icon (screenshot runs, a failed icon) closing quits as before.
+    if !quit && settings.minimize_to_tray && crate::notify::has_tray() && ctx.input(|i| i.viewport().close_requested()) {
+        ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        to_tray(ctx);
+        if !settings.tray_hint_shown {
+            settings.tray_hint_shown = true;
+            if let Err(e) = settings.save() {
+                view.toast(format!("Could not save settings: {e}"), true);
+            }
+            crate::notify::show(crate::config::APP_NAME, "Rustcord is still running in the tray. Quit it from the tray icon.");
+        }
+    }
+    crate::notify::set_voice_state(view.self_mute, view.self_deaf);
+}
+
+/// Hides the window, taskbar button included. Minimized as well, so eframe runs only `logic`
+/// (no ui pass, no painting) while it waits in the tray.
+fn to_tray(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
 }
 
 /// Streamer Mode's "Hide window from screen capture": the window's display affinity follows
@@ -274,15 +308,7 @@ fn global_keys(ctx: &egui::Context, cx: &mut UiCx<'_>) -> bool {
     let pressed = |b| keybinds::shortcut(cx.settings, b).is_some_and(|k| ctx.input_mut(|i| i.consume_shortcut(&k)));
     let (mic, phones, streamer) = (pressed(Bind::ToggleMute), pressed(Bind::ToggleDeafen), pressed(Bind::ToggleStreamerMode));
     if mic || phones {
-        let (mute, deaf) = (cx.view.self_mute, cx.view.self_deaf);
-        let (m, d) = super::super::sidebar::toggle_voice(mute, deaf, mic);
-        (cx.view.self_mute, cx.view.self_deaf) = (m, d);
-        if d != deaf {
-            cx.cmd.send(Command::SetSelfDeaf(d));
-        }
-        if m != mute {
-            cx.cmd.send(Command::SetSelfMute(m));
-        }
+        toggle_voice(cx.view, cx.cmd, mic);
     }
     if streamer {
         let s = &mut cx.settings.streamer;
@@ -290,4 +316,17 @@ fn global_keys(ctx: &egui::Context, cx: &mut UiCx<'_>) -> bool {
         cx.view.toast(if s.enabled { "Streamer Mode on" } else { "Streamer Mode off" }.to_owned(), false);
     }
     streamer
+}
+
+/// Mute (`mic`) or Deafen toggled like the user panel's buttons (keybind, tray menu).
+fn toggle_voice(view: &mut ViewState, cmd: &CommandSender, mic: bool) {
+    let (mute, deaf) = (view.self_mute, view.self_deaf);
+    let (m, d) = super::super::sidebar::toggle_voice(mute, deaf, mic);
+    (view.self_mute, view.self_deaf) = (m, d);
+    if d != deaf {
+        cmd.send(Command::SetSelfDeaf(d));
+    }
+    if m != mute {
+        cmd.send(Command::SetSelfMute(m));
+    }
 }

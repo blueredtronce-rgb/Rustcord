@@ -130,6 +130,31 @@ checked (OS credential store, see below). The password and 2FA code are never wr
 disk or logs, are not shown in error messages, and Rustcord wipes its own copies from
 memory after sending them. The QR login uses a new RSA key per code that only lives in memory.
 
+## Install
+
+Run `Rustcord-Setup-<version>.exe`. It installs for your Windows user only (no administrator
+rights), like Discord: the app goes to `%LOCALAPPDATA%\Programs\Rustcord`, with a Start menu
+shortcut, an optional desktop shortcut and an entry in Settings → Apps. "Start Rustcord when I
+sign in" (on by default) starts it hidden in the notification area. Running the setup again
+updates Rustcord in place; a running Rustcord is asked to quit first.
+
+The setup is not code-signed, so Windows SmartScreen may say "Windows protected your PC".
+Select **More info**, then **Run anyway**.
+
+While Rustcord runs, its icon sits in the notification area: click it to open the window,
+right-click it for Mute, Deafen and Quit Rustcord. Closing the window keeps Rustcord running
+there (notifications and voice keep working); Settings → Windows Settings turns that off and
+sets the sign-in start. Starting Rustcord again brings the running window to the front.
+
+To uninstall, use Settings → Apps → Rustcord → Uninstall. "Also delete my local data and sign
+out" also removes the settings, the cache and the saved login.
+
+To build the setup yourself (Windows, see Build):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1   # -> dist\Rustcord-Setup-<version>.exe
+```
+
 ## Build
 
 Requirements: Rust stable (1.95+; tested with 1.99); on Windows, the MSVC build tools
