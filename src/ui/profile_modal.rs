@@ -417,6 +417,10 @@ pub(super) fn note_field(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user_id: Id, save
     let Some((_, text)) = draft.as_mut() else { return };
     let edit = egui::TextEdit::multiline(text).hint_text("Click to add a note").char_limit(256).desired_rows(1).desired_width(f32::INFINITY).frame(Frame::NONE);
     let resp = ui.add(edit);
+    // Frameless, so egui draws no focused border: the house ring shows the field has focus.
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, &Pal::new(cx.theme), resp.rect.expand2(vec2(4.0, 1.0)), 2.0);
+    }
     if resp.lost_focus() && text.trim() != saved.trim() {
         let text = text.clone();
         send_note(cx, user_id, &text);
