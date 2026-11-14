@@ -92,9 +92,9 @@ pub fn show_popup(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let pal = look.theme.map_or(Pal { surface: app.tk.raised, ..app }, |t| cosmetics::theme_pal(&app, t));
     let r = pal.modal_radius();
     let shadow = ctx.global_style().visuals.popup_shadow;
-    // The footer's More menu is a layer of its own: a click or Escape while it is open closes
-    // only the menu (read before the menu closes itself this pass).
-    let menu_open = egui::Popup::is_id_open(ctx, menu_id());
+    // The footer's More menu, a badge's popover and the server tag card are layers of their own:
+    // a click or Escape while one is open closes only that (read before it closes itself).
+    let menu_open = egui::Popup::is_any_open(ctx);
     let mut bounds = ctx.content_rect().shrink(16.0);
     // A frame's top staples stand above the card: their room too, not the title bar.
     bounds.min.y = ctx.content_rect().top() + super::TITLE_BAR_H + 8.0 + look.overflow_top(WIDTH);

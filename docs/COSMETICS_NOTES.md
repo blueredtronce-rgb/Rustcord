@@ -448,7 +448,9 @@ Font loading (lazy): register the font `egui::FontFamily::Name("dn{id}")` only w
 - `badges[] {id, description, icon, link?}`. In a guild context, append `guild_badges[]`.
 - `private:true` profiles have none.
 - Icon: `https://cdn.discordapp.com/badge-icons/{icon}.png` (72×72 [ED]; `size` not needed). Draw at 22 px (web size UNCONFIRMED), gap 4, wrapped in a row with a 4 px radius background.
-- Tooltip = `description`. Click opens `link` when present.
+- Tooltip = `description`. Click (Enter / Space) opens Rustcord's info popover, never the
+  `link` (`cosmetics::badge_info`, own copy; `docs/GUILD_CARD_NOTES.md` §7). The icon loads at
+  72 px for the popover's 40 px copy.
 
 **Local description rewrites** [MOB `UserProfileStore.tsx`]:
 - `premium` → "Subscriber since {premium_since:date}".

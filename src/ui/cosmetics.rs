@@ -792,9 +792,57 @@ pub fn badges(user: &User, profile: Option<&UserProfile>) -> Vec<ProfileBadge> {
     out
 }
 
-/// 22 px badge icons on a faint pill: the description as tooltip, a click opens its https link.
-/// Only loaded icons show (no grey placeholder circles, docs/DESIGN.md §12); none loaded yet,
-/// no pill.
+/// What a badge is, in Rustcord's own words: (title, body); None = an id this table doesn't
+/// know (its API description is then the whole popover). UNCONFIRMED facts (COSMETICS_NOTES §9):
+/// the `premium_tenure_*` ids, what earns `orb_profile_badge`, the booster month steps.
+pub fn badge_info(id: &str) -> Option<(String, String)> {
+    let fixed = |t: &str, b: &str| Some((t.to_owned(), b.to_owned()));
+    let house = "One of the three HypeSquad houses. People joined a house through a short quiz in Discord's settings.";
+    if let Some(n) = id.strip_prefix("premium_tenure_").and_then(|r| r.split('_').next()).and_then(|n| n.parse::<u32>().ok()) {
+        let months = if n == 1 { "1 month".to_owned() } else { format!("{n} months") };
+        return Some((format!("Nitro, {months}"), format!("Has had Nitro for at least {months}. The gem changes as the time grows.")));
+    }
+    if id.starts_with("guild_booster_lvl") {
+        return fixed("Server booster", "Boosts a server. The gem changes as the boost goes on, after 1, 2, 3, 6, 9, 12, 15, 18 and 24 months.");
+    }
+    match id {
+        "staff" => fixed("Discord staff", "Works at Discord."),
+        "partner" => fixed("Partnered server owner", "Owns a server in the Discord Partner Program."),
+        "certified_moderator" => fixed("Moderator programs alumni", "Took part in Discord's programs for community moderators."),
+        "hypesquad" => fixed("HypeSquad Events", "Helped out at Discord community events as part of HypeSquad Events."),
+        "hypesquad_house_1" => fixed("HypeSquad Bravery", house),
+        "hypesquad_house_2" => fixed("HypeSquad Brilliance", house),
+        "hypesquad_house_3" => fixed("HypeSquad Balance", house),
+        "bug_hunter_level_1" => fixed("Bug hunter", "Reported bugs to Discord that were confirmed and fixed."),
+        "bug_hunter_level_2" => fixed("Gold bug hunter", "One of the most active bug hunters, with many confirmed reports."),
+        "active_developer" => fixed("Active developer", "Owns an app whose commands were used in the last 30 days. The badge goes away when the app stops being used."),
+        "verified_developer" => fixed("Early verified bot developer", "Had a bot verified by Discord before August 2020, when this badge stopped being given out."),
+        "early_supporter" => fixed("Early supporter", "Bought Nitro before October 2018."),
+        "premium" => fixed("Nitro", "Subscribes to Nitro. The date shows when the subscription started."),
+        "legacy_username" => fixed("Legacy username", "This account is older than Discord's 2023 switch to unique usernames. The old name with its #number is shown above."),
+        "quest_completed" => fixed("Quest completed", "Finished a Quest: a task from a game, like playing it for a while, that earns a reward."),
+        "orb_profile_badge" => fixed("Orbs", "Bought with Orbs, the reward points from Quests."),
+        "bot_commands" => fixed("Supports commands", "This app has commands. Type / in a chat to use them."),
+        "automod" => fixed("Uses AutoMod", "This app makes AutoMod rules that filter messages in servers."),
+        _ => None,
+    }
+}
+
+/// A badge popover's (title, subtitle, body): the subtitle is the API description ("Subscriber
+/// since Mar 4, 2021") when it says more than the title.
+fn badge_text(b: &ProfileBadge) -> (String, Option<&str>, Option<String>) {
+    match badge_info(&b.id) {
+        Some((title, body)) => {
+            let sub = Some(b.description.as_str()).filter(|d| !d.trim().is_empty() && !d.eq_ignore_ascii_case(&title));
+            (title, sub, Some(body))
+        }
+        None => (b.description.clone(), None, None),
+    }
+}
+
+/// 22 px badge icons on a faint pill: the description as tooltip; a click (or Enter / Space)
+/// opens its info popover (`badge_popover`), never a link. Only loaded icons show (no grey
+/// placeholder circles, docs/DESIGN.md §12); none loaded yet, no pill.
 pub(super) fn badge_row(ui: &mut egui::Ui, images: &mut ImageCache, pal: &Pal, badges: &[ProfileBadge]) {
     let loaded: Vec<(SizedTexture, &ProfileBadge)> = badges.iter().filter_map(|b| Some((cdn::badge_icon_url(&b.icon).and_then(|u| badge_icon(ui, images, &u))?, b))).collect();
     if loaded.is_empty() {
@@ -803,30 +851,68 @@ pub(super) fn badge_row(ui: &mut egui::Ui, images: &mut ImageCache, pal: &Pal, b
     egui::Frame::new().fill(pal.tk.hover).corner_radius(pal.radius).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            for (tex, b) in loaded {
+            for (i, (tex, b)) in loaded.into_iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
                 ui.painter().add(tex_shape(tex, r, 0, Color32::WHITE));
-                let link = b.link.as_deref().filter(|l| l.starts_with("https://"));
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &b.description));
-                let resp = resp.on_hover_text(&b.description);
-                if let Some(l) = link
-                    && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
-                {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(l));
+                if resp.has_focus() {
+                    super::messages::focus_ring(ui, pal, r, 4.0);
                 }
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &b.description));
+                let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+                let resp = if open { resp } else { resp.on_hover_text(&b.description) }.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let toggle = resp.clicked() || demo_badge(i);
+                egui::Popup::from_response(&resp)
+                    .open_memory(toggle.then_some(egui::SetOpenCommand::Toggle))
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .width(280.0)
+                    .gap(8.0)
+                    .frame(egui::Frame::popup(ui.style()).inner_margin(12))
+                    .show(|ui| badge_popover(ui, pal, tex, b));
             }
         });
     });
+}
+
+/// The badge's info (280 wide, E2): its icon at 40, the title (heading 16/600), the API
+/// description under it (meta, muted), then what it means (ui 14).
+fn badge_popover(ui: &mut egui::Ui, pal: &Pal, tex: SizedTexture, b: &ProfileBadge) {
+    ui.set_width(256.0);
+    let (title, sub, body) = badge_text(b);
+    // The app's colours (the popup's), not a themed card's: it floats outside the card.
+    let pal = &Pal { text: ui.visuals().text_color(), muted: ui.visuals().weak_text_color(), ..*pal };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+        ui.painter().add(tex_shape(tex, r, 0, Color32::WHITE));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add(egui::Label::new(egui::RichText::new(&title).font(FontId::new(pal.heading(), crate::theme::semibold_family())).color(pal.text)).wrap());
+            if let Some(s) = sub {
+                ui.add(egui::Label::new(egui::RichText::new(s).size(pal.meta()).color(pal.muted)).wrap());
+            }
+        });
+    });
+    if let Some(body) = body {
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(egui::RichText::new(body).size(pal.ui()).color(pal.text)).wrap());
+    }
+}
+
+/// Test hook `RUSTCORD_NAV_DEMO=profile,badge:<i>`: the i-th shown badge's popover opens once.
+fn demo_badge(i: usize) -> bool {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let want = super::sidebar::nav_demo_value("badge").and_then(|v| v.parse::<usize>().ok());
+    want == Some(i) && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A badge icon still missing this long after it was first drawn is asked for once more: a
 /// failed load would otherwise wait a minute, and for a repaint.
 const BADGE_RETRY_SECS: f64 = 6.0;
 
-/// A 22 px badge icon, retried once (`BADGE_RETRY_SECS`); a load still running is not sent
-/// twice (the loader joins it).
+/// A badge icon at its CDN size (72, so the 40 px popover icon is sharp), retried once
+/// (`BADGE_RETRY_SECS`); a load still running is not sent twice (the loader joins it).
 fn badge_icon(ui: &egui::Ui, images: &mut ImageCache, url: &str) -> Option<SizedTexture> {
-    let side = px(ui.ctx(), 22.0);
+    let side = 72;
     if let Some(tex) = images.get(ui.ctx(), url, side, false) {
         return Some(tex);
     }
@@ -1120,6 +1206,21 @@ mod tests {
                 assert_eq!(v.color.a(), 0, "clear past the fade");
             }
         }
+    }
+
+    #[test]
+    fn badge_copy_is_our_own_and_keeps_the_dates() {
+        assert_eq!(badge_info("premium").map(|b| b.0), Some("Nitro".into()));
+        assert_eq!(badge_info("guild_booster_lvl3").map(|b| b.0), Some("Server booster".into()));
+        assert_eq!(badge_info("premium_tenure_12_month_v2").map(|b| b.0), Some("Nitro, 12 months".into()));
+        let (title, body) = badge_info("premium_tenure_1_month").unwrap();
+        assert_eq!(title, "Nitro, 1 month");
+        assert!(body.contains("at least 1 month."));
+        assert_eq!(badge_info("something_new"), None);
+        let b = |id: &str, d: &str| ProfileBadge { id: id.into(), description: d.into(), icon: String::new(), link: Some("https://x".into()) };
+        assert_eq!(badge_text(&b("premium", "Subscriber since Mar 4, 2021")).1, Some("Subscriber since Mar 4, 2021"));
+        assert_eq!(badge_text(&b("staff", "Discord Staff")).1, None, "same words as the title: no subtitle");
+        assert_eq!(badge_text(&b("something_new", "A new badge")), ("A new badge".into(), None, None));
     }
 
     #[test]
