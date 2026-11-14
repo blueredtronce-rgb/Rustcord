@@ -77,24 +77,31 @@ fn main() -> eframe::Result {
     // Create the egui context up front so the backend can start connecting immediately.
     let ctx = egui::Context::default();
     let backend = backend::spawn(rt.handle(), ctx.clone());
-    if !test_run {
-        notify::start(&ctx);
-    }
 
     // eframe's defaults are already the lean ones: no MSAA, depth or stencil buffer, vsync on
     // (measured: none of these, nor dithering, changes RAM; the GL driver's own ~80 MB does not move).
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(config::APP_NAME)
-            .with_app_id("rustcord")
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([720.0, 420.0])
-            // Frameless: the 32 px title bar row is the window's title bar (ui/chrome.rs).
-            .with_decorations(false)
-            .with_icon(window_icon()),
-        renderer: eframe::Renderer::Glow,
-        ..Default::default()
-    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_title(config::APP_NAME)
+        .with_app_id("rustcord")
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([720.0, 420.0])
+        // Frameless: the 32 px title bar row is the window's title bar (ui/chrome.rs).
+        .with_decorations(false)
+        .with_icon(window_icon());
+    // macOS: the native traffic lights over that row instead (chrome.rs draws no buttons there).
+    #[cfg(target_os = "macos")]
+    let viewport = viewport.with_decorations(true).with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Glow, ..Default::default() };
+    // Linux: X11 (XWayland) whenever there is a display: winit on Wayland can't hide, un-minimize
+    // or focus a window, so closing to the tray and the tray's Open would not work.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        options.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            b.with_x11();
+        }));
+    }
 
     eframe::run_native_ext(
         config::APP_NAME,

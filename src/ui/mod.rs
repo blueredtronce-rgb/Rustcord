@@ -797,6 +797,9 @@ impl eframe::App for RustcordApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // macOS: the native traffic lights, centred in the title bar row (ui/chrome.rs).
+        #[cfg(target_os = "macos")]
+        _frame.set_traffic_lights_position(&ctx, egui::Rangef::new(0.0, TITLE_BAR_H), 12.0);
         if self.view.theme_dirty {
             self.view.theme_dirty = false;
             self.theme_applier.apply(&ctx, &self.theme);

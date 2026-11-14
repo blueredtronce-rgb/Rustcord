@@ -37,6 +37,10 @@ pub fn title_bar(ui: &mut egui::Ui, c: &ThemeColors, content: impl FnOnce(&mut e
     }
     let side = 3.0 * BUTTON_W;
     ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(side, 0.0))), content);
+    // macOS: the native traffic lights sit in the left inset (main.rs, `RustcordApp::ui`).
+    if cfg!(target_os = "macos") {
+        return;
+    }
 
     let (resize, tip) = if maximized { (Glyph::Restore, "Restore") } else { (Glyph::Maximize, "Maximize") };
     let buttons = [
@@ -135,8 +139,9 @@ fn resize_dir(window: Rect, p: Pos2) -> Option<ResizeDirection> {
     })
 }
 
+/// Not maximized or full screen; never on macOS (native edges; winit can't start a resize there).
 fn can_resize(info: Option<&egui::ViewportInfo>) -> bool {
-    info.is_none_or(|v| !v.maximized.unwrap_or(false) && !v.fullscreen.unwrap_or(false))
+    !cfg!(target_os = "macos") && info.is_none_or(|v| !v.maximized.unwrap_or(false) && !v.fullscreen.unwrap_or(false))
 }
 
 /// `App::raw_input_hook`: a primary press on a window edge starts the OS resize and is taken
@@ -197,7 +202,7 @@ mod tests {
     #[test]
     fn no_resize_when_maximized() {
         let mut info = egui::ViewportInfo::default();
-        assert!(can_resize(Some(&info)) && can_resize(None));
+        assert_eq!(can_resize(Some(&info)) && can_resize(None), !cfg!(target_os = "macos"));
         info.maximized = Some(true);
         assert!(!can_resize(Some(&info)));
     }
