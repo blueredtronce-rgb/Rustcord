@@ -36,6 +36,12 @@ const GROUP_GAP_MS: u64 = 7 * 60 * 1000;
 const LOAD_MORE_PX: f32 = 300.0;
 /// Rows this far outside the viewport are not laid out (their cached height is reserved).
 const LAYOUT_MARGIN: f32 = 600.0;
+/// Rows closer to the viewport count as on screen (decorations reach a few px outside a row).
+const ON_SCREEN_SLACK: f32 = 16.0;
+/// Rows off screen within `LAYOUT_MARGIN` are re-measured this often (s), see `keeps_height`.
+/// Each time costs a full text layout (egui drops galleys unused for a pass); under the image
+/// cache's 2 s keep-recent window, so their emoji and images stay loaded.
+const REMEASURE_S: f64 = 1.0;
 const MAX_MEDIA: Vec2 = vec2(420.0, 320.0);
 const SUPPRESS_EMBEDS: u64 = 1 << 2;
 const IS_COMPONENTS_V2: u64 = 1 << 15;
@@ -698,9 +704,12 @@ impl Lcx {
 #[derive(Clone, Default)]
 struct Memo {
     channel: Option<Id>,
-    /// Last measured row height per message: (content fingerprint, height). The width is
-    /// left out on purpose: rows near the viewport are always re-measured anyway.
-    heights: HashMap<Id, (u64, f32)>,
+    /// Last measured row height per message (`keeps_height` says when it is reused).
+    heights: HashMap<Id, RowHeight>,
+    /// Screen y of the list content's top in the last pass.
+    origin: f32,
+    /// The row the focused widget was drawn in last pass.
+    focus_row: Option<Id>,
     /// A message near the viewport top and its content y. When rows above it change height
     /// (older history prepended, edits, deletes) the offset is shifted to keep it in place.
     anchor: Option<(Id, f32)>,
@@ -725,6 +734,55 @@ struct Memo {
     menu: Option<MsgMenu>,
     #[cfg(test)]
     offset: f32,
+}
+
+#[derive(Clone, Copy)]
+struct RowHeight {
+    /// Content `fingerprint`.
+    fp: u64,
+    h: f32,
+    /// `layout_key` and ctx time of the measurement.
+    key: u64,
+    at: f64,
+}
+
+/// Whether a row keeps its measured height `r` instead of being laid out (`top`: content y).
+/// Far-off rows keep one measured at another width: re-measuring all of them on every resize
+/// frame is too slow, and the scroll anchor absorbs the drift. Rows just off screen keep a recent
+/// one at the same `key` unless `pinned`: while frames keep coming (playing media) they are laid
+/// out every `REMEASURE_S`, so a height that changed without a new fingerprint (an image's size
+/// arriving, a name resolving) is still caught off screen.
+fn keeps_height(r: &RowHeight, top: f32, viewport: Rect, key: u64, now: f64, pinned: bool) -> bool {
+    let bottom = top + r.h;
+    let far = top > viewport.max.y + LAYOUT_MARGIN || bottom < viewport.min.y - LAYOUT_MARGIN;
+    let off_screen = top > viewport.max.y + ON_SCREEN_SLACK || bottom < viewport.min.y - ON_SCREEN_SLACK;
+    far || (off_screen && !pinned && r.key == key && now - r.at < REMEASURE_S)
+}
+
+/// A key press egui may turn into a focus move this pass.
+fn moves_focus(e: &egui::Event) -> bool {
+    use egui::Key::{ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Tab};
+    matches!(e, egui::Event::Key { key: Tab | ArrowUp | ArrowDown | ArrowLeft | ArrowRight, pressed: true, .. })
+}
+
+/// What changes rows' heights without changing their fingerprints: width, scale, text styles
+/// (the theme's body size under Chat font scaling), fonts (theme, the gg sans load), group spacing
+/// and Settings > Chat.
+fn layout_key(ui: &egui::Ui, cx: &UiCx<'_>, width: f32) -> u64 {
+    let ctx = ui.ctx();
+    let mut h = DefaultHasher::new();
+    (width.to_bits(), ctx.pixels_per_point().to_bits(), cx.settings.message_group_spacing.to_bits()).hash(&mut h);
+    ui.style().text_styles.hash(&mut h);
+    let s = &cx.state.account.settings;
+    ([9, 10, 12, 13].map(|n| s.chat_shows(n)), cx.state.spoilers_open()).hash(&mut h);
+    ctx.fonts(|f| {
+        let d = f.definitions();
+        for (name, data) in &d.font_data {
+            (name, std::sync::Arc::as_ptr(data)).hash(&mut h);
+        }
+        d.families.hash(&mut h);
+    });
+    h.finish()
 }
 
 #[derive(Clone, Copy)]
@@ -1271,6 +1329,19 @@ fn list_contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
     let toolbar_hit = memo.toolbar.filter(|(_, r)| ui.rect_contains_pointer(*r)).map(|(id, _)| id);
     let flash = memo.flash.filter(|&(_, until)| now < until);
     let editing = cx.view.editing.filter(|(c, _)| *c == lc.ch).map(|(_, m)| m);
+    let key = layout_key(ui, cx, width);
+    // egui drops the focus of a widget missing from a pass, so its row stays laid out: by id (the
+    // last pass's `focus_row`, which older history prepended above doesn't move) and by the
+    // widget's last rect, in that pass's content coordinates (focus an arrow key or Shift+Tab
+    // moved between passes). A widget already drawn this pass is outside the list.
+    let focus_y = ctx.memory(|m| m.focused()).and_then(|f| {
+        ctx.viewport(|vp| (!vp.this_pass.widgets.contains(f)).then(|| vp.prev_pass.widgets.get(f).map(|w| w.rect.center().y - memo.origin)).flatten())
+    });
+    let focus_row = memo.focus_row;
+    memo.origin = origin;
+    // A screen reader walks the widgets of every laid-out row, Tab and the arrow keys those of
+    // this pass (egui `Focus::begin_pass`).
+    let all = ctx.has_accesskit_node(egui::accesskit_root_id()) || ctx.input(|i| i.raw.events.iter().any(moves_focus));
     let mut rows: Vec<(Id, f32, f32)> = Vec::with_capacity(n);
     let mut hover_row = None;
     let mut last_author = None;
@@ -1292,13 +1363,11 @@ fn list_contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
             (m.id, group_start, (date_sep, new_sep), fingerprint(m, layout))
         };
         let top = ui.cursor().top() - origin;
-        // Far-off rows keep a height measured at another width: re-measuring all of them on
-        // every resize frame is too slow, and the scroll anchor absorbs the drift.
-        let cached = memo.heights.get(&id).filter(|(f, _)| *f == fp).map(|&(_, h)| h);
-        if let Some(h) = cached
-            && editing != Some(id)
-            && (top > viewport.max.y + LAYOUT_MARGIN || top + h < viewport.min.y - LAYOUT_MARGIN)
-        {
+        let cached = memo.heights.get(&id).filter(|r| r.fp == fp);
+        let pinned = |h: f32| {
+            all || [lc.menu_target, lc.demo_hover, toolbar_hit, focus_row].contains(&Some(id)) || focus_y.is_some_and(|y| (top..=top + h).contains(&y))
+        };
+        if let Some(&RowHeight { h, .. }) = cached.filter(|r| editing != Some(id) && keeps_height(r, top, viewport, key, now, pinned(r.h))) {
             ui.push_id(id.0, |ui| ui.allocate_space(vec2(width, h)));
             rows.push((id, top, h));
             continue;
@@ -1309,12 +1378,24 @@ fn list_contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
             .push_id(id.0, |ui| message_block(ui, cx, lc, memo, &msg, group_start, seps, toolbar_hit, flashing))
             .inner;
         let h = ui.cursor().top() - origin - top;
-        memo.heights.insert(id, (fp, h));
+        memo.heights.insert(id, RowHeight { fp, h, key, at: now });
         rows.push((id, top, h));
         if hovered.is_some() {
             hover_row = hovered;
         }
     }
+    // Drawn after this list's own Ui in its layer: inside the list.
+    let list = ui.unique_id();
+    memo.focus_row = ctx
+        .memory(|m| m.focused())
+        .and_then(|f| {
+            ctx.viewport(|vp| {
+                let w = &vp.this_pass.widgets;
+                let ((layer, i), (list_layer, j)) = (w.order(f)?, w.order(list)?);
+                (layer == list_layer && i > j).then(|| w.get(f).map(|r| r.rect.center().y - origin)).flatten()
+            })
+        })
+        .and_then(|y| rows.iter().find(|r| (r.1..=r.1 + r.2).contains(&y)).map(|r| r.0));
 
     if !lc.detached {
         pending_rows(ui, cx, lc, last_author);
@@ -3560,6 +3641,74 @@ mod tests {
         h.theme.layout.compact = true;
         h.frame();
         assert_eq!(h.view.editing, Some((ch, m.id)));
+    }
+
+    #[test]
+    fn rows_just_off_screen_skip_layout_without_changing_the_picture() {
+        let mut h = Harness::new();
+        // (text, position) of every text shape its clip rect lets through.
+        let visible = |out: &egui::FullOutput| -> Vec<(String, egui::Pos2)> {
+            let shown = |s: &&egui::epaint::ClippedShape| matches!(&s.shape, Shape::Text(t) if s.clip_rect.intersects(t.visual_bounding_rect()));
+            out.shapes.iter().filter(shown).filter_map(|s| if let Shape::Text(t) = &s.shape { Some((t.galley.text().to_owned(), t.pos)) } else { None }).collect()
+        };
+        let texts = |out: &egui::FullOutput| out.shapes.iter().filter(|s| matches!(s.shape, Shape::Text(_))).count();
+        h.frame();
+        h.frame();
+        // Measured a frame ago: the rows above the viewport keep their heights.
+        let skipped = h.frame_with(Vec::new());
+        // Tab walks this pass's widgets: every row in the margin is laid out for it.
+        let tabbed = h.frame_with(vec![tab(true), tab(false)]);
+        // A screen reader on: every row in the margin is laid out again.
+        h.ctx.enable_accesskit();
+        let full = h.frame_with(Vec::new());
+        assert!(!visible(&full).is_empty());
+        assert_eq!(visible(&skipped), visible(&full));
+        assert!(texts(&skipped) < texts(&full), "rows off screen were laid out anyway");
+        assert_eq!(texts(&tabbed), texts(&full), "a Tab press skipped rows");
+    }
+
+    fn tab(pressed: bool) -> egui::Event {
+        egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn focused_row_off_screen_stays_laid_out_when_history_is_prepended() {
+        let mut h = Harness::new();
+        let ch = h.state.selected_channel.unwrap();
+        let cm = h.state.messages.get_mut(&ch).unwrap();
+        let older: Vec<Message> = cm.msgs.drain(..2).collect();
+        (cm.has_more_before, cm.loaded, cm.loading) = (true, true, false);
+        h.frame();
+        h.frame();
+        // Past the composer, Tab lands in the first laid-out row: above the viewport.
+        for _ in 0..40 {
+            if h.memo().focus_row.is_some() {
+                break;
+            }
+            h.frame_with(vec![tab(true), tab(false)]);
+        }
+        let row = h.memo().focus_row.expect("Tab reached a row");
+        let at = |h: &Harness, id| h.state.messages[&ch].msgs.iter().position(|m| m.id == id);
+        assert!(at(&h, row) < at(&h, h.memo().anchor.unwrap().0), "the focused row is off screen");
+        h.frame();
+        // Older history moves the row down, away from the focused widget's last rect; measured a
+        // pass ago and still off screen, it is laid out for the focus.
+        h.state.messages.get_mut(&ch).unwrap().msgs.splice(0..0, older);
+        h.frame();
+        assert_eq!(h.memo().heights[&row].at, h.ctx.input(|i| i.time));
+    }
+
+    #[test]
+    fn text_style_sizes_are_part_of_the_layout_key() {
+        // High Contrast's body size under Chat font scaling changes no fingerprint.
+        let mut h = Harness::new();
+        h.frame();
+        let old = h.memo().heights.values().next().unwrap().key;
+        h.ctx.global_style_mut(|s| {
+            s.text_styles.insert(egui::TextStyle::Body, FontId::proportional(21.0));
+        });
+        h.frame();
+        assert!(h.memo().heights.values().any(|r| r.key != old));
     }
 
     #[test]
