@@ -25,6 +25,7 @@ pub mod pickers;
 pub mod pins;
 pub mod profile;
 pub mod profile_modal;
+pub mod quests;
 pub mod screen_share;
 pub mod search;
 pub mod server_menu;
@@ -499,6 +500,12 @@ impl RustcordApp {
                 }
                 // Game detection, added games, app icons (crate::activity).
                 BackendEvent::Activity(ev) => self.state.activity.apply(ev),
+                // Quests page; a video progress answer goes on to the video modal's session.
+                BackendEvent::Quests(ev) => {
+                    if let Some((quest_id, ok)) = self.state.quests.apply(ev) {
+                        quests::on_video_answer(&mut self.view, quest_id, ok);
+                    }
+                }
             }
         }
     }
@@ -752,6 +759,8 @@ impl RustcordApp {
                         self.state.select_channel(Id(id));
                     }
                     s if dm_call::demo(&mut self.state, s) => {}
+                    // quests.rs `demo`: quests[:blocked|empty|error|loading|watch|claim].
+                    s if quests::demo(&mut self.state, &mut self.view, s) => {}
                     _ => {}
                 }
             }
@@ -1008,7 +1017,9 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let page = egui::Frame::new().fill(fill.chat.to_color32());
     if friends::is_open(cx.state) {
         pickers::close_if_open(ui.ctx(), cx);
-        egui::CentralPanel::default().frame(page).show(ui, |ui| friends::show(ui, cx));
+        // The DM home: Friends, or Quests (the row under Friends).
+        let quests = cx.view.quests_ui.open;
+        egui::CentralPanel::default().frame(page).show(ui, |ui| if quests { quests::show(ui, cx) } else { friends::show(ui, cx) });
     } else if call::is_open(cx.state) && !dm_call::in_chat(cx.state) {
         // The open channel is my call: the stage (call.rs), with its chat column (`right`). A DM
         // call stays above the DM's chat (dm_call.rs).
