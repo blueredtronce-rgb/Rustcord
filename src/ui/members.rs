@@ -4,7 +4,7 @@
 //! OWNERSHIP: ui-shell implementer.
 
 use super::sidebar::{name_and_status, row_fills, status_dot, status_tooltip, user_avatar_at, user_dot, user_presence, user_status_text};
-use super::{UiCx, bold, cosmetics, one_line, rgb};
+use super::{UiCx, cosmetics, one_line, rgb};
 use crate::backend::ConnState;
 use crate::config::AnimateMode;
 use crate::model::{Activity, CustomStatus, Emoji, GatewayEvent, Id, Member, MemberListItem, Presence, RichPresence, Role, User, UserPresence, channel_type};
@@ -124,11 +124,17 @@ fn skeleton(ui: &mut egui::Ui, cx: &UiCx<'_>) {
     }
 }
 
+/// Group header: the label role on the left, the count in meta right-aligned, so the counts
+/// of all groups form one column (docs/DESIGN.md §10.4).
 fn group_row(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, count: usize) {
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
-    let color = cx.theme.colors.text_muted.to_color32();
-    let g = one_line(ui, format!("{label} — {count}"), bold(cx.theme.font.size - 2.0), color, row.width() - 2.0 * PAD);
-    ui.painter().galley(pos2(row.left() + PAD, row.bottom() - g.size().y - 6.0), g, color);
+    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    resp.widget_info(|| WidgetInfo::labeled(A11yRole::Label, true, format!("{label}, {count}")));
+    let (color, size) = (cx.theme.colors.text_muted.to_color32(), cx.theme.font.size);
+    let n = one_line(ui, count.to_string(), FontId::proportional(size - 3.0), color, row.width());
+    let g = one_line(ui, label, super::semibold(size - 2.0), color, row.width() - 2.0 * PAD - n.size().x - 8.0);
+    let base = row.bottom() - 6.0;
+    ui.painter().galley(pos2(row.right() - PAD - n.size().x, base - n.size().y), n, color);
+    ui.painter().galley(pos2(row.left() + PAD, base - g.size().y), g, color);
 }
 
 /// 32 px avatar with status icon, the name in its role color over the custom status or
@@ -191,7 +197,8 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
     // Plugin tags after the name get their room first: the name is cut with "…" instead.
     let plug_w = crate::plugins::people::member_row_width(ui, cx, guild_id, user, member);
     let style = fx.name_style.as_ref().filter(|_| !offline);
-    let g = cosmetics::name_galley(ui, &name, FontId::proportional(size), style, color, (max_w - chip_w - plug_w).max(24.0));
+    // Body 15/500 (docs/DESIGN.md §10.4).
+    let g = cosmetics::name_galley(ui, &name, FontId::new(size, crate::theme::medium_family()), style, color, (max_w - chip_w - plug_w).max(24.0));
     let status = user_status_text(cx.state, user.id).filter(|_| !offline);
     let tip = art_tip.or_else(|| status.as_ref().and_then(|st| status_tooltip(ui, st)));
     let under = ui.painter().add(Shape::Noop);
@@ -221,6 +228,10 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
     // Registered after the avatar widget so the whole row stays clickable.
     let resp = ui.interact(row, ui.make_persistent_id(("member", user.id)), Sense::click());
     resp.widget_info(|| WidgetInfo::labeled(A11yRole::Button, true, &name));
+    if resp.has_focus() {
+        let pal = super::messages::Pal::new(cx.theme);
+        super::messages::focus_ring(ui, &pal, row.shrink2(vec2(10.0, 3.0)), f32::from(pal.radius));
+    }
     // The anchor is the card's top-left; the card (300 wide, profile.rs) opens left of the list.
     let anchor = pos2(row.left() - 8.0 - 300.0, row.top());
     super::sidebar::user_context_menu(&resp, cx, user.id, guild_id, anchor);
@@ -244,9 +255,10 @@ pub(super) fn art_slot(ui: &egui::Ui, cx: &mut UiCx<'_>, a: &Activity, rect: Rec
     match tex {
         Some(tex) => egui::Image::from_texture(tex).corner_radius(radius).paint_at(ui, rect),
         None => {
-            let tile = cx.theme.colors.text.to_color32().gamma_multiply(0.06);
+            let tk = cx.theme.tokens();
+            let tile = tk.hover;
             ui.painter().rect_filled(rect, radius, tile);
-            let color = if a.kind == 1 { live_color(ui.visuals().dark_mode) } else { cx.theme.colors.text_muted.to_color32() };
+            let color = if a.kind == 1 { tk.live } else { cx.theme.colors.text_muted.to_color32() };
             let icon = Rect::from_center_size(rect.center(), Vec2::splat((rect.width() * 0.8).round()));
             super::icons::paint(ui.painter(), super::icons::activity(a.kind), icon, color, bg.blend(tile));
         }
@@ -262,12 +274,6 @@ pub(super) fn art_tooltip(a: &Activity, now_ms: u64) -> String {
         (Some(song), None) if a.is_spotify() => format!("Listening to {song}"),
         _ => [Some(a.label()), a.elapsed(now_ms)].into_iter().flatten().collect::<Vec<_>>().join(" "),
     }
-}
-
-/// Streaming status (temper purple, docs/DESIGN.md §2.2 `live`).
-// shortcut: local until theme/tokens.rs has `live`; switch to it then.
-pub(super) fn live_color(dark: bool) -> Color32 {
-    if dark { Color32::from_rgb(0xa6, 0x82, 0xe1) } else { Color32::from_rgb(0x7a, 0x4a, 0xba) }
 }
 
 /// Test hooks: a sample activity of type `kind` (0-5) with rich presence: the game (0) with
