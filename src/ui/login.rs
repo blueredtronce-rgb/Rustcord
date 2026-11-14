@@ -1,5 +1,6 @@
-//! Login screen: a centred card (app icon, title, a QR code / Email / Token switcher and the
-//! active form) above a one-line footer (version, unofficial-client note, Terms of Service).
+//! Login screen: a centred panel (app icon, title, a QR code / Email / Token switcher and the
+//! active form) on the flat frame colour, above a two-line footer (unofficial-client note, Terms
+//! of Service). docs/DESIGN.md §12.
 //! QR code (scan with the phone app) is the default; email + password may need a 2FA step;
 //! a pasted token is the fallback. "Stay signed in" stores the resulting token in the OS
 //! credential store. Sends `Command::{StartQrLogin, LoginPassword, SubmitMfa, Login, ...}`.
@@ -15,7 +16,7 @@ use egui::{Align, Align2, Color32, FontId, Frame, Key, Layout, Margin, Rect, Ric
 use qrcodegen::{QrCode, QrCodeEcc};
 use zeroize::{Zeroize, Zeroizing};
 
-const CARD_W: f32 = 392.0;
+const CARD_W: f32 = 440.0;
 /// Below this panel height the card gets less padding, no subtitle and a smaller icon and QR code.
 const COMPACT_BELOW_H: f32 = 600.0;
 /// Height of text fields and the primary button.
@@ -29,9 +30,9 @@ const QR_QUIET: i32 = 4;
 const PASSWORD_LIMIT: usize = 128;
 const CODE_LIMIT: usize = 16;
 const OFFLINE_HINT: &str = "Offline mode (RUSTCORD_OFFLINE) never connects.";
-const SCAN_HINT: &str = "Scan with the Discord app (Settings → Scan QR Code)";
+const SCAN_HINT: &str = "Open Settings in the Discord app, then Scan QR Code.";
 const TERMS_URL: &str = "https://discord.com/terms";
-const TOKEN_HELP: &str = "Sign in to Discord in a web browser, open the developer tools (F12) → Network, \
+const TOKEN_HELP: &str = "Sign in to Discord in a web browser, open the developer tools (F12), go to Network, \
     select any request to discord.com/api and copy its \"Authorization\" request header.\n\n\
     Your token is the key to your whole account: never share it, never paste it anywhere else.";
 
@@ -127,15 +128,14 @@ fn forget_all_history(ctx: &egui::Context) {
 }
 
 pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
-    // The page and its glow under the card and the footer alike (no edge where the footer starts).
+    // One flat frame-coloured page under the panel and the footer alike: no glow, no gradient.
     let page = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(page, 0.0, cx.theme.colors.background.to_color32());
-    backdrop(ui.painter(), page, cx.theme);
+    ui.painter().rect_filled(page, 0.0, cx.theme.colors.guild_bar.to_color32());
     ui.style_mut().interaction.selectable_labels = false;
     egui::Panel::bottom("login_footer")
         .resizable(false)
         .show_separator_line(false)
-        .frame(Frame::new().inner_margin(Margin::symmetric(16, 10)))
+        .frame(Frame::new().inner_margin(Margin::symmetric(16, 12)))
         .show(ui, |ui| footer(ui, cx.theme));
     egui::CentralPanel::default().frame(Frame::new()).show(ui, |ui| {
         let avail_h = ui.available_height();
@@ -149,9 +149,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(((avail_h - card_h) / 2.0).max(8.0));
             ui.vertical_centered(|ui| {
-                let pad: i8 = if compact { 24 } else { 32 };
+                // Short windows: 16 px padding, so the panel fits above the two-line footer.
+                let pad: i8 = if compact { 16 } else { 32 };
                 let w = CARD_W.min(ui.available_width() - 32.0);
-                let card = card_frame(cx.theme, pad).show(ui, |ui| {
+                let card = card_frame(ui.ctx(), cx.theme, pad).show(ui, |ui| {
                     ui.set_width(w - 2.0 * f32::from(pad));
                     ui.vertical(|ui| card(ui, cx, compact));
                 });
@@ -166,63 +167,18 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     });
 }
 
-/// The brand backdrop behind the card, the logo's ember gradient as soft light: the accent as a
-/// halo behind the card's head, the mark's amber above left and its red below right, so the
-/// page is not a flat field. Static meshes: nothing animates or repaints.
-fn backdrop(p: &egui::Painter, r: egui::Rect, theme: &Theme) {
-    let k = if theme.dark { 0.2 } else { 0.14 };
-    let side = r.width().min(r.height());
-    let at = |x: f32, y: f32| r.center() + egui::vec2(x, y) * side;
-    glow(p, at(-0.42, -0.3), 0.6 * side, Color32::from_rgb(0xFF, 0xA2, 0x4A).gamma_multiply(k * 0.6));
-    glow(p, at(0.36, 0.3), 0.65 * side, Color32::from_rgb(0xE8, 0x40, 0x3F).gamma_multiply(k * 0.8));
-    glow(p, at(0.0, -0.12), 0.55 * side, theme.colors.accent.to_color32().gamma_multiply(k));
-}
-
-/// A radial glow: `color` at the centre fading smoothly to clear at `radius` (rings of a mesh;
-/// egui has no blur).
-fn glow(p: &egui::Painter, c: egui::Pos2, radius: f32, color: Color32) {
-    const RINGS: u32 = 16;
-    const SEG: u32 = 64;
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(c, color);
-    for i in 1..=RINGS {
-        let t = i as f32 / RINGS as f32;
-        let fade = color.gamma_multiply((1.0 - t * t).powi(2));
-        for j in 0..SEG {
-            let a = j as f32 / SEG as f32 * std::f32::consts::TAU;
-            mesh.colored_vertex(c + radius * t * egui::vec2(a.cos(), a.sin()), fade);
-        }
-    }
-    let at = |ring: u32, j: u32| if ring == 0 { 0 } else { 1 + (ring - 1) * SEG + j % SEG };
-    for ring in 0..RINGS {
-        for j in 0..SEG {
-            if ring == 0 {
-                mesh.add_triangle(0, at(1, j), at(1, j + 1));
-            } else {
-                mesh.add_triangle(at(ring, j), at(ring + 1, j), at(ring + 1, j + 1));
-                mesh.add_triangle(at(ring, j), at(ring + 1, j + 1), at(ring, j + 1));
-            }
-        }
-    }
-    p.add(mesh);
-}
-
-fn card_frame(theme: &Theme, pad: i8) -> Frame {
-    let c = &theme.colors;
-    let shadow = Color32::from_black_alpha(if theme.dark { 100 } else { 24 });
+/// The panel (E3, §6): `raised`, a `rule` edge (high contrast: 1.5 px muted, no shadow), the
+/// modal shadow and radius (2r).
+fn card_frame(ctx: &egui::Context, theme: &Theme, pad: i8) -> Frame {
+    let pal = super::messages::Pal::new(theme);
+    let hc = pal.tk.mode == crate::theme::Mode::HighContrast;
+    let edge = if hc { egui::Stroke::new(1.5, pal.muted) } else { egui::Stroke::new(1.0, pal.tk.rule) };
     Frame::new()
-        .fill(card_fill(theme))
-        .stroke((1.0, c.text.to_color32().gamma_multiply(0.09)))
-        .corner_radius(theme.layout.corner_radius * 2.0)
-        .shadow(egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: shadow })
+        .fill(pal.tk.raised)
+        .stroke(edge)
+        .corner_radius(pal.modal_radius())
+        .shadow(ctx.global_style().visuals.window_shadow)
         .inner_margin(Margin::same(pad))
-}
-
-/// Surface in dark themes; in light ones a near-white card, so it sits above the tinted page
-/// instead of looking sunk into it.
-fn card_fill(theme: &Theme) -> Color32 {
-    let c = &theme.colors;
-    if theme.dark { c.surface.to_color32() } else { c.background.to_color32().lerp_to_gamma(Color32::WHITE, 0.7) }
 }
 
 /// Header, method switcher and the active form (or the 2FA step, which replaces the switcher).
@@ -239,7 +195,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
         mfa_tab(ui, cx);
         return;
     }
-    header(ui, cx.theme, compact, "Sign in to Rustcord", (!compact).then_some("Use your Discord account"));
+    header(ui, cx.theme, compact, "Sign in to Rustcord", (!compact).then_some("Use your Discord account."));
     ui.add_space(gap);
     tabs(ui, cx);
     ui.add_space(gap);
@@ -252,8 +208,10 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
 
 fn header(ui: &mut egui::Ui, theme: &Theme, compact: bool, title: &str, subtitle: Option<&str>) {
     let c = &theme.colors;
-    let font = super::bold(theme.font.size * if compact { 1.3 } else { 1.5 });
-    let icon = app_icon(ui.ctx()).map(|tex| egui::Image::new(&tex).fit_to_exact_size(Vec2::splat(if compact { 28.0 } else { 52.0 })));
+    let pal = super::messages::Pal::new(theme);
+    // The display role (24/700); a row of icon and title in short windows.
+    let font = super::bold(if compact { pal.title() } else { pal.display() });
+    let icon = app_icon(ui.ctx()).map(|tex| egui::Image::new(&tex).fit_to_exact_size(Vec2::splat(if compact { 28.0 } else { 56.0 })));
     let title = RichText::new(title).font(font.clone()).color(c.text.to_color32());
     ui.vertical_centered(|ui| {
         if compact {
@@ -275,7 +233,7 @@ fn header(ui: &mut egui::Ui, theme: &Theme, compact: bool, title: &str, subtitle
         }
         if let Some(subtitle) = subtitle {
             ui.add_space(8.0);
-            ui.label(RichText::new(subtitle).color(c.text_muted.to_color32()));
+            ui.label(RichText::new(subtitle).size(pal.ui()).color(c.text_muted.to_color32()));
         }
     });
 }
@@ -293,37 +251,27 @@ fn app_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     Some(tex)
 }
 
-/// Version, the unofficial-client note and the Terms of Service link: one centred line, two
-/// when the window is too narrow.
+/// Two centred meta lines (§12): what Rustcord is, and the risk with the Terms of Service link.
+/// No middle dots.
 fn footer(ui: &mut egui::Ui, theme: &Theme) {
     let muted = theme.colors.text_muted.to_color32();
-    let size = theme.font.size - 2.0;
-    let head = concat!("Rustcord v", env!("CARGO_PKG_VERSION"), " · Unofficial client, not affiliated with Discord");
-    let (risk, terms, sep) = ("Using it may violate the ", "Terms of Service", " · ");
+    let size = theme.font.size - 3.0;
+    let head = concat!("Rustcord ", env!("CARGO_PKG_VERSION"), " is an unofficial client and is not affiliated with Discord.");
+    let (risk, terms, end) = ("Third-party clients can break Discord's ", "Terms of Service", ".");
     let galley = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), FontId::proportional(size), muted).size();
     let (head_w, row_h) = (galley(head).x, galley(head).y);
-    let (tail_w, sep_w) = (galley(risk).x + galley(terms).x, galley(sep).x);
-    let one_line = head_w + sep_w + tail_w <= ui.available_width();
-
+    let tail_w = galley(risk).x + galley(terms).x + galley(end).x;
     let text = |t: &str| RichText::new(t).size(size).color(muted);
-    let tail = |ui: &mut egui::Ui| {
-        ui.label(text(risk));
-        ui.add(egui::Hyperlink::from_label_and_url(RichText::new(terms).size(size), TERMS_URL).open_in_new_tab(true));
-    };
     ui.vertical_centered(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
-        if one_line {
-            centered_row(ui, vec2(head_w + sep_w + tail_w, row_h), |ui| {
-                ui.label(text(head));
-                ui.label(text(sep));
-                tail(ui);
-            });
-        } else {
-            centered_row(ui, vec2(head_w, row_h), |ui| {
-                ui.label(text(head));
-            });
-            centered_row(ui, vec2(tail_w, row_h), tail);
-        }
+        centered_row(ui, vec2(head_w, row_h), |ui| {
+            ui.label(text(head));
+        });
+        centered_row(ui, vec2(tail_w, row_h), |ui| {
+            ui.label(text(risk));
+            ui.add(egui::Hyperlink::from_label_and_url(RichText::new(terms).size(size), TERMS_URL).open_in_new_tab(true));
+            ui.label(text(end));
+        });
     });
 }
 
@@ -427,7 +375,7 @@ fn qr_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
         if !matches!(cx.view.login_form.qr, QrState::Code(_)) || offline {
-            ui.painter().rect_filled(rect, radius, c.background.to_color32());
+            ui.painter().rect_filled(rect, radius, c.code_background.to_color32());
         }
         let caption = match &cx.view.login_form.qr {
             _ if offline => {
@@ -453,10 +401,11 @@ fn qr_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
                 match avatar_url {
                     Some(url) => super::avatar_at(ui, cx.images, url, avatar, false, 1.0),
                     None => {
-                        ui.painter().circle_filled(avatar.center(), d / 2.0, c.accent.to_color32());
+                        // A neutral initial, never an accent disc.
+                        ui.painter().circle_filled(avatar.center(), d / 2.0, theme.tokens().selected);
                         let initial = username.chars().next().unwrap_or('?').to_uppercase().to_string();
-                        let font = super::bold(d * 0.4);
-                        ui.painter().text(avatar.center(), Align2::CENTER_CENTER, initial, font, c.accent_text.to_color32());
+                        let font = super::semibold(d * 0.4);
+                        ui.painter().text(avatar.center(), Align2::CENTER_CENTER, initial, font, c.text.to_color32());
                     }
                 }
                 let font = super::bold(theme.font.size);
@@ -480,7 +429,7 @@ fn qr_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
             let font = FontId::proportional(theme.font.size - 1.0);
             // A balanced two-line hint instead of an orphaned last word when one line does not fit.
             let fits = ui.painter().layout_no_wrap(caption.to_owned(), font.clone(), color).size().x <= ui.available_width();
-            let caption = if caption == SCAN_HINT && !fits { "Scan with the Discord app\nSettings → Scan QR Code" } else { caption };
+            let caption = if caption == SCAN_HINT && !fits { "Open Settings in the Discord app,\nthen Scan QR Code." } else { caption };
             ui.label(RichText::new(caption).font(font).color(color));
         }
     });
@@ -512,12 +461,8 @@ fn square_message(ui: &mut egui::Ui, theme: &Theme, rect: Rect, msg: &str, butto
         return false;
     }
     ui.add_space(12.0);
-    let label = RichText::new("New code").font(super::bold(theme.font.size)).color(c.accent_text.to_color32());
-    let new_code = egui::Button::new(label)
-        .fill(c.accent.to_color32())
-        .corner_radius(theme.layout.corner_radius)
-        .min_size(vec2(112.0, 32.0));
-    ui.add(new_code).clicked()
+    // The QR tab's one primary.
+    super::messages::button(&mut ui, &super::messages::Pal::new(theme), super::messages::Btn::Primary, "Get a new code", true).clicked()
 }
 
 /// Dark modules on a white rounded square (its margin is the quiet zone), snapped to whole
@@ -752,7 +697,7 @@ fn field(ui: &mut egui::Ui, theme: &Theme, edit: egui::TextEdit<'_>, action: Opt
         .desired_width(f32::INFINITY)
         .min_size(vec2(0.0, FIELD_H))
         .align(Align2::LEFT_CENTER)
-        .background_color(theme.colors.background.to_color32());
+        .background_color(theme.colors.code_background.to_color32());
     let edit = match action {
         Some(label) => {
             let text_w = ui.painter().layout_no_wrap(label.to_owned(), action_font.clone(), muted).size().x;
@@ -801,29 +746,31 @@ fn text_button(text: RichText) -> egui::Button<'static> {
     egui::Button::new(text).frame_when_inactive(false)
 }
 
-/// The shared "Stay signed in" checkbox (the token goes to the OS credential store), in the
-/// card's style: an accent box with a bold check when on, a thin outline when off.
+/// The shared "Stay signed in" checkbox (the token goes to the OS credential store): the §9
+/// checkbox (`positive` with a check when on, an `edge` ring when off, never accent).
 fn remember(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
-    let c = &cx.theme.colors;
-    let (accent, text) = (c.accent.to_color32(), c.text.to_color32());
-    let check = egui::Stroke::new(2.0, c.accent_text.to_color32());
+    let pal = super::messages::Pal::new(cx.theme);
+    let label = "Stay signed in";
+    let font = FontId::proportional(pal.ui());
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), pal.text).size().x;
+    let enabled = !cx.view.login_busy;
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0 + 8.0 + text_w, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+    let changed = enabled && resp.clicked();
+    if changed {
+        cx.view.login_remember = !cx.view.login_remember;
+    }
     let on = cx.view.login_remember;
-    let changed = ui.scope(|ui| {
-        ui.spacing_mut().icon_width = 18.0;
-        ui.spacing_mut().icon_width_inner = 10.0;
-        ui.spacing_mut().icon_spacing = 8.0;
-        let w = &mut ui.visuals_mut().widgets;
-        for (v, edge) in [(&mut w.noninteractive, 0.25), (&mut w.inactive, 0.25), (&mut w.hovered, 0.45), (&mut w.active, 0.45)] {
-            (v.bg_fill, v.bg_stroke) = if on { (accent, egui::Stroke::NONE) } else { (c.background.to_color32(), egui::Stroke::new(1.0, text.gamma_multiply(edge))) };
-            v.fg_stroke = check;
-        }
-        // An explicit label colour: the stock one follows fg_stroke (the check colour).
-        let checkbox = egui::Checkbox::new(&mut cx.view.login_remember, RichText::new("Stay signed in").color(text));
-        ui.add_enabled(!cx.view.login_busy, checkbox)
-            .on_hover_text("Remember this account on this device (saved in the OS credential store).")
-            .changed()
-    });
-    let changed = changed.inner;
+    let check = Rect::from_center_size(egui::pos2(rect.left() + 10.0, rect.center().y), Vec2::splat(20.0));
+    super::messages::paint_checkbox(ui.painter(), &pal.tk, check, on, f32::from((pal.radius / 2).max(2)));
+    ui.painter().text(egui::pos2(check.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, label, font, if enabled { pal.text } else { pal.muted });
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, &pal, rect, f32::from((pal.radius / 2).max(2)));
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, on, label));
+    let resp = resp.on_hover_text("Remember this account on this device (saved in the OS credential store).");
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
     // A running QR login was started with the old choice: replace it.
     if changed && cx.view.login_form.tab == LoginTab::Qr && matches!(cx.view.login_form.qr, QrState::Waiting | QrState::Code(_)) {
         start_qr(cx);
@@ -837,14 +784,14 @@ fn error_line(ui: &mut egui::Ui, cx: &UiCx<'_>) {
     }
 }
 
-/// Full-width accent button; shows a spinner while a login request is in flight.
+/// Full-width primary button (§9, 40 tall); shows a spinner while a login request is in flight.
 fn primary_button(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, enabled: bool) -> egui::Response {
     let c = &cx.theme.colors;
     let busy = cx.view.login_busy;
-    // A faded accent button reads as muddy dark-on-rust; disabled gets a neutral look instead.
-    let neutral = card_fill(cx.theme).lerp_to_gamma(c.text.to_color32(), 0.12);
+    // A faded accent button reads as muddy dark-on-rust; disabled gets the neutral fill instead.
+    let neutral = cx.theme.tokens().selected;
     let (fill, text) = if enabled || busy { (c.accent.to_color32(), c.accent_text) } else { (neutral, c.text_muted) };
-    let label = RichText::new(label).family(crate::theme::bold_family()).color(text.to_color32());
+    let label = RichText::new(label).font(FontId::new(cx.theme.font.size - 1.0, crate::theme::medium_family())).color(text.to_color32());
     let button = egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
         .fill(fill)
         .stroke(egui::Stroke::NONE)
