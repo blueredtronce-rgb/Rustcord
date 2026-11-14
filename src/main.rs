@@ -26,11 +26,19 @@ mod winreg;
 use std::time::Instant;
 
 /// Flags: `--minimized` (sign-in autostart: start hidden in the tray), `--quit` (asks the running
-/// Rustcord to quit and waits for it; the installer uses it before replacing files).
+/// Rustcord to quit and waits for it; the installer uses it before replacing files),
+/// `--clear-login` (removes the saved login from the keyring and exits; `install.sh --uninstall --purge`).
 fn main() -> eframe::Result {
     let started = Instant::now();
     trace_startup("main", started);
     ui::images::mem_trace("main");
+    if std::env::args().any(|a| a == "--clear-login") {
+        if let Err(e) = auth::clear_token() {
+            eprintln!("rustcord: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // One Rustcord per data dir: a second start brings the running one to the front and exits.
     // Screenshot runs skip it (and the tray): they must never touch another window.
