@@ -50,11 +50,17 @@ fn text_id() -> egui::Id {
 /// the text and closes the results.
 pub(super) fn search_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, width: f32, focus: bool) {
     let mut text: String = ui.data(|d| d.get_temp(text_id())).unwrap_or_default();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
     let edit_id = text_id().with("edit");
     let focused = ui.memory(|m| m.has_focus(edit_id));
-    let stroke = Stroke::new(1.0, if focused { pal.accent.gamma_multiply(0.6) } else { pal.line() });
-    ui.painter().rect(rect, pal.radius, pal.surface, stroke, egui::StrokeKind::Inside);
+    // An input (docs/DESIGN.md §9): the well colour with an `edge` border; focused, the focus
+    // ring replaces the border.
+    let well = cx.theme.colors.code_background.to_color32();
+    let stroke = if focused { Stroke::NONE } else { Stroke::new(1.0, pal.tk.edge) };
+    ui.painter().rect(rect, pal.radius, well, stroke, egui::StrokeKind::Inside);
+    if focused {
+        super::messages::focus_ring(ui, pal, rect.shrink(2.0), f32::from(pal.radius.saturating_sub(2)));
+    }
     let edit = TextEdit::singleline(&mut text)
         .id(edit_id)
         .hint_text(RichText::new("Search").color(pal.muted))
@@ -165,7 +171,7 @@ fn centered(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 
 fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, scope: SearchScope, query: &SearchQuery, title: String) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
     let mut row = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 0.0)).with_max_x(rect.right() - 8.0)).layout(Layout::left_to_right(Align::Center)));
     row.add(Label::new(RichText::new(title).family(bold_family()).color(pal.text)).selectable(false));
     row.with_layout(Layout::right_to_left(Align::Center), |ui| {

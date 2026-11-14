@@ -618,7 +618,7 @@ pub(super) fn name_color(state: &AppState, guild_id: Option<Id>, member: Option<
     state.role_color(guild_id?, &member?.roles).map(rgb)
 }
 
-/// Small filled label ("BOT", "This is you").
+/// Small filled label ("Bot", "This is you").
 pub(super) fn tag(ui: &mut egui::Ui, text: &str, fill: Color32, color: Color32) {
     Frame::new().fill(fill).corner_radius(3).inner_margin(Margin::symmetric(4, 1)).show(ui, |ui| {
         ui.label(RichText::new(text).small().family(bold_family()).color(color));
@@ -702,7 +702,7 @@ struct Memo {
     /// Message highlighted after a jump, until this time.
     flash: Option<(Id, f64)>,
     /// (first unread loaded message, unread count, more unread not loaded) while that message is
-    /// scrolled out above: the new-messages bar shows. `bar_closed` after its "Mark As Read".
+    /// scrolled out above: the new-messages bar shows. `bar_closed` after its "Mark as read".
     new_bar: Option<(Id, usize, bool)>,
     bar_closed: bool,
     /// Viewport distance from the content bottom and viewport height (jump-to-present bar).
@@ -867,13 +867,14 @@ fn jump_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id) -> bool {
     // Reaches under the composer below, whose rounded top corners then show the bar's color:
     // bar and box read as one shape.
     let back = Rect::from_min_max(rect.min, rect.max + vec2(0.0, f32::from(r)));
-    let fill = pal.surface.lerp_to_gamma(pal.accent, if resp.hovered() { 0.24 } else { 0.14 });
+    // A neutral step above the composer; the action reads as a link (ember is not for this).
+    let fill = pal.surface.blend(if resp.hovered() { pal.tk.selected } else { pal.tk.hover });
     ui.painter().rect_filled(back, CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, fill);
     let font = FontId::proportional(pal.meta());
     let y = rect.center().y;
     ui.painter().text(pos2(rect.left() + 16.0, y), Align2::LEFT_CENTER, "You're viewing older messages", font, pal.text);
-    let color = if resp.hovered() { pal.text } else { pal.accent };
-    ui.painter().text(pos2(rect.right() - 16.0, y), Align2::RIGHT_CENTER, "Jump to present", FontId::new(pal.meta(), bold_family()), color);
+    let color = if resp.hovered() { pal.text } else { pal.link };
+    ui.painter().text(pos2(rect.right() - 16.0, y), Align2::RIGHT_CENTER, "Jump to present", FontId::new(pal.meta(), crate::theme::semibold_family()), color);
     if resp.clicked() {
         cx.view.scroll_to_bottom = true;
         cx.state.chat.around = None;
@@ -980,11 +981,11 @@ fn absorb_window(state: &mut AppState, ch: Id) {
 }
 
 /// "N new messages since 14:03" over the top of the list while the first unread message is
-/// scrolled out above it: a click scrolls to that message, "Mark As Read" acks the channel and
-/// closes the bar (the NEW divider stays for this visit).
+/// scrolled out above it: a click scrolls to that message, "Mark as read" acks the channel and
+/// closes the bar (the "New" divider stays for this visit). Red-hot like that divider: unread.
 fn new_messages_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, list: Rect, (first, count, more): (Id, usize, bool)) {
     let pal = lc.pal;
-    let fg = cx.theme.colors.accent_text.to_color32();
+    let fg = pal.tk.danger_label;
     let rect = Rect::from_min_size(list.min + vec2(16.0, 0.0), vec2(list.width() - 32.0, 32.0));
     let n = if more { format!("{count}+") } else { count.to_string() };
     let today = chrono::Local::now().date_naive();
@@ -992,13 +993,13 @@ fn new_messages_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut M
         .map(|t| t.format(if t.date_naive() == today { "%H:%M" } else { "%H:%M, %-d %B" }).to_string())
         .unwrap_or_default();
     let text = format!("{n} new message{} since {since}", if n == "1" { "" } else { "s" });
-    let mark_g = ui.painter().layout_no_wrap("Mark As Read".into(), FontId::new(pal.meta(), bold_family()), fg);
+    let mark_g = ui.painter().layout_no_wrap("Mark as read".into(), FontId::new(pal.meta(), crate::theme::semibold_family()), fg);
     let mark_rect = Rect::from_min_max(pos2(rect.right() - 24.0 - mark_g.size().x, rect.top()), rect.max);
     let resp = ui.interact(rect, ui.make_persistent_id("rc_new_messages_bar"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
     let mark = ui.interact(mark_rect, ui.make_persistent_id("rc_new_messages_read"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &text));
-    mark.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Mark As Read"));
-    let fill = if resp.hovered() || mark.hovered() { pal.accent.lerp_to_gamma(Color32::BLACK, 0.12) } else { pal.accent };
+    mark.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Mark as read"));
+    let fill = if resp.hovered() || mark.hovered() { pal.tk.danger_fill.lerp_to_gamma(Color32::BLACK, 0.1) } else { pal.tk.danger_fill };
     let text_g = super::one_line(ui, text, FontId::proportional(pal.meta()), fg, mark_rect.left() - rect.left() - 24.0);
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, fill);
@@ -1134,19 +1135,20 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                 let threads = super::threads::has_threads(kind);
                 // Pins always; threads and the member toggle when shown.
                 let tools_w = search_w + 48.0 + if toggle { 40.0 } else { 0.0 } + if threads { 40.0 } else { 0.0 } + super::dm_call::header_w(cx.state, ch);
-                let title = RichText::new(name).family(bold_family()).size(pal.size + 1.0).color(pal.text);
+                // Heading 16/600, a 1x20 rule, the topic in the ui role (docs/DESIGN.md §10.3).
+                let title = RichText::new(name).font(FontId::new(pal.heading(), crate::theme::semibold_family())).color(pal.text);
                 ui.scope(|ui| {
                     ui.set_max_width((ui.available_width() - tools_w).max(40.0));
                     ui.add(Label::new(title).selectable(false).truncate());
                 });
                 let first = topic.lines().next().unwrap_or_default().trim();
                 if !first.is_empty() && ui.available_width() > tools_w + 80.0 {
-                    let (r, _) = ui.allocate_exact_size(vec2(1.0, 24.0), Sense::hover());
-                    ui.painter().vline(r.center().x, r.y_range(), Stroke::new(1.0, pal.line()));
+                    let (r, _) = ui.allocate_exact_size(vec2(1.0, 20.0), Sense::hover());
+                    ui.painter().vline(r.center().x, r.y_range(), Stroke::new(1.0, pal.tk.rule));
                     let w = (ui.available_width() - tools_w).max(0.0);
                     ui.scope(|ui| {
                         ui.set_max_width(w);
-                        let text = RichText::new(first).size(pal.size - 1.0).color(pal.muted);
+                        let text = RichText::new(first).size(pal.ui()).color(pal.muted);
                         ui.add(Label::new(text).selectable(false).truncate()).on_hover_text(topic);
                     });
                 }
@@ -1174,7 +1176,7 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             });
         });
     let r = panel.response.rect;
-    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,18 +1433,18 @@ fn top_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx) {
         });
     } else if loaded && !more {
         let sub = match lc.kind {
-            channel_type::DM => "The start of your conversation.",
-            channel_type::GROUP_DM => "The start of this group.",
-            _ => "The start of this channel.",
+            channel_type::DM => format!("This is the start of your conversation with {}.", lc.name),
+            channel_type::GROUP_DM => format!("This is the start of the {} group.", lc.name),
+            _ => format!("This is the start of the #{} channel.", lc.name),
         };
         Frame::new().inner_margin(Margin { left: 16, right: 16, top: 24, bottom: 8 }).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             let label = format!("{}{}", channel_prefix(lc.kind), lc.name);
-            ui.add(Label::new(RichText::new(label).family(bold_family()).size(pal.size + 8.0).color(pal.text)).selectable(false));
+            ui.add(Label::new(RichText::new(label).family(bold_family()).size(pal.display()).color(pal.text)).selectable(false));
             ui.add(Label::new(RichText::new(sub).color(pal.muted)).selectable(false));
         });
     } else if empty && !loaded && cx.state.conn != ConnState::Connected {
-        let text = if crate::config::offline_mode() || cx.state.conn == ConnState::Offline { "No messages cached" } else { "Connecting…" };
+        let text = if crate::config::offline_mode() || cx.state.conn == ConnState::Offline { "Messages load when you're connected." } else { "Connecting…" };
         // The shared empty state: one muted meta line, centred in the pane (minus the list's
         // 16 px bottom space, so nothing scrolls). Floored: with fractional pane heights (125 %
         // scaling) a sub-pixel overflow made the scroll-to-bottom correction redo every pass.
@@ -1453,26 +1455,25 @@ fn top_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx) {
     }
 }
 
-/// Day label centred on a hairline and/or the unread marker (danger line with a "NEW" tag at
-/// its right end); one line when both fall on the same message.
+/// Day label centred on a hairline and/or the unread marker (a `danger` line with the "New" tag
+/// at its right end); one line when both fall on the same message.
 fn separator(ui: &mut egui::Ui, pal: &Pal, id: Id, date: bool, new: bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), if date { 40.0 } else { 16.0 }), Sense::hover());
     let p = ui.painter();
     // On a pixel centre: a 1 px line between two pixel rows blurs into a faint 2 px band.
     let (color, y) = (if new { pal.danger } else { pal.muted }, p.round_to_pixel_center(rect.center().y));
-    let stroke = Stroke::new(1.0, if new { pal.danger } else { pal.line() });
+    let stroke = Stroke::new(1.0, if new { pal.danger } else { pal.tk.rule });
     let mut right = rect.right() - 16.0;
     if new {
-        let g = p.layout_no_wrap("NEW".into(), FontId::new(pal.size - 4.5, bold_family()), pal.bg);
-        let tag = Rect::from_min_max(pos2(right - g.size().x - 8.0, y - 7.0), pos2(right, y + 7.0));
-        p.rect_filled(tag, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, pal.danger);
-        // Arrow notch pointing at the line.
-        p.add(Shape::convex_polygon(vec![pos2(tag.left() - 5.0, y), tag.left_top(), tag.left_bottom()], pal.danger, Stroke::NONE));
-        p.galley(tag.center() - g.size() / 2.0, g, pal.bg);
-        right = tag.left() - 5.0;
+        // The "New" tag: badge role on `danger_fill`, chip radius, sentence case.
+        let g = p.layout_no_wrap("New".into(), FontId::new(pal.badge(), bold_family()), pal.tk.danger_label);
+        let tag = Rect::from_min_max(pos2(right - g.size().x - 10.0, y - 8.0), pos2(right, y + 8.0));
+        p.rect_filled(tag, pal.radius / 2, pal.tk.danger_fill);
+        p.galley(tag.center() - g.size() / 2.0, g, pal.tk.danger_label);
+        right = tag.left();
     }
     if date {
-        let galley = p.layout_no_wrap(day_label(id), FontId::new(pal.size - 3.0, bold_family()), color);
+        let galley = p.layout_no_wrap(day_label(id), FontId::new(pal.meta(), crate::theme::semibold_family()), color);
         let (mid, half) = (rect.center().x, galley.size().x / 2.0);
         p.hline(rect.left() + 16.0..=mid - half - 12.0, y, stroke);
         p.hline(mid + half + 12.0..=right, y, stroke);
@@ -1551,15 +1552,16 @@ fn message_block(
     }
     let mut shapes = Vec::new();
     if flashing > 0.0 {
-        shapes.push(Shape::rect_filled(rect, 0.0, pal.accent.gamma_multiply(0.18 * flashing)));
+        // A jumped-to message: the navigation colour (`link`), fading out.
+        shapes.push(Shape::rect_filled(rect, 0.0, pal.link.gamma_multiply(0.18 * flashing)));
     } else if crate::plugins::message_logger::is_deleted(msg.id) {
         // MessageLogger: a deleted message keeps a faint red tint.
         shapes.push(Shape::rect_filled(rect, 0.0, pal.danger.gamma_multiply(if hovered { 0.16 } else { 0.1 })));
     } else if system.is_none() && cx.state.mentions_me(msg) {
-        // Faint tint + accent bar: noticeable without shouting.
-        let tint = if hovered { pal.mention.gamma_multiply(0.8) } else { pal.mention.gamma_multiply(0.5) };
+        // Mentions me: the `mention_highlight` row and a 2 px straw (`attention`) bar.
+        let tint = if hovered { pal.mention.blend(pal.tk.hover) } else { pal.mention };
         shapes.push(Shape::rect_filled(rect, 0.0, tint));
-        shapes.push(Shape::rect_filled(Rect::from_min_size(rect.min, vec2(2.0, rect.height())), 0.0, pal.accent));
+        shapes.push(Shape::rect_filled(Rect::from_min_size(rect.min, vec2(2.0, rect.height())), 0.0, pal.tk.attention));
     } else if hovered {
         shapes.push(Shape::rect_filled(rect, 0.0, pal.hover));
     }
@@ -1659,17 +1661,18 @@ fn compact_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, 
         resp.on_hover_text(full_time(&msg.timestamp));
         // Compact puts the tag before the name.
         if msg.author.bot {
-            let g = ui.painter().layout_no_wrap("BOT".into(), FontId::new(pal.size - 4.0, bold_family()), pal.muted);
+            // The app tag: `chip` fill, `link` badge text, chip radius.
+            let g = ui.painter().layout_no_wrap("Bot".into(), FontId::new(pal.badge(), bold_family()), pal.link);
             let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 8.0, row_h), Sense::hover());
             let chip = Rect::from_center_size(r.center(), vec2(r.width(), g.size().y + 2.0));
-            ui.painter().rect_filled(chip, 4, pal.tint());
-            ui.painter().galley(chip.center() - g.size() / 2.0, g, pal.muted);
+            ui.painter().rect_filled(chip, pal.radius / 2, pal.tk.chip);
+            ui.painter().galley(chip.center() - g.size() / 2.0, g, pal.link);
             ui.add_space(6.0);
         }
         let name = cx.state.member_display_name(lc.guild_id, &msg.author, member.as_ref());
         let color = name_color(cx.state, lc.guild_id, member.as_ref()).unwrap_or(pal.text);
         let style = crate::overrides::effective_for(current_user(cx.state, &msg.author), member.as_ref()).name_style;
-        let name_g = super::cosmetics::name_galley(ui, &format!("{name}:"), FontId::new(pal.size, bold_family()), style.as_ref(), color, f32::INFINITY);
+        let name_g = super::cosmetics::name_galley(ui, &format!("{name}:"), FontId::new(pal.size, crate::theme::semibold_family()), style.as_ref(), color, f32::INFINITY);
         let r = ui.add(Label::new(name_g).selectable(false).sense(Sense::click())).on_hover_cursor(CursorIcon::PointingHand);
         if r.clicked() {
             cx.view.open_profile(msg.author.id, lc.guild_id, r.rect.right_top() + vec2(8.0, 0.0));
@@ -1692,10 +1695,11 @@ fn author_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, user: &User, memb
     // Cosmetics (ui/cosmetics.rs): display-name style, guild tag chip after the name.
     let current = current_user(cx.state, user);
     let style = crate::overrides::effective_for(current, member).name_style;
-    let name_g = super::cosmetics::name_galley(ui, &name, FontId::new(pal.size, bold_family()), style.as_ref(), color, f32::INFINITY);
+    // Author 15/600 (docs/DESIGN.md §10.3).
+    let name_g = super::cosmetics::name_galley(ui, &name, FontId::new(pal.size, crate::theme::semibold_family()), style.as_ref(), color, f32::INFINITY);
     let tag = super::cosmetics::guild_tag(current, member).cloned();
     let time_g = p.layout_no_wrap(time.to_owned(), FontId::proportional(pal.meta()), pal.muted);
-    let bot_g = user.bot.then(|| p.layout_no_wrap("BOT".into(), FontId::new(pal.size - 4.0, bold_family()), pal.muted));
+    let bot_g = user.bot.then(|| p.layout_no_wrap("Bot".into(), FontId::new(pal.badge(), bold_family()), pal.link));
     let h = name_g.size().y;
     let base = baseline(&name_g);
     ui.horizontal(|ui| {
@@ -1718,8 +1722,8 @@ fn author_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, user: &User, memb
         if let Some(g) = bot_g {
             let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 8.0, h), Sense::hover());
             let top = r.top() + base - baseline(&g);
-            p.rect_filled(Rect::from_min_size(pos2(r.left(), top - 1.0), vec2(r.width(), g.size().y + 2.0)), 4, pal.tint());
-            p.galley(pos2(r.left() + 4.0, top), g, pal.muted);
+            p.rect_filled(Rect::from_min_size(pos2(r.left(), top - 1.0), vec2(r.width(), g.size().y + 2.0)), pal.radius / 2, pal.tk.chip);
+            p.galley(pos2(r.left() + 4.0, top), g, pal.link);
         }
         let (r, resp) = ui.allocate_exact_size(vec2(time_g.size().x, h), Sense::hover());
         p.galley(pos2(r.left(), r.top() + base - baseline(&time_g)), time_g, pal.muted);
@@ -1831,7 +1835,7 @@ fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
     let id = ui.make_persistent_id("rc_inline_edit");
     let resp = Frame::new()
         .fill(pal.surface)
-        .stroke(Stroke::new(1.0, pal.accent.gamma_multiply(0.6)))
+        .stroke(Stroke::new(1.0, pal.tk.edge))
         .corner_radius(pal.radius)
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
@@ -1864,7 +1868,7 @@ fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
         close = true;
     }
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Esc to cancel · Enter to save").size(pal.meta()).color(pal.muted));
+        ui.label(RichText::new("Escape to cancel, Enter to save").size(pal.meta()).color(pal.muted));
         if len > COUNTER_FROM {
             let color = if len > max_len { pal.danger } else { pal.muted };
             ui.label(RichText::new(format!("{len}/{max_len}")).size(pal.meta()).color(color));
@@ -1905,8 +1909,8 @@ fn attachments(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
             let (rect, r) = ui.allocate_exact_size(shown, Sense::click());
             // Surface + outline: the sidebar color equals the background in some themes.
             let fill = if r.hovered() { pal.surface.blend(pal.tint()) } else { pal.surface };
-            ui.painter().rect(rect, pal.radius, fill, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, "SPOILER", FontId::new(pal.size - 3.0, bold_family()), pal.muted);
+            ui.painter().rect(rect, pal.radius, fill, Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Spoiler", FontId::new(pal.meta(), crate::theme::semibold_family()), pal.muted);
             if r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Click to reveal").clicked() {
                 cx.view.revealed_spoilers.insert(key);
                 ui.ctx().request_repaint();
@@ -1931,7 +1935,7 @@ fn attachments(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
 fn file_chip(ui: &mut egui::Ui, pal: &Pal, a: &Attachment) {
     Frame::new()
         .fill(pal.surface)
-        .stroke(Stroke::new(1.0, pal.line()))
+        .stroke(Stroke::new(1.0, pal.tk.rule))
         .corner_radius(pal.card_radius())
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
@@ -2013,11 +2017,11 @@ fn embed_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: 
         })
         .response
         .rect;
-    // The card in the embed color, covered by the surface except a 3 px left edge: a
-    // border that follows the rounded corners.
+    // The card in the embed color, covered by the surface except a 4 px left edge: a
+    // border that follows the rounded corners (the control radius, docs/DESIGN.md §10.3).
     let bar = e.color.filter(|&c| c != 0).map(rgb).unwrap_or(pal.muted.gamma_multiply(0.4));
-    let r = pal.card_radius();
-    let inner = Rect::from_min_max(pos2(rect.left() + 3.0, rect.top()), rect.max);
+    let r = pal.radius;
+    let inner = Rect::from_min_max(pos2(rect.left() + 4.0, rect.top()), rect.max);
     let card = CornerRadius { nw: r.saturating_sub(1), sw: r.saturating_sub(1), ne: r, se: r };
     ui.painter().set(bg, Shape::Vec(vec![Shape::rect_filled(rect, r, pal.bg.blend(bar)), Shape::rect_filled(inner, card, pal.surface)]));
 }
@@ -2137,11 +2141,11 @@ fn reactions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, ms
     });
 }
 
-/// Reaction pill: emoji (texture or text; `NO_GLYPH` when the font lacks it) and count. Mine
-/// is outlined in the accent.
+/// Reaction pill (24 tall, `surface`): emoji (texture or text; `NO_GLYPH` when the font lacks
+/// it) and the count in meta 500. Mine: the `chip` fill with a 1 px `link` border.
 fn reaction_chip(ui: &mut egui::Ui, pal: &Pal, tex: Option<SizedTexture>, emoji: &str, count: &str, me: bool) -> egui::Response {
     let p = ui.painter().clone();
-    let count_g = p.layout_no_wrap(count.to_owned(), FontId::proportional(pal.size - 1.0), if me { pal.accent } else { pal.text });
+    let count_g = p.layout_no_wrap(count.to_owned(), FontId::new(pal.meta(), crate::theme::medium_family()), if me { pal.link } else { pal.text });
     // An emoji the fonts can't draw as one (a missing glyph, a keycap, a flag) shows as its muted
     // `:shortcode:`, never as an empty box or loose letters.
     let drawable = tex.is_some() || (has_emoji_glyph(ui, emoji) && (emojis::get(emoji).is_none() || pickers::drawable(ui.ctx(), emoji)));
@@ -2157,11 +2161,14 @@ fn reaction_chip(ui: &mut egui::Ui, pal: &Pal, tex: Option<SizedTexture>, emoji:
     if ui.is_rect_visible(rect) {
         let hot = resp.hovered();
         let fill = match (me, hot) {
-            (true, _) => pal.accent.gamma_multiply(if hot { 0.24 } else { 0.14 }),
-            (false, true) => pal.surface.blend(pal.tint()),
+            (true, false) => pal.tk.chip,
+            (true, true) => pal.link.gamma_multiply(0.28),
+            (false, true) => pal.surface.blend(pal.tk.hover),
             _ => pal.surface,
         };
-        let stroke = if me { Stroke::new(1.0, pal.accent.gamma_multiply(0.8)) } else { Stroke::new(1.0, pal.line()) };
+        // High Contrast keeps an edge on every pill (its `surface` sits close to the chat).
+        let hc = pal.tk.mode == crate::theme::Mode::HighContrast;
+        let stroke = if me { Stroke::new(1.0, pal.link) } else if hc { Stroke::new(1.0, pal.tk.rule) } else { Stroke::NONE };
         p.rect(rect, pal.radius, fill, stroke, egui::StrokeKind::Inside);
         let x = rect.left() + 8.0;
         match (tex, emoji_g) {
@@ -2323,7 +2330,7 @@ fn pending_rows(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, last_author: Opt
 fn upload_card(ui: &mut egui::Ui, pal: &Pal, u: &Upload, failed: bool) -> bool {
     let mut cancel = false;
     let w = ui.available_width().min(432.0);
-    Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, pal.line())).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
+    Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, pal.tk.rule)).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
         ui.set_width(w - 26.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
@@ -2349,7 +2356,7 @@ fn upload_card(ui: &mut egui::Ui, pal: &Pal, u: &Upload, failed: bool) -> bool {
                     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
                     ui.painter().rect_filled(bar, 2, pal.tint());
                     let frac = if u.total > 0 { u.sent as f32 / u.total as f32 } else { 0.0 };
-                    ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac.clamp(0.0, 1.0), bar.height())), 2, pal.accent);
+                    ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac.clamp(0.0, 1.0), bar.height())), 2, pal.text);
                 });
             });
         });
@@ -2377,9 +2384,10 @@ fn hover_toolbar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
     // A child that is not allocated in the list, so it neither moves the cursor nor the content size.
     let mut bar = ui.new_child(UiBuilder::new().max_rect(area).layout(Layout::right_to_left(Align::Center)));
     let shadow = egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if pal.dark { 60 } else { 18 }) };
+    // A float (E2 colours; a small shadow, the bar sits on the message it belongs to).
     let rect = Frame::new()
-        .fill(pal.surface)
-        .stroke(Stroke::new(1.0, pal.line()))
+        .fill(pal.tk.raised)
+        .stroke(Stroke::new(1.0, pal.tk.rule))
         .corner_radius(pal.card_radius())
         .shadow(shadow)
         .inner_margin(Margin::same(2))
@@ -2413,7 +2421,7 @@ fn hover_toolbar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
             }
             if !quick.is_empty() {
                 let (r, _) = ui.allocate_exact_size(vec2(9.0, SIDE), Sense::hover());
-                ui.painter().vline(r.center().x, r.shrink2(vec2(0.0, 6.0)).y_range(), Stroke::new(1.0, pal.line()));
+                ui.painter().vline(r.center().x, r.shrink2(vec2(0.0, 6.0)).y_range(), Stroke::new(1.0, pal.tk.rule));
             }
             for e in quick.iter().rev() {
                 if quick_button(ui, cx, &pal, e, SIDE).clicked() {
@@ -2519,9 +2527,9 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
                     }
                 });
                 ui.separator();
-                // Discord: a few frequently used ones, then "View More" (the reaction picker).
+                // Discord: a few frequently used ones, then "View more" (the reaction picker).
                 let picked = ui
-                    .menu_button("Add Reaction", |ui| {
+                    .menu_button("Add reaction", |ui| {
                         menu_setup(ui);
                         let keys = cx.settings.frequent_emoji.iter().map(|(k, _)| k.as_str()).chain(DEFAULT_QUICK);
                         let mut pick = None;
@@ -2531,7 +2539,7 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
                             }
                         }
                         ui.separator();
-                        view_more = menu_item(ui, "View More", MenuIcon::Glyph("☺"), pal.text);
+                        view_more = menu_item(ui, "View more", MenuIcon::Glyph("☺"), pal.text);
                         pick
                     })
                     .inner
@@ -2540,7 +2548,7 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
                     react(&ctx, cx, lc.ch, mid, e, false);
                 }
             }
-            if own && !system && menu_item(ui, "Edit Message", MenuIcon::Glyph("✏"), pal.text) {
+            if own && !system && menu_item(ui, "Edit message", MenuIcon::Glyph("✏"), pal.text) {
                 start_edit(cx, lc.ch, mid, &content);
             }
             if lc.can_send && !system && menu_item(ui, "Reply", MenuIcon::Glyph("↩"), pal.text) {
@@ -2549,33 +2557,33 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
             if !system
                 && super::threads::has_threads(lc.kind)
                 && cx.state.can_create_thread(lc.ch, false)
-                && menu_item(ui, "Create Thread", MenuIcon::Icon(Icon::Thread), pal.text)
+                && menu_item(ui, "Create thread", MenuIcon::Icon(Icon::Thread), pal.text)
             {
                 super::threads::open_create(cx, lc.ch, Some(mid));
             }
-            if !content.is_empty() && menu_item(ui, "Copy Text", MenuIcon::Icon(Icon::Copy), pal.text) {
+            if !content.is_empty() && menu_item(ui, "Copy text", MenuIcon::Icon(Icon::Copy), pal.text) {
                 ctx.copy_text(content.clone());
             }
             ui.separator();
-            if lc.can_pin && !system && menu_item(ui, if pinned { "Unpin Message" } else { "Pin Message" }, MenuIcon::Glyph("📌"), pal.text) {
+            if lc.can_pin && !system && menu_item(ui, if pinned { "Unpin message" } else { "Pin message" }, MenuIcon::Glyph("📌"), pal.text) {
                 let (channel_id, message_id) = (lc.ch, mid);
                 let cmd = if pinned { ChatCommand::UnpinMessage { channel_id, message_id } } else { ChatCommand::PinMessage { channel_id, message_id } };
                 cx.cmd.send(Command::Chat(cmd));
             }
-            if menu_item(ui, "Mark Unread", MenuIcon::Glyph("✉"), pal.text) {
+            if menu_item(ui, "Mark unread", MenuIcon::Glyph("✉"), pal.text) {
                 mark_unread(cx, lc.ch, mid);
                 marked = true;
             }
-            if menu_item(ui, "Copy Message Link", MenuIcon::Icon(Icon::Link), pal.text) {
+            if menu_item(ui, "Copy message link", MenuIcon::Icon(Icon::Link), pal.text) {
                 ctx.copy_text(message_link(lc.guild_id, lc.ch, mid));
             }
-            if own && embeds && menu_item(ui, "Remove Embeds", MenuIcon::Glyph("🚫"), pal.text) {
+            if own && embeds && menu_item(ui, "Remove embeds", MenuIcon::Glyph("🚫"), pal.text) {
                 cx.cmd.send(Command::Chat(ChatCommand::SuppressEmbeds { channel_id: lc.ch, message_id: mid, flags }));
             }
             crate::plugins::menus::message_items(ui, cx, &plugin_msg, &mut |ui, text, glyph| menu_item(ui, text, MenuIcon::Glyph(glyph), pal.text));
             if own {
                 ui.separator();
-                if menu_item(ui, "Delete Message", MenuIcon::Glyph("🗑"), pal.danger) {
+                if menu_item(ui, "Delete message", MenuIcon::Glyph("🗑"), pal.danger) {
                     cx.view.confirm_delete = Some((lc.ch, mid));
                 }
             }
@@ -2585,7 +2593,7 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
             if dev {
                 ui.separator();
             }
-            if dev && menu_item(ui, "Copy Message ID", MenuIcon::Glyph("🆔"), pal.text) {
+            if dev && menu_item(ui, "Copy message ID", MenuIcon::Glyph("🆔"), pal.text) {
                 ctx.copy_text(mid.0.to_string());
             }
         });

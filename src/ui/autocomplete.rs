@@ -40,12 +40,12 @@ pub fn trigger(word: &str) -> Option<Trigger<'_>> {
     }
 }
 
-/// The popup's header line ("MEMBERS", "CHANNELS", "EMOJI MATCHING :sm").
+/// The popup's header line ("Members", "Channels", "Emoji matching :sm").
 pub fn title(word: &str) -> String {
     match trigger(word) {
-        Some(Trigger::Member(_)) => "MEMBERS".into(),
-        Some(Trigger::Channel(_)) => "CHANNELS".into(),
-        Some(Trigger::Emoji(q)) => format!("EMOJI MATCHING :{q}"),
+        Some(Trigger::Member(_)) => "Members".into(),
+        Some(Trigger::Channel(_)) => "Channels".into(),
+        Some(Trigger::Emoji(q)) => format!("Emoji matching :{q}"),
         None => String::new(),
     }
 }
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(trigger("http://x"), None);
         assert_eq!(trigger(""), None);
         assert_eq!(trigger("é"), None);
-        assert_eq!(title(":sm"), "EMOJI MATCHING :sm");
+        assert_eq!(title(":sm"), "Emoji matching :sm");
     }
 
     fn state() -> (AppState, Id) {

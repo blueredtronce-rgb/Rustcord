@@ -25,7 +25,7 @@ pub struct MdOpts<'a> {
     pub id_salt: Id,
     /// Text color override (e.g. muted for system messages).
     pub color: Option<egui::Color32>,
-    /// Search terms (lowercase) marked on a subtle accent background.
+    /// Search terms (lowercase) marked on the text-selection colour.
     pub highlight: &'a [String],
 }
 
@@ -91,7 +91,9 @@ struct Pal {
     text: Color32,
     muted: Color32,
     link: Color32,
-    accent: Color32,
+    /// Mention and channel chips (`Tokens::chip`), search hits (`Tokens::selection`).
+    chip: Color32,
+    selection: Color32,
     code_bg: Color32,
     radius: u8,
 }
@@ -104,7 +106,8 @@ impl Pal {
             text: c.text.to_color32(),
             muted: c.text_muted.to_color32(),
             link: c.link.to_color32(),
-            accent: c.accent.to_color32(),
+            chip: cx.theme.tokens().chip,
+            selection: cx.theme.tokens().selection,
             code_bg: c.code_background.to_color32(),
             radius: cx.theme.layout.corner_radius.clamp(0.0, 255.0) as u8,
         }
@@ -209,12 +212,12 @@ impl Md<'_, '_> {
         flush(ui, &mut job, look);
     }
 
-    /// Appends `text` with the search terms (`MdOpts::highlight`) on a subtle accent background.
+    /// Appends `text` with the search terms (`MdOpts::highlight`) on the text-selection colour.
     fn append_text(&self, ui: &Ui, job: &mut LayoutJob, text: &str, format: TextFormat) {
         let mut rest = text;
         while let Some(r) = find_term(rest, self.opts.highlight) {
             self.append_run(ui, job, &rest[..r.start], format.clone());
-            self.append_run(ui, job, &rest[r.clone()], TextFormat { background: self.pal.accent.gamma_multiply(0.3), ..format.clone() });
+            self.append_run(ui, job, &rest[r.clone()], TextFormat { background: self.pal.selection, ..format.clone() });
             rest = &rest[r.end..];
         }
         self.append_run(ui, job, rest, format);
@@ -265,7 +268,7 @@ impl Md<'_, '_> {
             Inline::Link { label, url, masked } => self.inlines(ui, label, Look { link: Some((url, *masked)), ..look }),
             Inline::UserMention(id) => {
                 let name = self.user_name(*id).or_else(|| crate::plugins::people::valid_user_name(self.cx.state, *id)).map_or_else(|| "@unknown-user".to_owned(), |n| format!("@{n}"));
-                let r = pill(ui, &name, pal.text, pal.accent, look.size).on_hover_cursor(CursorIcon::PointingHand);
+                let r = pill(ui, &name, pal.link, pal.chip, look.size).on_hover_cursor(CursorIcon::PointingHand);
                 if r.clicked() {
                     let anchor = r.rect.left_bottom();
                     self.cx.view.profile_card = Some(ProfileTarget { user_id: *id, guild_id: self.opts.guild_id, anchor, pivot: egui::Align2::LEFT_TOP });
@@ -273,13 +276,16 @@ impl Md<'_, '_> {
             }
             Inline::RoleMention(id) => {
                 let (name, color) = self.role(*id);
-                pill(ui, &name, color.unwrap_or(pal.text), color.unwrap_or(pal.accent), look.size);
+                match color {
+                    Some(c) => pill(ui, &name, c, c.gamma_multiply(0.18), look.size),
+                    None => pill(ui, &name, pal.link, pal.chip, look.size),
+                };
             }
             Inline::ChannelMention(id) => {
                 let state: &AppState = self.cx.state;
                 let name = if state.channels.contains_key(id) { format!("#{}", state.channel_name(*id)) } else { "#unknown".to_owned() };
                 let openable = state.can_view(*id) && state.channels.get(id).is_some_and(|c| c.is_text_chat());
-                let r = pill(ui, &name, pal.text, pal.accent, look.size);
+                let r = pill(ui, &name, pal.link, pal.chip, look.size);
                 let r = if openable { r.on_hover_cursor(CursorIcon::PointingHand) } else { r };
                 if openable && r.clicked() {
                     self.cx.state.select_channel(*id);
@@ -287,13 +293,13 @@ impl Md<'_, '_> {
                 }
             }
             Inline::Everyone => {
-                pill(ui, "@everyone", pal.text, pal.accent, look.size);
+                pill(ui, "@everyone", pal.link, pal.chip, look.size);
             }
             Inline::Here => {
-                pill(ui, "@here", pal.text, pal.accent, look.size);
+                pill(ui, "@here", pal.link, pal.chip, look.size);
             }
             Inline::SlashCommand(name) => {
-                pill(ui, &format!("/{name}"), pal.text, pal.accent, look.size).on_hover_text("Slash command");
+                pill(ui, &format!("/{name}"), pal.link, pal.chip, look.size).on_hover_text("Slash command");
             }
             Inline::CustomEmoji { name, id, animated } => self.emoji(ui, name, *id, *animated, look.size),
             Inline::Timestamp { unix, style } => self.timestamp(ui, *unix, *style, look),
@@ -440,9 +446,10 @@ fn flush(ui: &mut Ui, job: &mut LayoutJob, look: Look<'_>) {
     }
 }
 
-/// Mention chip: faint rounded tint behind the text, flowing inline with the paragraph.
-fn pill(ui: &mut Ui, text: &str, fg: Color32, tint: Color32, size: f32) -> egui::Response {
-    rounded_label(ui, text, size, fg, |hovered| tint.gamma_multiply(if hovered { 0.3 } else { 0.18 }))
+/// Mention chip (docs/DESIGN.md §9): `fill` behind the text, flowing inline with the paragraph;
+/// on hover the text colour at 28 %.
+fn pill(ui: &mut Ui, text: &str, fg: Color32, fill: Color32, size: f32) -> egui::Response {
+    rounded_label(ui, text, size, fg, |hovered| if hovered { fg.gamma_multiply(0.28) } else { fill })
 }
 
 /// One-row label on a rounded background (`fill(hovered)`); a text background can't be

@@ -666,8 +666,9 @@ fn grid(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, all: &[S
             let (hr, _) = ui.allocate_exact_size(vec2(w + left, if s.title.is_empty() { 4.0 } else { HEADER_H }), Sense::hover());
             tops.push(hr.top() - top);
             if !s.title.is_empty() && ui.is_rect_visible(hr) {
-                let font = FontId::new(pal.meta() - 0.5, bold_family());
-                ui.painter().text(pos2(hr.left() + left + 4.0, hr.center().y + 2.0), Align2::LEFT_CENTER, s.title.to_uppercase(), font, pal.muted);
+                // The label role, in the case given (no capitals, docs/DESIGN.md §3).
+                let font = FontId::new(pal.label(), crate::theme::semibold_family());
+                ui.painter().text(pos2(hr.left() + left + 4.0, hr.center().y + 2.0), Align2::LEFT_CENTER, s.title.as_str(), font, pal.muted);
             }
             for (ri, row) in s.items.chunks(cols).enumerate() {
                 let (rr, _) = ui.allocate_exact_size(vec2(w + left, CELL), Sense::hover());
@@ -945,13 +946,13 @@ fn gif_grid(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, item
                 if !resp.hovered() {
                     continue;
                 }
-                ui.painter().rect_stroke(r, 6, Stroke::new(2.0, pal.accent), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(r, 6, Stroke::new(2.0, pal.text), egui::StrokeKind::Inside);
                 let star = Rect::from_center_size(r.right_top() + vec2(-20.0, 20.0), Vec2::splat(28.0));
                 let fav = cx.settings.favorite_gifs.iter().any(|f| f.url == g.url);
                 let on_star = ui.ctx().pointer_hover_pos().is_some_and(|p| star.contains(p));
                 ui.painter().circle_filled(star.center(), 14.0, Color32::from_black_alpha(if on_star { 200 } else { 150 }));
                 icons::paint(ui.painter(), Vector::Star, Rect::from_center_size(star.center(), Vec2::splat(18.0)), if fav { TONES[0] } else { Color32::WHITE }, Color32::TRANSPARENT);
-                let resp = if on_star { resp.on_hover_text(if fav { "Remove from Favorites" } else { "Add to Favorites" }) } else { resp };
+                let resp = if on_star { resp.on_hover_text(if fav { "Remove from favorites" } else { "Add to favorites" }) } else { resp };
                 if resp.clicked() && on_star {
                     toggle = Some(g.clone());
                 } else if resp.clicked() && !g.url.is_empty() {

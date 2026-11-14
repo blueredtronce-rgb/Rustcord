@@ -154,8 +154,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
     let ctx = ui.ctx().clone();
     let pal = Pal::new(cx.theme);
     let r = pal.card_radius();
-    // Discord's box: rounded, hairline border, ~56 px tall at one row.
-    let card = Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, pal.line())).corner_radius(r);
+    // E1: `surface`, the container radius, ~56 px tall at one row; no border (High Contrast
+    // keeps one: its `surface` sits close to the chat).
+    let edge = if pal.tk.mode == crate::theme::Mode::HighContrast { Stroke::new(1.0, pal.tk.rule) } else { Stroke::NONE };
+    let card = Frame::new().fill(pal.surface).stroke(edge).corner_radius(r);
     let input_margin = Margin { left: 16, right: 12, top: 17, bottom: 17 };
     if !cx.state.can_send(ch) {
         if !panel {
@@ -283,8 +285,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
                             // Fully above the box with 8 px of air (Discord), whatever sits above the row.
                             egui::Popup::menu(&plus).align(RectAlign::TOP_START).gap(plus.rect.top() - card_top + 8.0).show(|ui| {
                                 menu_setup(ui);
-                                pick_files = menu_item(ui, "Upload a File", MenuIcon::Glyph("📎"), pal.text);
-                                new_thread = thread_ok && menu_item(ui, "Create Thread", MenuIcon::Glyph("🧵"), pal.text);
+                                pick_files = menu_item(ui, "Upload a file", MenuIcon::Glyph("📎"), pal.text);
+                                new_thread = thread_ok && menu_item(ui, "Create thread", MenuIcon::Glyph("🧵"), pal.text);
                             });
                         }
                         let state = &*cx.state;
@@ -448,7 +450,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
         super::threads::open_create(cx, ch, None);
     }
     // The one blocking call the UI allows: the user's own file dialog.
-    if pick_files && let Some(paths) = rfd::FileDialog::new().set_title("Upload a File").pick_files() {
+    if pick_files && let Some(paths) = rfd::FileDialog::new().set_title("Upload a file").pick_files() {
         let limit = cx.state.upload_limit(ch);
         add_jobs(&ctx, &mut tray, ch, paths.into_iter().map(Job::Path).collect(), limit);
     }
@@ -602,7 +604,8 @@ fn ac_popup(
     selected: &mut usize,
     reveal: bool,
 ) -> Option<usize> {
-    let frame = Frame::popup(&ctx.global_style()).fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(Margin::same(8));
+    // E2: the raised float colour with a `rule` edge (the popup frame's shadow).
+    let frame = Frame::popup(&ctx.global_style()).fill(pal.tk.raised).stroke(Stroke::new(1.0, pal.tk.rule)).corner_radius(pal.card_radius()).inner_margin(Margin::same(8));
     let margin = frame.total_margin().sum();
     let mut clicked = None;
     egui::Area::new(id).order(Order::Foreground).fixed_pos(anchor.left_top() - vec2(0.0, 8.0)).pivot(Align2::LEFT_BOTTOM).show(ctx, |ui| {
@@ -611,7 +614,7 @@ fn ac_popup(
             ui.set_width(w);
             ui.spacing_mut().item_spacing.y = 0.0;
             let (head, _) = ui.allocate_exact_size(vec2(w, AC_HEADER_H), Sense::hover());
-            let font = FontId::new(pal.meta() - 0.5, bold_family());
+            let font = FontId::new(pal.label(), crate::theme::semibold_family());
             ui.painter().text(pos2(head.left() + 8.0, head.center().y - 2.0), Align2::LEFT_CENTER, title, font, pal.muted);
             let moving = ui.input(|i| i.pointer.is_moving());
             // The menus' hover fill, not the accent: role colors stay readable on it.
@@ -633,7 +636,7 @@ fn ac_popup(
                         resp.scroll_to_me(None);
                     }
                     if ui.is_rect_visible(rect) {
-                        let fill = if on { hot } else { pal.surface };
+                        let fill = if on { hot } else { pal.tk.raised };
                         ui.painter().rect_filled(rect, pal.radius, fill);
                         ac_row(ui, cx, pal, guild_id, row, rect, fill);
                     }
@@ -742,7 +745,7 @@ pub(super) fn form_files(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, key: I
         tray_row(ui, pal, &mut tray, key, SMALL_CARD_H);
     }
     if small_button(ui, pal, "📎 Upload a File", pal.text).clicked()
-        && let Some(paths) = rfd::FileDialog::new().set_title("Upload a File").pick_files()
+        && let Some(paths) = rfd::FileDialog::new().set_title("Upload a file").pick_files()
     {
         let limit = cx.state.upload_limit(key);
         add_jobs(&ctx, &mut tray, key, paths.into_iter().map(Job::Path).collect(), limit);
@@ -879,10 +882,12 @@ fn drop_overlay(ctx: &egui::Context, pal: &Pal, title: &str) {
         let p = ui.painter();
         p.rect_filled(screen, 0, Color32::from_black_alpha(170));
         let card = Rect::from_center_size(screen.center(), vec2(320.0, 168.0));
-        p.rect_filled(card, 16, pal.accent);
-        p.rect_stroke(card.shrink(8.0), 10, Stroke::new(2.0, Color32::WHITE.gamma_multiply(0.6)), egui::StrokeKind::Inside);
-        super::icons::paint(p, super::icons::Icon::File, Rect::from_center_size(card.center() - vec2(0.0, 22.0), Vec2::splat(48.0)), Color32::WHITE, pal.accent);
-        p.text(card.center() + vec2(0.0, 30.0), Align2::CENTER_CENTER, title, FontId::new(pal.size + 4.0, bold_family()), Color32::WHITE);
+        // A raised card (E3) with the drop zone outlined inside it.
+        let fill = pal.tk.raised;
+        p.rect(card, pal.modal_radius(), fill, Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
+        p.rect_stroke(card.shrink(8.0), pal.card_radius().saturating_sub(4), Stroke::new(2.0, pal.tk.edge), egui::StrokeKind::Inside);
+        super::icons::paint(p, super::icons::Icon::File, Rect::from_center_size(card.center() - vec2(0.0, 22.0), Vec2::splat(48.0)), pal.muted, fill);
+        p.text(card.center() + vec2(0.0, 30.0), Align2::CENTER_CENTER, title, FontId::new(pal.title(), crate::theme::semibold_family()), pal.text);
     });
 }
 
@@ -919,7 +924,7 @@ fn tray_row(ui: &mut egui::Ui, pal: &Pal, tray: &mut Tray, ch: Id, card_h: f32) 
         })
         .response
         .rect;
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
 }
 
 /// One tray card of `size`; true when its remove button was clicked.
@@ -946,7 +951,7 @@ fn file_card(ui: &mut egui::Ui, pal: &Pal, f: &mut PendingFile, i: usize, size: 
         }
     }
     if f.file.spoiler {
-        let g = p.layout_no_wrap("SPOILER".into(), FontId::new(pal.meta() - 1.0, bold_family()), Color32::WHITE);
+        let g = p.layout_no_wrap("Spoiler".into(), FontId::new(pal.meta(), crate::theme::semibold_family()), Color32::WHITE);
         let pill = Rect::from_center_size(preview.center(), g.size() + vec2(16.0, 8.0));
         p.rect_filled(pill, pill.height() / 2.0, Color32::from_black_alpha(160));
         p.galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
@@ -961,7 +966,7 @@ fn file_card(ui: &mut egui::Ui, pal: &Pal, f: &mut PendingFile, i: usize, size: 
     // Spoiler | alt text | remove, in a small bar over the preview's top-right corner.
     let bar = Rect::from_min_size(pos2(rect.right() - 4.0 - 3.0 * 26.0, rect.top() + 4.0), vec2(3.0 * 26.0, 26.0));
     p.rect_filled(bar, pal.radius, pal.surface);
-    p.rect_stroke(bar, pal.radius, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
+    p.rect_stroke(bar, pal.radius, Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
     let mut child = ui.new_child(UiBuilder::new().id_salt(("rc_tray_card", i)).max_rect(bar.shrink(1.0)).layout(Layout::left_to_right(Align::Center)));
     child.spacing_mut().item_spacing.x = 0.0;
     if icon_button(&mut child, pal, "👁", "Mark as spoiler", 24.0, f.file.spoiler, pal.text).clicked() {
@@ -1111,7 +1116,7 @@ fn reply_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id, guild_id: 
         })
         .response
         .rect;
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, pal.line()));
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, pal.tk.rule));
 }
 
 /// Sends `content` (and `files` through the upload pipeline) as a reply if one is set.

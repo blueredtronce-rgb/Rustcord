@@ -8,7 +8,6 @@ use super::UiCx;
 use crate::backend::{ChatCommand, Command};
 use crate::model::{Id, Message, PinnedMessage};
 use crate::state::chat::PinsView;
-use crate::theme::bold_family;
 use egui::{vec2, Align, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense, Stroke, UiBuilder};
 
 pub(super) fn popup_id() -> egui::Id {
@@ -63,10 +62,10 @@ fn contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id) {
     ui.set_width(420.0f32.min(screen.width() - 32.0));
     Frame::new().inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.add(Label::new(RichText::new("Pinned Messages").family(bold_family()).size(pal.size + 1.0).color(pal.text)).selectable(false));
+        ui.add(Label::new(RichText::new("Pinned messages").font(egui::FontId::new(pal.heading(), crate::theme::semibold_family())).color(pal.text)).selectable(false));
     });
     let r = ui.min_rect();
-    ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, pal.tk.rule));
     let guild_id = cx.state.channels.get(&ch).and_then(|c| c.guild_id);
     let can_unpin = cx.state.channel_permissions(ch) & PIN_MESSAGES != 0;
     ScrollArea::vertical()
