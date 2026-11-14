@@ -1,0 +1,143 @@
+# Builds Rustcord's installers on Windows, Linux and macOS. Never runs on pushes or pull
+# requests; start it by hand (Actions > release > Run workflow) or push a tag v<version>.
+# - Run by hand: tests, then the packages as workflow artifacts. With "check_only": fmt, clippy
+#   and tests on all three systems, no packages.
+# - Tag v<version> (must equal Cargo.toml's version): the packages plus SHA256SUMS in a draft
+#   release, which is published by hand.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_only:
+        description: Only check (fmt, clippy, tests), build no packages
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The cached default target dir (scripts/build-installer.ps1 would pick C:\rc-target).
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            package: powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
+            artifact: dist/Rustcord-Setup-*.exe
+          # glibc 2.35: the packages run on Ubuntu 22.04+, Debian 12+, Fedora 36+.
+          - os: ubuntu-22.04
+            package: bash scripts/build-linux.sh
+            artifact: |
+              dist/*.deb
+              dist/*.tar.gz
+          # Apple silicon; the Intel half is cross-built with Xcode's SDK.
+          - os: macos-15
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            package: bash scripts/build-macos.sh
+            artifact: dist/*.dmg
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential pkg-config libasound2-dev libssl-dev nasm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ inputs.check_only && 'check' || 'package' }}
+
+      - name: Format
+        if: inputs.check_only
+        # shortcut: report only, the tree is not rustfmt-formatted yet (no rustfmt.toml); make it
+        # blocking after a one-time `cargo fmt`.
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        if: inputs.check_only
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Packaging runs skip the macOS tests: macOS minutes cost ten times as much.
+      - name: Tests
+        if: inputs.check_only || runner.os != 'macOS'
+        run: cargo test --locked
+
+      - name: Package
+        if: ${{ !inputs.check_only }}
+        run: ${{ matrix.package }}
+
+      - name: Check the Linux packages
+        if: ${{ !inputs.check_only && runner.os == 'Linux' }}
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP"
+          prefix=$RUNNER_TEMP/install-test
+          export RUSTCORD_SETUP_TEST=1 RUSTCORD_SETUP_PREFIX=$prefix
+          sh "$RUNNER_TEMP"/rustcord-*/install.sh
+          test -x "$prefix/.local/bin/rustcord"
+          test -f "$prefix/.local/share/applications/rustcord.desktop"
+          test -f "$prefix/.config/autostart/rustcord.desktop"
+          sh "$prefix/.local/share/rustcord/install.sh" --uninstall --purge
+          if [ -e "$prefix" ]; then find "$prefix"; echo "::error::install.sh --uninstall left files behind"; exit 1; fi
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.check_only }}
+        with:
+          name: rustcord-${{ runner.os }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.check_only
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "Rustcord ${GITHUB_REF_NAME#v}" --generate-notes dist/*
