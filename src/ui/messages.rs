@@ -624,10 +624,11 @@ pub(super) fn name_color(cx: &UiCx<'_>, guild_id: Option<Id>, member: Option<&Me
     cx.state.role_color(guild_id?, &member?.roles).map(|c| cx.theme.readable_on_pane(rgb(c), bg))
 }
 
-/// The colour under a message row's text: the chat, or the `mention_highlight` of a row that
-/// mentions me.
+/// The colour under a message row's text while it is hovered (the pointer usually rests on the
+/// chat): the chat or a row that mentions me, with `message_row`'s hover fill. Hover moves it
+/// toward the text colour, so a name readable here is readable at rest too.
 fn row_bg(cx: &UiCx<'_>, pal: &Pal, msg: &Message) -> Color32 {
-    if cx.state.mentions_me(msg) { pal.bg.blend(pal.mention) } else { pal.bg }
+    if cx.state.mentions_me(msg) { pal.bg.blend(pal.mention.blend(pal.tk.hover)) } else { pal.bg.blend(pal.hover) }
 }
 
 /// Small filled label ("Bot", "This is you").
