@@ -498,10 +498,12 @@ fn user_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id, guild_id: Option<Id
     }
 }
 
-/// A neutral rail tile (`surface`), lifted by the `selected` tint as `morph` goes to 1.
+/// A neutral rail tile (`surface`) that takes the `selected` fill as `morph` goes to 1 (hover and
+/// selection, docs/DESIGN.md §10.1). The tint goes on twice: once over an already raised tile it
+/// hardly shows, and on light themes it only sinks the tile to the rail's own colour.
 fn tile_fill(ui: &egui::Ui, c: &ThemeColors, morph: f32) -> Color32 {
-    let surface = c.surface.to_color32();
-    surface.lerp_to_gamma(surface.blend(crate::theme::applied_tokens(ui.ctx()).selected), morph)
+    let (surface, selected) = (c.surface.to_color32(), crate::theme::applied_tokens(ui.ctx()).selected);
+    surface.lerp_to_gamma(surface.blend(selected).blend(selected), morph)
 }
 
 /// Server icon `index` in `rect`; without one, its initials in semibold `text` on a neutral tile
