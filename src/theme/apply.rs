@@ -120,7 +120,7 @@ fn visuals(theme: &Theme) -> egui::Visuals {
     v.text_cursor.stroke = Stroke::new(2.0, c.accent.to_color32());
 
     // Selected text in temper blue; the stroke is also the label colour of selected buttons and
-    // the border of a focused text field.
+    // the border of a focused text field (recoloured to `focus` by ui::text_field_focus_ring).
     v.selection.bg_fill = tk.selection;
     v.selection.stroke = Stroke::new(2.0, text);
 

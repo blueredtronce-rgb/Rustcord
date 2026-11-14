@@ -837,12 +837,16 @@ impl eframe::App for RustcordApp {
         self.images.end_frame(&ctx);
         self.startup_hooks(&ctx);
         chrome::resize_cursor(&ctx);
+        text_field_focus_ring(&ctx);
     }
 
     /// Test hook: RUSTCORD_POINTER=<x>x<y> keeps the pointer at that point (logical px), so
     /// screenshots show hover states and tooltips; RUSTCORD_CLICK=left|right also clicks there
     /// once (frames 10-11), e.g. to open a context menu. With RUSTCORD_SCREENSHOT the window
     /// counts as focused (text focus, completion popups, read acks), whatever is in front.
+    /// RUSTCORD_NAV_DEMO=focus:<n> drops the focus and presses Tab n times (Shift+Tab for a
+    /// negative n: from the last control, e.g. an open menu's), one per frame from frame 14, to
+    /// show the focus ring wherever it lands.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         chrome::resize_press(ctx, raw);
         static SHOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -850,6 +854,17 @@ impl eframe::App for RustcordApp {
             raw.focused = true;
             if let Some(v) = raw.viewports.get_mut(&raw.viewport_id) {
                 v.focused = Some(true);
+            }
+        }
+        if let Some(n) = sidebar::nav_demo_value("focus").and_then(|v| v.parse::<i32>().ok())
+            && (14..14 + u64::from(n.unsigned_abs())).contains(&self.frame_no)
+        {
+            let modifiers = if n < 0 { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+            if self.frame_no == 14 {
+                ctx.memory_mut(|m| m.stop_text_input());
+            }
+            for pressed in [true, false] {
+                raw.events.push(egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed, repeat: false, modifiers });
             }
         }
         static POINTER: std::sync::OnceLock<Option<egui::Pos2>> = std::sync::OnceLock::new();
@@ -878,6 +893,33 @@ impl eframe::App for RustcordApp {
             rt.shutdown_background();
         }
     }
+}
+
+/// The focused text field's frame in the focus colour (docs/DESIGN.md §9 Inputs). egui strokes it
+/// with `selection.stroke`, which also colours selected text and selected labels, so that stays
+/// `text` (theme/apply.rs) and the stroke is recoloured here, after the pass painted it. Fields
+/// with their own frame (`Frame::NONE`) draw no such stroke and keep their own ring.
+fn text_field_focus_ring(ctx: &egui::Context) {
+    let Some(field) = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)) else { return };
+    let sel = ctx.global_style().visuals.selection.stroke;
+    let focus = crate::theme::applied_tokens(ctx).focus;
+    let near = |a: egui::Pos2, b: egui::Pos2| a.distance(b) < 1.0;
+    ctx.graphics_mut(|g| {
+        let Some(list) = g.get_mut(field.layer_id) else { return };
+        let frames: Vec<usize> = list
+            .all_entries()
+            .enumerate()
+            .filter(|(_, c)| matches!(&c.shape, egui::Shape::Rect(r) if r.stroke == sel && near(r.rect.min, field.rect.min) && near(r.rect.max, field.rect.max)))
+            .map(|(i, _)| i)
+            .collect();
+        for i in frames {
+            list.mutate_shape(egui::layers::ShapeIdx(i), |c| {
+                if let egui::Shape::Rect(r) = &mut c.shape {
+                    r.stroke.color = focus;
+                }
+            });
+        }
+    });
 }
 
 /// The 32 px title bar of the frameless window (`chrome`: drag, window buttons) with the

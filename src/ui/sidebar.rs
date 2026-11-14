@@ -916,14 +916,18 @@ pub fn channel_list(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 /// DM home header: a field that filters the DM list by name.
 fn dm_search(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let c = &cx.theme.colors;
-    let mut frame = egui::Frame::new()
+    let id = ui.make_persistent_id("dm_search");
+    let rest = if c.guild_bar == c.sidebar { line(c) } else { Stroke::NONE };
+    // Focused: the 2 px focus ring replaces the border (§9); the margin gives up the extra width so
+    // the text stays put.
+    let (stroke, give) = if ui.memory(|m| m.has_focus(id)) { (Stroke::new(2.0, cx.theme.tokens().focus), 2 - rest.width as i8) } else { (rest, 0) };
+    let frame = egui::Frame::new()
         .fill(c.guild_bar.to_color32())
         .corner_radius(cx.theme.layout.corner_radius)
-        .inner_margin(egui::Margin::symmetric(8, 5));
-    if c.guild_bar == c.sidebar {
-        frame = frame.stroke(line(c));
-    }
+        .inner_margin(egui::Margin::symmetric(8 - give, 5 - give))
+        .stroke(stroke);
     let edit = egui::TextEdit::singleline(&mut cx.view.dm_filter)
+        .id(id)
         .hint_text("Find a conversation")
         .font(FontId::proportional(cx.theme.font.size - 1.0))
         .frame(frame)
@@ -1327,6 +1331,11 @@ fn friends_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let left = row.left() + ROW_INSET + 52.0;
     let g = one_line(ui, "Friends", FontId::proportional(size), color, right - left);
     ui.painter().galley(pos2(left, row.center().y - g.size().y / 2.0), g, color);
+    if resp.has_focus() {
+        // The list's first row (the list clips above it): the ring traces the row's fill, inside it.
+        let pal = Pal::new(cx.theme);
+        super::messages::focus_ring(ui, &pal, row.shrink2(vec2(ROW_INSET + 4.0, 4.0)), (f32::from(pal.radius) - 4.0).max(0.0));
+    }
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, "Friends"));
     if resp.clicked() {
         super::friends::open(cx.state);

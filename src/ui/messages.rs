@@ -425,6 +425,10 @@ pub(super) fn menu_item(ui: &mut egui::Ui, text: &str, icon: MenuIcon, color: Co
     if let MenuIcon::Check(on) = icon {
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), on, text));
     }
+    // The focus ring (§9), inside the row: the menu's padding leaves no room around it.
+    if resp.has_focus() {
+        ui.painter().rect_stroke(resp.rect, ui.visuals().widgets.inactive.corner_radius, Stroke::new(2.0, tk.focus), egui::StrokeKind::Inside);
+    }
     if resp.clicked() {
         // For menus that only close on their own rows (`sidebar::user_context_menu`).
         ui.ctx().data_mut(|d| d.insert_temp(menu_click_id(), Some(ui.layer_id())));
@@ -1871,7 +1875,8 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &M
 fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &Message) {
     let pal = lc.pal;
     let id = ui.make_persistent_id("rc_inline_edit");
-    let resp = Frame::new()
+    let focused = ui.memory(|m| m.has_focus(id));
+    let out = Frame::new()
         .fill(pal.surface)
         .stroke(Stroke::new(1.0, pal.tk.edge))
         .corner_radius(pal.radius)
@@ -1887,8 +1892,12 @@ fn edit_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
                 .show(ui)
                 .response
                 .response
-        })
-        .inner;
+        });
+    if focused {
+        // The 2 px focus ring replaces the border (§9), as on egui-framed fields.
+        ui.painter().rect_stroke(out.response.rect, pal.radius, Stroke::new(2.0, pal.tk.focus), egui::StrokeKind::Inside);
+    }
+    let resp = out.inner;
     if memo.edit_focus != Some(msg.id) {
         resp.request_focus();
         memo.edit_focus = Some(msg.id);

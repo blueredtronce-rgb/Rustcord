@@ -209,7 +209,13 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   with sample data; `mfa` = the 2FA re-check prompt), `games` (Registered Games with its "Add it!"
   picker open on sample windows), `icons` (every vector icon of `ui/icons.rs` at 16, 20, 24 and
   48 px, then the channel icon matrix plain / private / age-restricted / rules at 20 px, over the
-  whole window).
+  whole window), `focus:<n>` (ui/mod.rs `raw_input_hook`: drops the focus, then presses Tab n
+  times, one per frame from frame 14, so the screenshot shows the focus ring where it lands; a
+  negative n presses Shift+Tab, starting from the last control drawn. In the Ember fixture at
+  1180x760: 1 the inbox button, 6 the first server tile, 13 the first channel row; with
+  `RUSTCORD_OPEN=server-menu` 11 its first item; with `settings:windows` 4 the settings search,
+  -3 the first switch; with `modal:create-channel` 6 its name field. More than 16 presses need a
+  later `RUSTCORD_SCREENSHOT_FRAME`).
 - `RUSTCORD_FAKE_GAME=<name>` (activity/scan.rs): game detection reports that game, started 47
   minutes ago (its icon from the saved games list `cache/detectable.tsv` when the name is in it):
   my user panel, my profile and Registered Games show it. Offline nothing is sent; online it would

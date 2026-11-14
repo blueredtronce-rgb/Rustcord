@@ -454,17 +454,20 @@ fn add_friend_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         // The answer to what is in the field now (a new name hides the old answer).
         let answer = cx.state.social.add_friend.as_ref().filter(|v| v.username == name).map(|v| v.result.clone());
         let sending = matches!(answer, Some(None));
+        let edit_id = ui.make_persistent_id("rc_add_friend_name");
+        let focused = ui.memory(|m| m.has_focus(edit_id));
         let border = match &answer {
             Some(Some(Ok(()))) => green,
             Some(Some(Err(_))) => pal.danger,
             _ => pal.tk.edge,
         };
         let mut send = false;
-        Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, border)).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+        let field = Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, border)).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
             // Fixed row height: `with_layout` would centre in (and take) all the height left.
             ui.allocate_ui_with_layout(vec2(ui.available_width(), 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let button_w = 170.0;
                 let edit = egui::TextEdit::singleline(&mut cx.view.friends_ui.add_name)
+                    .id(edit_id)
                     .hint_text("Enter a username")
                     .char_limit(37)
                     .frame(Frame::NONE)
@@ -476,6 +479,10 @@ fn add_friend_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
                 send = (super::messages::button(ui, pal, super::messages::Btn::Primary, "Send friend request", ready).clicked() || enter) && ready;
             });
         });
+        if focused {
+            // The 2 px focus ring replaces the border (§9), as on egui-framed fields.
+            ui.painter().rect_stroke(field.response.rect, pal.card_radius(), Stroke::new(2.0, pal.tk.focus), egui::StrokeKind::Inside);
+        }
         match answer {
             Some(Some(Ok(()))) => {
                 ui.label(RichText::new(format!("Success! Your friend request to {name} was sent.")).color(green));
