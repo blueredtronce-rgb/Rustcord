@@ -1,8 +1,8 @@
 //! CustomIdle (PLUGINS_NOTES S45): like the official client's auto-idle, with my own timeout.
-//! After N minutes without input anywhere on the system (Windows `GetLastInputInfo`) an Online
-//! status becomes Idle with one op 3 (`afk: true`, as the official client sends it); the first
-//! input after that restores Online with one more.
-//! Never persisted (no settings write), only while Online, a no-op on other systems.
+//! After N minutes without input anywhere on the system (Windows `GetLastInputInfo`, macOS
+//! CoreGraphics) an Online status becomes Idle with one op 3 (`afk: true`, as the official
+//! client sends it); the first input after that restores Online with one more.
+//! Never persisted (no settings write), only while Online, a no-op on Linux.
 
 use super::{Plugin, enabled, opt_int};
 use crate::backend::{ChatCommand, Command, CommandSender};
@@ -104,7 +104,20 @@ fn system_idle() -> Option<Duration> {
     Some(Duration::from_millis(u64::from(now.wrapping_sub(info.dwTime))))
 }
 
-#[cfg(not(windows))]
+/// Seconds since any input (keyboard, mouse) in the HID system state.
+#[cfg(target_os = "macos")]
+fn system_idle() -> Option<Duration> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    }
+    // SAFETY: a pure query; 1 = kCGEventSourceStateHIDSystemState, !0 = any input event type.
+    let secs = unsafe { CGEventSourceSecondsSinceLastEventType(1, u32::MAX) };
+    Duration::try_from_secs_f64(secs).ok()
+}
+
+// shortcut: no idle time on Linux (X11 would need the screensaver extension); add it with x11rb.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn system_idle() -> Option<Duration> {
     None
 }

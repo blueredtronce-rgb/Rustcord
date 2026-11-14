@@ -1,5 +1,6 @@
 //! Voice plugins: VcNarrator (PLUGINS_NOTES S42, reads out who joins, leaves or moves through my
-//! voice channel; Windows SAPI on its own thread, silent in Streamer Mode, a no-op elsewhere) and
+//! voice channel on its own thread: Windows SAPI, macOS `say`, Linux `spd-say`; silent in
+//! Streamer Mode) and
 //! VolumeBooster (S41, a per-user volume up to 400 %, applied by the local mixer only and kept in
 //! plugins.toml; nothing is sent).
 
@@ -144,7 +145,6 @@ pub fn narrate(state: &AppState, settings: &crate::config::Settings, ev: &Gatewa
 }
 
 /// Speaks `text` on the narrator thread (started on first use, then idle on its queue).
-#[cfg(windows)]
 fn say(text: String) {
     use std::sync::Mutex;
     use std::sync::mpsc::{Sender, channel};
@@ -181,8 +181,28 @@ fn speak_all(texts: std::sync::mpsc::Receiver<String>) {
     }
 }
 
+/// macOS `say` (text on stdin), Linux speech-dispatcher's `spd-say` (an argument after `--`);
+/// never through a shell. One at a time. Without either the thread ends (tried again next time).
 #[cfg(not(windows))]
-fn say(_text: String) {}
+fn speak_all(texts: std::sync::mpsc::Receiver<String>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    for text in texts {
+        let spoke = if cfg!(target_os = "macos") {
+            Command::new("/usr/bin/say").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().and_then(|mut child| {
+                if let Some(mut input) = child.stdin.take() {
+                    let _ = input.write_all(text.as_bytes());
+                }
+                child.wait()
+            })
+        } else {
+            Command::new("spd-say").args(["--wait", "--", &text]).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        };
+        if spoke.is_err() {
+            return;
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
