@@ -213,20 +213,106 @@ pub fn to_i420(src: &RawFrame<'_>, dst: &mut I420) {
 
 /// Write an I420 picture (a decoded one, or my own preview) as opaque RGBA of `size` into
 /// `rgba` (`size.0 × size.1 × 4` bytes, e.g. inside `FrameWriter::write`), scaling as needed.
+/// The same box filter as `resample` with each tap's Y, U and V, byte for byte (test
+/// `i420_to_rgba_matches_resample`), at a quarter of its cost with AVX2 and half without: this
+/// runs for every frame of a playing video.
 pub fn i420_to_rgba(src: &impl YUVSource, size: (u32, u32), rgba: &mut [u8]) {
     let (sw, sh) = src.dimensions();
     let (dw, dh) = (size.0 as usize, size.1 as usize);
-    let (ys, us, vs) = src.strides();
-    let (y, u, v) = (src.y(), src.u(), src.v());
-    if sw == 0 || sh == 0 || rgba.len() < dw * dh * 4 {
+    if sw == 0 || sh == 0 || dw == 0 || dh == 0 || rgba.len() < dw * dh * 4 {
         return;
     }
-    resample(
-        (sw, sh),
-        (dw, dh),
-        |x, r| [u32::from(y[r * ys + x]), u32::from(u[r / 2 * us + x / 2]), u32::from(v[r / 2 * vs + x / 2])],
-        |x, r, yuv| rgba[(r * dw + x) * 4..][..4].copy_from_slice(&rgb_of(yuv)),
-    );
+    let p = Planes { size: (sw, sh), strides: src.strides(), y: src.y(), u: src.u(), v: src.v() };
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has AVX2. Integer maths only, so both builds write the same bytes.
+        return unsafe { i420_avx2(&p, (dw, dh), rgba) };
+    }
+    i420_scaled(&p, (dw, dh), rgba);
+}
+
+/// An I420 picture's planes and their geometry.
+struct Planes<'a> {
+    size: (usize, usize),
+    strides: (usize, usize, usize),
+    y: &'a [u8],
+    u: &'a [u8],
+    v: &'a [u8],
+}
+
+/// `i420_scaled` compiled for AVX2: the colour loop then runs 8 pixels at a time (~2× overall).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn i420_avx2(p: &Planes<'_>, dst: (usize, usize), rgba: &mut [u8]) {
+    i420_scaled(p, dst, rgba);
+}
+
+#[inline(always)]
+fn i420_scaled(p: &Planes<'_>, dst: (usize, usize), rgba: &mut [u8]) {
+    let cols = taps(p.size.0, dst.0);
+    match cols.iter().map(|c| c.1).max().unwrap_or(1) {
+        1 => i420_rows::<1>(p, &cols, dst, rgba),
+        2 => i420_rows::<2>(p, &cols, dst, rgba),
+        3 => i420_rows::<3>(p, &cols, dst, rgba),
+        _ => i420_rows::<4>(p, &cols, dst, rgba),
+    }
+}
+
+/// `i420_scaled` with at most `NX` taps per column. Per destination row: its tap rows summed
+/// per source column (u16), then Y | U << 16 | V << 32 per luma column in one u64 (a field
+/// never exceeds 16 × 255, so the adds never carry into the next), so a column's taps are `NX`
+/// u64 adds (a shorter span adds the zero slot at the end); then `RECIP` and `rgb_of` per pixel.
+#[inline(always)]
+fn i420_rows<const NX: usize>(p: &Planes<'_>, cols: &[([usize; 4], usize)], (dw, dh): (usize, usize), rgba: &mut [u8]) {
+    let ((sw, sh), (ys, us, vs)) = (p.size, p.strides);
+    let cw = sw.div_ceil(2);
+    let tab: Vec<[u32; NX]> = cols.iter().map(|&(t, n)| std::array::from_fn(|i| if i < n { t[i] as u32 } else { 2 * cw as u32 })).collect();
+    // RECIP[taps] per column, by the number of rows tapped (1 ..= 4).
+    let recip: Vec<Vec<u32>> = (1..=4).map(|ny| cols.iter().map(|c| RECIP[c.1 * ny]).collect()).collect();
+    let (mut ly, mut lu, mut lv) = (vec![0u16; 2 * cw], vec![0u16; cw], vec![0u16; cw]);
+    let mut yuv = vec![0u64; 2 * cw + 1];
+    let (mut sy, mut su, mut sv) = (vec![0u32; dw], vec![0u32; dw], vec![0u32; dw]);
+    for (&(rows, ny), out) in taps(sh, dh).iter().zip(rgba.chunks_exact_mut(dw * 4)) {
+        ly.fill(0);
+        lu.fill(0);
+        lv.fill(0);
+        for &r in &rows[..ny] {
+            add_row(&mut ly[..sw], &p.y[r * ys..][..sw]);
+            add_row(&mut lu, &p.u[r / 2 * us..][..cw]);
+            add_row(&mut lv, &p.v[r / 2 * vs..][..cw]);
+        }
+        for (((o, l), &u), &v) in yuv.as_chunks_mut::<2>().0.iter_mut().zip(ly.as_chunks::<2>().0).zip(&lu).zip(&lv) {
+            let c = u64::from(u) << 16 | u64::from(v) << 32;
+            *o = [c | u64::from(l[0]), c | u64::from(l[1])];
+        }
+        for (((xs, a), b), c) in tab.iter().zip(&mut sy).zip(&mut su).zip(&mut sv) {
+            let s: u64 = xs.iter().map(|&x| yuv[x as usize]).sum();
+            (*a, *b, *c) = (s as u32 & 0xFFFF, (s >> 16) as u32 & 0xFFFF, (s >> 32) as u32);
+        }
+        // Straight over equal-length arrays: this loop vectorizes.
+        for ((((px, &r), &y), &u), &v) in out.as_chunks_mut::<4>().0.iter_mut().zip(&recip[ny - 1]).zip(&sy).zip(&su).zip(&sv) {
+            let avg = |s: u32| (s * r + 0x8000) >> 16;
+            *px = rgb_of([avg(y), avg(u), avg(v)]);
+        }
+    }
+}
+
+/// Source taps of each of `n` destination samples over `s` source samples (`Spans::at`): up to
+/// 4 indices and their count.
+fn taps(s: usize, n: usize) -> Vec<([usize; 4], usize)> {
+    let spans = Spans::new(s, n);
+    (0..n)
+        .map(|d| {
+            let (a, len, step) = spans.at(d);
+            (std::array::from_fn(|i| a + ((i.min(len - 1) * step) >> 16)), len)
+        })
+        .collect()
+}
+
+fn add_row(acc: &mut [u16], row: &[u8]) {
+    for (a, &b) in acc.iter_mut().zip(row) {
+        *a += u16::from(b);
+    }
 }
 
 /// BT.601 limited-range luma of 8-bit R, G, B.
@@ -430,6 +516,76 @@ mod tests {
             i420_to_rgba(&out, (w, h), &mut rgba);
             assert!(rgba.chunks(4).all(|p| p[3] == 255));
         }
+    }
+
+    /// An I420 picture with padded rows (strides beyond the width), like openh264's.
+    struct Padded {
+        size: (usize, usize),
+        strides: (usize, usize),
+        planes: [Vec<u8>; 3],
+    }
+
+    impl YUVSource for Padded {
+        fn dimensions(&self) -> (usize, usize) {
+            self.size
+        }
+        fn strides(&self) -> (usize, usize, usize) {
+            (self.strides.0, self.strides.1, self.strides.1)
+        }
+        fn y(&self) -> &[u8] {
+            &self.planes[0]
+        }
+        fn u(&self) -> &[u8] {
+            &self.planes[1]
+        }
+        fn v(&self) -> &[u8] {
+            &self.planes[2]
+        }
+    }
+
+    /// `i420_to_rgba` as it was: straight through `resample`, sampling every tap's Y, U, V.
+    fn i420_reference(src: &impl YUVSource, (dw, dh): (usize, usize), rgba: &mut [u8]) {
+        let (ys, us, vs) = src.strides();
+        let (y, u, v) = (src.y(), src.u(), src.v());
+        resample(
+            src.dimensions(),
+            (dw, dh),
+            |x, r| [u32::from(y[r * ys + x]), u32::from(u[r / 2 * us + x / 2]), u32::from(v[r / 2 * vs + x / 2])],
+            |x, r, yuv| rgba[(r * dw + x) * 4..][..4].copy_from_slice(&rgb_of(yuv)),
+        );
+    }
+
+    #[test]
+    fn i420_to_rgba_matches_resample() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        };
+        for (sw, sh) in [(640, 360), (1920, 1080), (64, 36), (10, 6), (2, 2), (1280, 720)] {
+            let (ys, cs) = (sw + 32, sw / 2 + 16);
+            let mut plane = |len: usize| (0..len).map(|_| noise()).collect::<Vec<u8>>();
+            let pic = Padded { size: (sw, sh), strides: (ys, cs), planes: [plane(ys * sh), plane(cs * sh / 2), plane(cs * sh / 2)] };
+            // Down by 1.22 / 2.4 / ≥ 5 (4 spread taps), same size, up; the inline and lightbox sizes.
+            let sizes = [(524, 294), (800, 450), (sw / 5 + 2, sh / 7 + 2), (sw, sh), (sw * 2, sh * 2), (1918, 1078), (2, 2), (3, 1)];
+            for (dw, dh) in sizes.into_iter().filter(|&(w, h)| w * h <= 1920 * 1080) {
+                let mut want = vec![7; dw * dh * 4];
+                i420_reference(&pic, (dw, dh), &mut want);
+                let mut got = vec![0; dw * dh * 4];
+                i420_to_rgba(&pic, (dw as u32, dh as u32), &mut got);
+                assert!(got == want, "{sw}×{sh} → {dw}×{dh}");
+                // The portable build of the same loops (the one without AVX2).
+                let p = Planes { size: (sw, sh), strides: pic.strides(), y: pic.y(), u: pic.u(), v: pic.v() };
+                got.fill(0);
+                i420_scaled(&p, (dw, dh), &mut got);
+                assert!(got == want, "portable {sw}×{sh} → {dw}×{dh}");
+            }
+        }
+        let mut short = vec![1; 4];
+        i420_to_rgba(&I420::new(2, 2), (2, 2), &mut short);
+        assert_eq!(short, [1; 4], "a too small buffer is left alone");
     }
 
     /// A synthetic picture: colour bars over a gradient.
