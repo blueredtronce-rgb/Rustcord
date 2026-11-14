@@ -257,8 +257,9 @@ pub fn typing_avatars(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, at: Pos2) ->
     if x > at.x { x - at.x + 8.0 } else { 0.0 }
 }
 
-/// Role colours on the typing names (sections of the typing line's job equal to a name).
-pub fn tint_typing_names(state: &AppState, ch: Id, job: &mut egui::text::LayoutJob) {
+/// Role colours on the typing names (sections of the typing line's job equal to a name), readable
+/// on `bg` (the chat under the line).
+pub fn tint_typing_names(state: &AppState, theme: &crate::theme::Theme, ch: Id, job: &mut egui::text::LayoutJob, bg: Color32) {
     if !enabled(Plugin::TypingTweaks) || !opt_bool(Plugin::TypingTweaks, "showRoleColors") {
         return;
     }
@@ -269,7 +270,7 @@ pub fn tint_typing_names(state: &AppState, ch: Id, job: &mut egui::text::LayoutJ
             let u = state.users.get(&id)?;
             let m = state.find_member(g, id);
             let color = state.role_color(g, m.map_or(&[][..], |m| &m.roles))?;
-            Some((state.member_display_name(Some(g), u, m), crate::ui::rgb(color)))
+            Some((state.member_display_name(Some(g), u, m), theme.readable_on_pane(crate::ui::rgb(color), bg)))
         })
         .collect();
     for s in &mut job.sections {

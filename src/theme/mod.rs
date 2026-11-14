@@ -15,7 +15,7 @@ mod tokens;
 pub(crate) use apply::{append_boxed, icon_family, is_high_contrast, medium_family, semibold_family};
 pub use fonts::{init_fonts, set_discord_font};
 pub use gradient::swatch_mesh;
-pub use tokens::{Mode, Tokens};
+pub use tokens::{Mode, Tokens, readable_on};
 
 /// Settings > Accessibility > Saturation (0–1, f32 bits): applied to every theme colour as it
 /// is drawn (`Rgba::to_color32`), so theme files and the editor keep the real colours.

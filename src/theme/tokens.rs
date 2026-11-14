@@ -132,6 +132,35 @@ fn hex(rgb: u32) -> Color32 {
     Rgba::rgb(r, g, b).to_color32()
 }
 
+/// `fg` (a role or plugin name colour) as text on `bg` (the opaque pane it sits on): unchanged
+/// at 4.5:1 or more, else moved toward black (light panes) or white (dark panes) just far enough
+/// for 4.5:1, so the hue stays.
+pub fn readable_on(fg: Color32, bg: Color32) -> Color32 {
+    let [r, g, b, a] = fg.to_srgba_unmultiplied();
+    let lum = |c: [u8; 3]| luminance(Rgba([c[0], c[1], c[2], 255]));
+    let lb = lum([bg.r(), bg.g(), bg.b()]);
+    let ratio = |l: f32| (l.max(lb) + 0.05) / (l.min(lb) + 0.05);
+    if ratio(lum([r, g, b])) >= 4.5 {
+        return fg;
+    }
+    // Black reaches more contrast than white on panes above ~0.18 luminance.
+    let to_black = (lb + 0.05) / 0.05 >= 1.05 / (lb + 0.05);
+    let target = if to_black { 0.0 } else { 255.0 };
+    let at = |t: f32| [r, g, b].map(|v| (f32::from(v) + (target - f32::from(v)) * t).round() as u8);
+    // Past the pane's luminance on the target's side and at 4.5:1: monotonic in t.
+    let ok = |t: f32| {
+        let l = lum(at(t));
+        (if to_black { l <= lb } else { l >= lb }) && ratio(l) >= 4.5
+    };
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..12 {
+        let mid = (lo + hi) / 2.0;
+        if ok(mid) { hi = mid } else { lo = mid }
+    }
+    let [r, g, b] = at(hi);
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +187,28 @@ mod tests {
         }
         // The spec's value for Ember Dark's edge (mix of background and muted text).
         assert_eq!(Tokens::new(&Theme::ember_dark().colors).edge, Color32::from_rgb(0x89, 0x91, 0x98));
+    }
+
+    #[test]
+    fn readable_on_reaches_4_5_keeping_hue() {
+        let (ember, white, black) = (Color32::from_rgb(0xe8, 0x74, 0x3b), Color32::WHITE, Color32::BLACK);
+        // Readable colours pass through untouched, alpha included.
+        assert_eq!(readable_on(ember, black), ember);
+        let faded = Color32::from_rgba_unmultiplied(0x10, 0x20, 0x30, 128);
+        assert_eq!(readable_on(faded, white), faded);
+        for bg in [white, Color32::from_rgb(0xf2, 0xf3, 0xf5), Color32::from_rgb(0x31, 0x33, 0x38), Color32::from_rgb(0x80, 0x80, 0x80)] {
+            for fg in [ember, Color32::from_rgb(0x1a, 0xbc, 0x9c), Color32::from_rgb(0x20, 0x20, 0x60), Color32::from_rgb(0x99, 0xaa, 0xb5)] {
+                let out = readable_on(fg, bg);
+                assert!(ratio(out, bg) >= 4.5, "{fg:?} on {bg:?} -> {out:?}");
+                // Only as far as needed: a step back toward fg drops below 4.5.
+                if out != fg {
+                    let back = Color32::from_rgb(out.r().midpoint(fg.r()), out.g().midpoint(fg.g()), out.b().midpoint(fg.b()));
+                    assert!(ratio(back, bg) < 4.5, "{fg:?} on {bg:?} went too far: {out:?}");
+                }
+            }
+        }
+        // Darkened toward black on a light pane: same channel ratios (hue kept).
+        let dark = readable_on(ember, white);
+        assert!(dark.r() < ember.r() && (f32::from(dark.g()) / f32::from(dark.r()) - 0x74 as f32 / 0xe8 as f32).abs() < 0.02);
     }
 }

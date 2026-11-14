@@ -263,7 +263,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
         // Sections 16 apart, each under a label-role heading; no rules between them (§12).
         if let Some(bio) = bio {
             section(ui, pal, "About me");
-            let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[] };
+            let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[], bg: None };
             super::markdown::render(ui, cx, &bio, &opts);
         }
         // Its own section like Roles: "Playing", "Listening to Spotify", … as the label. Mine

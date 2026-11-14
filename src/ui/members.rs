@@ -179,7 +179,7 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
         }
     }
     let role_color = guild_id.zip(member).and_then(|(g, m)| cx.state.role_color(g, &m.roles)).map(rgb).or_else(|| crate::plugins::people::irc_color(guild_id, user.id, ui.visuals().dark_mode));
-    let color = if offline { c.text_muted.to_color32() } else { role_color.unwrap_or(c.text.to_color32()) };
+    let color = if offline { c.text_muted.to_color32() } else { role_color.map_or(c.text.to_color32(), |rc| cx.theme.readable_on_pane(rc, ring)) };
     let chip_color = if offline { color } else { c.text.to_color32() };
     let (text_left, mut max_w) = (avatar.right() + 12.0, row.right() - PAD - avatar.right() - 12.0);
     // The activity's picture at the row's right end, always (the line may show the custom status).

@@ -155,7 +155,7 @@ fn preview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, host: Id, ch: Id, mid: Id) -> b
                             }
                         });
                         // Formatted like the message itself (first lines only, `summary`).
-                        let opts = MdOpts { guild_id: m.guild_id, mentions: &m.mentions, id_salt: m.id, color: None, highlight: &[] };
+                        let opts = MdOpts { guild_id: m.guild_id, mentions: &m.mentions, id_salt: m.id, color: None, highlight: &[], bg: None };
                         crate::ui::markdown::render(ui, cx, &summary(m), &opts);
                     }
                     Look::Loading => {

@@ -27,6 +27,8 @@ pub struct MdOpts<'a> {
     pub color: Option<egui::Color32>,
     /// Search terms (lowercase) marked on the text-selection colour.
     pub highlight: &'a [String],
+    /// The colour under the text when it is not the chat (a mention row's highlight).
+    pub bg: Option<egui::Color32>,
 }
 
 /// Render message content. Emoji-only messages (<= 30 emoji) render jumbo (48 px emoji).
@@ -277,7 +279,12 @@ impl Md<'_, '_> {
             Inline::RoleMention(id) => {
                 let (name, color) = self.role(*id);
                 match color {
-                    Some(c) => pill(ui, &name, c, c.gamma_multiply(0.18), look.size),
+                    Some(c) => {
+                        // Readable on its tint over the chat (docs/DESIGN.md §2.4).
+                        let fill = c.gamma_multiply(0.18);
+                        let on = self.opts.bg.unwrap_or_else(|| self.cx.theme.colors.background.to_color32()).blend(fill);
+                        pill(ui, &name, self.cx.theme.readable_on_pane(c, on), fill, look.size)
+                    }
                     None => pill(ui, &name, pal.link, pal.chip, look.size),
                 };
             }

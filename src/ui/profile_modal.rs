@@ -315,7 +315,7 @@ fn about(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, guild_id:
     let widgets = p.map(|p| p.widgets.clone()).unwrap_or_default();
     let note = p.map(|p| p.note.clone().unwrap_or_default());
     if let Some(bio) = bio {
-        let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[] };
+        let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[], bg: None };
         super::markdown::render(ui, cx, &bio, &opts);
     }
     if let Some(a) = crate::activity::activity_of(cx.state, user.id).map(std::borrow::Cow::into_owned) {

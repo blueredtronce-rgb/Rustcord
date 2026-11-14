@@ -121,6 +121,28 @@ impl Theme {
             side: fill(side),
         }
     }
+
+    /// `fg` as text on a main-window pane whose flat colour is `pane` (`readable_on`). Gradient
+    /// themes paint panes as overlays over the window gradient, so `fg` also has to read wherever
+    /// the gradient shows through the overlay; flat themes: `readable_on(fg, pane)`.
+    pub fn readable_on_pane(&self, fg: egui::Color32, pane: egui::Color32) -> egui::Color32 {
+        let fg = super::readable_on(fg, pane);
+        let Some(g) = &self.gradient else { return fg };
+        let (avg, o) = (g.average().to_color32().to_array(), if self.dark { 0.0 } else { 255.0 });
+        let pane = pane.to_array();
+        let ch = |c: [u8; 4], i: usize| f32::from(c[i]);
+        // pane = avg + (overlay - avg) * alpha: the share of the gradient that shows through
+        // (1 - alpha), read off the channel furthest from the overlay colour.
+        let i = (0..3).max_by(|&i, &j| (ch(avg, i) - o).abs().total_cmp(&(ch(avg, j) - o).abs())).unwrap_or(0);
+        let through = if (ch(avg, i) - o).abs() < 1.0 { 0.0 } else { ((ch(pane, i) - o) / (ch(avg, i) - o)).clamp(0.0, 1.0) };
+        // Points along the gradient line (between stops the darkest point can lie inside a band).
+        // Each pass only moves `fg` further from the pane, so it stays readable on the earlier ones.
+        (0..=16).fold(fg, |fg, k| {
+            let at = g.color_at(k as f32 / 16.0).to_color32().to_array();
+            let [r, g, b] = [0, 1, 2].map(|i| (ch(pane, i) + (ch(at, i) - ch(avg, i)) * through).round().clamp(0.0, 255.0) as u8);
+            super::readable_on(fg, egui::Color32::from_rgb(r, g, b))
+        })
+    }
 }
 
 fn overlay_alpha(g: &ThemeGradient, dark: bool, (d, l): (f32, f32)) -> f32 {
@@ -441,6 +463,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn names_read_on_every_point_of_a_gradient_pane() {
+        let names = [0xe8743b, 0x7b6cff, 0x1abc9c, 0x206694, 0xf1c40f].map(|c| rgb_hex(c).to_color32());
+        for t in presets() {
+            let (g, fills) = (t.gradient.as_ref().unwrap(), t.panel_fills());
+            for (pane, fill) in [(t.colors.background, fills.chat), (t.colors.sidebar, fills.side)] {
+                for fg in names {
+                    let out = t.readable_on_pane(fg, pane.to_color32());
+                    // As drawn: the gradient under the pane's overlay (4.45: 8-bit rounding).
+                    for i in 0..=40 {
+                        let bg = g.color_at(i as f32 / 40.0).to_color32().blend(fill.to_color32());
+                        let r = contrast_ratio(Rgba([out.r(), out.g(), out.b(), 255]), Rgba([bg.r(), bg.g(), bg.b(), 255]));
+                        assert!(r >= 4.45, "{}: {fg:?} -> {out:?} reads {r:.2} on {bg:?}", t.name);
+                    }
+                }
+            }
+        }
+        // Flat themes: plain `readable_on`.
+        let flat = Theme::paper_light();
+        assert_eq!(flat.readable_on_pane(names[0], flat.colors.sidebar.to_color32()), super::super::readable_on(names[0], flat.colors.sidebar.to_color32()));
     }
 
     #[test]

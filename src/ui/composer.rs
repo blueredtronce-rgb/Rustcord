@@ -671,7 +671,7 @@ fn ac_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guild_id: Option<Id>,
     let x = icon.right() + 12.0;
     let detail = (!row.detail.is_empty()).then(|| one_line(ui, row.detail.clone(), FontId::proportional(pal.meta()), pal.muted, rect.width() * 0.4));
     let detail_w = detail.as_ref().map_or(0.0, |g| g.size().x + 16.0);
-    let color = row.color.unwrap_or(pal.text);
+    let color = row.color.map_or(pal.text, |c| crate::theme::readable_on(c, pal.tk.raised.blend(fill)));
     let label = one_line(ui, row.label.clone(), FontId::proportional(pal.size), color, (rect.right() - 12.0 - detail_w - x).max(24.0));
     ui.painter().galley(pos2(x, rect.center().y - label.size().y / 2.0), label, color);
     if let Some(g) = detail {
@@ -1028,7 +1028,7 @@ fn typing_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id, wait_ms:
     ui.ctx().request_repaint_after(Duration::from_secs_f64((1.0 - t.fract()) / 3.0));
     let mut job = typing_job(&text, &names, FontId::proportional(size), FontId::new(size, bold_family()), pal.muted, pal.text);
     // TypingTweaks: avatars before the text, role colours on the names.
-    crate::plugins::chat::tint_typing_names(cx.state, ch, &mut job);
+    crate::plugins::chat::tint_typing_names(cx.state, cx.theme, ch, &mut job, pal.bg);
     let x = rect.left() + 32.0 + crate::plugins::chat::typing_avatars(ui, cx, ch, pos2(rect.left() + 32.0, rect.center().y));
     let g = ui.painter().layout_job(job);
     ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, pal.muted);

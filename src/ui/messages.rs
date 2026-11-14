@@ -553,7 +553,7 @@ pub(super) fn vector_icon(ui: &mut egui::Ui, icon: Icon, side: f32, color: Color
 pub(super) fn message_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guild_id: Option<Id>, msg: &Message, highlight: &[String]) -> egui::Response {
     let member = message_member(cx.state, guild_id, msg);
     let name = cx.state.member_display_name(guild_id, &msg.author, member.as_ref());
-    let color = name_color(cx.state, guild_id, member.as_ref()).unwrap_or(pal.text);
+    let color = name_color(cx, guild_id, member.as_ref(), pal.bg).unwrap_or(pal.text);
     let bg = ui.painter().add(Shape::Noop);
     let rect = Frame::new()
         .inner_margin(Margin::symmetric(12, 10))
@@ -576,7 +576,7 @@ pub(super) fn message_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guil
                         ui.add(Label::new(RichText::new(time).size(pal.meta()).color(pal.muted)).selectable(false));
                     });
                     if !msg.content.is_empty() {
-                        markdown::render(ui, cx, &msg.content, &MdOpts { guild_id, mentions: &msg.mentions, id_salt: msg.id, color: None, highlight });
+                        markdown::render(ui, cx, &msg.content, &MdOpts { guild_id, mentions: &msg.mentions, id_salt: msg.id, color: None, highlight, bg: None });
                     }
                     for a in &msg.attachments {
                         icon_label(ui, Icon::Attach, &a.filename, pal.meta(), pal.muted, pal.bg);
@@ -618,8 +618,16 @@ fn current_user<'a>(state: &'a AppState, author: &'a User) -> &'a User {
     state.me.as_ref().filter(|m| m.id == author.id).or_else(|| state.users.get(&author.id)).unwrap_or(author)
 }
 
-pub(super) fn name_color(state: &AppState, guild_id: Option<Id>, member: Option<&Member>) -> Option<Color32> {
-    state.role_color(guild_id?, &member?.roles).map(rgb)
+/// A member's role colour as text on `bg` (the chat, or the row under the name), moved just far
+/// enough for 4.5:1.
+pub(super) fn name_color(cx: &UiCx<'_>, guild_id: Option<Id>, member: Option<&Member>, bg: Color32) -> Option<Color32> {
+    cx.state.role_color(guild_id?, &member?.roles).map(|c| cx.theme.readable_on_pane(rgb(c), bg))
+}
+
+/// The colour under a message row's text: the chat, or the `mention_highlight` of a row that
+/// mentions me.
+fn row_bg(cx: &UiCx<'_>, pal: &Pal, msg: &Message) -> Color32 {
+    if cx.state.mentions_me(msg) { pal.bg.blend(pal.mention) } else { pal.bg }
 }
 
 /// Small filled label ("Bot", "This is you").
@@ -1684,7 +1692,8 @@ fn cozy_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
             if group_start {
-                author_line(ui, cx, lc, &msg.author, member.as_ref(), &format_timestamp(&msg.timestamp), &full_time(&msg.timestamp));
+                let bg = row_bg(cx, &lc.pal, msg);
+                author_line(ui, cx, lc, &msg.author, member.as_ref(), (&format_timestamp(&msg.timestamp), &full_time(&msg.timestamp)), bg);
             }
             body(ui, cx, lc, memo, msg, hovered);
         });
@@ -1712,7 +1721,7 @@ fn compact_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, 
             ui.add_space(6.0);
         }
         let name = cx.state.member_display_name(lc.guild_id, &msg.author, member.as_ref());
-        let color = name_color(cx.state, lc.guild_id, member.as_ref()).unwrap_or(pal.text);
+        let color = name_color(cx, lc.guild_id, member.as_ref(), row_bg(cx, &pal, msg)).unwrap_or(pal.text);
         let style = crate::overrides::effective_for(current_user(cx.state, &msg.author), member.as_ref()).name_style;
         let name_g = super::cosmetics::name_galley(ui, &format!("{name}:"), FontId::new(pal.size, crate::theme::semibold_family()), style.as_ref(), color, f32::INFINITY);
         let r = ui.add(Label::new(name_g).selectable(false).sense(Sense::click())).on_hover_cursor(CursorIcon::PointingHand);
@@ -1727,10 +1736,11 @@ fn compact_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, 
     });
 }
 
-fn author_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, user: &User, member: Option<&Member>, time: &str, time_tip: &str) {
+/// `bg`: the colour under the line (`row_bg`).
+fn author_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, user: &User, member: Option<&Member>, (time, time_tip): (&str, &str), bg: Color32) {
     let pal = lc.pal;
     let name = cx.state.member_display_name(lc.guild_id, user, member);
-    let color = name_color(cx.state, lc.guild_id, member).or_else(|| crate::plugins::people::irc_color(lc.guild_id, user.id, pal.dark)).unwrap_or(pal.text);
+    let color = name_color(cx, lc.guild_id, member, bg).or_else(|| crate::plugins::people::irc_color(lc.guild_id, user.id, pal.dark).map(|c| cx.theme.readable_on_pane(c, bg))).unwrap_or(pal.text);
     // Painted galleys instead of labels: labels of different sizes are centered, not
     // baseline-aligned.
     let p = ui.painter().clone();
@@ -1801,7 +1811,7 @@ fn reply_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
                     let url = images::user_avatar_url(lc.guild_id, &rm.author, member.as_ref(), 32, false);
                     images::avatar(ui, cx.images, &url, 16.0, false, Some((rm.author.id, &name)));
                 }
-                let color = name_color(cx.state, lc.guild_id, member.as_ref()).unwrap_or(pal.text);
+                let color = name_color(cx, lc.guild_id, member.as_ref(), row_bg(cx, &pal, msg)).unwrap_or(pal.text);
                 ui.add(Label::new(RichText::new(name).size(pal.meta()).family(bold_family()).color(color)).selectable(false));
                 let mut preview = resolve_tokens(&reply_preview(rm), |tok| token_name(cx.state, lc.guild_id, &rm.mentions, tok));
                 while let Some((r, code)) = missing_emoji(ui, &preview) {
@@ -1843,7 +1853,7 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &M
         // A wrapping row lets a one-paragraph message flow inline with "(edited)" after it.
         ui.horizontal_wrapped(|ui| {
             if show_content {
-                let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: msg.id, color: deleted, highlight: &[] };
+                let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: msg.id, color: deleted, highlight: &[], bg: Some(row_bg(cx, &pal, msg)) };
                 markdown::render(ui, cx, &msg.content, &opts);
             }
             if let Some(note) = note {
@@ -2092,7 +2102,7 @@ fn embed_text(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: 
         link_or_label(ui, RichText::new(title).family(bold_family()).color(color), e.url.as_deref());
     }
     if let Some(d) = e.description.as_ref().filter(|d| !d.is_empty()) {
-        let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: sub_salt(msg.id, idx * 32), color: None, highlight: &[] };
+        let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: sub_salt(msg.id, idx * 32), color: None, highlight: &[], bg: None };
         markdown::render(ui, cx, d, &opts);
     }
     // Inline fields share a row (up to 3, or 2 next to a thumbnail).
@@ -2105,7 +2115,7 @@ fn embed_text(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: 
             for (k, col) in cols.iter_mut().enumerate() {
                 let f = &fields[i + k];
                 col.label(RichText::new(&f.name).size(pal.meta()).family(bold_family()).color(pal.text));
-                let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: sub_salt(msg.id, idx * 32 + i + k + 1), color: None, highlight: &[] };
+                let opts = MdOpts { guild_id: lc.guild_id, mentions: &msg.mentions, id_salt: sub_salt(msg.id, idx * 32 + i + k + 1), color: None, highlight: &[], bg: None };
                 markdown::render(col, cx, &f.value, &opts);
             }
         });
@@ -2321,10 +2331,10 @@ fn pending_rows(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, last_author: Opt
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
                     if let Some(me) = header_user {
-                        author_line(ui, cx, lc, me, my_member.as_ref(), if p.failed.is_some() { "" } else { "Sending…" }, "");
+                        author_line(ui, cx, lc, me, my_member.as_ref(), (if p.failed.is_some() { "" } else { "Sending…" }, ""), pal.bg);
                     }
                     // Muted in both states: the "Not sent" chip alone carries the error.
-                    let opts = MdOpts { guild_id: lc.guild_id, mentions: &[], id_salt: Id(p.nonce.parse().unwrap_or_default()), color: Some(pal.muted), highlight: &[] };
+                    let opts = MdOpts { guild_id: lc.guild_id, mentions: &[], id_salt: Id(p.nonce.parse().unwrap_or_default()), color: Some(pal.muted), highlight: &[], bg: None };
                     markdown::render(ui, cx, &p.content, &opts);
                     if let Some(u) = &upload
                         && upload_card(ui, &pal, u, p.failed.is_some())

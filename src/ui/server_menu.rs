@@ -588,12 +588,12 @@ pub(super) fn toggle_role(cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, role_id:
 
 /// Roles ▸ with a check per role; it stays open so several roles can be toggled.
 fn roles_submenu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, roles: &[(Id, String, u32, bool)]) {
-    let text = cx.theme.colors.text.to_color32();
+    let (text, raised) = (cx.theme.colors.text.to_color32(), cx.theme.tokens().raised);
     let keep_open = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
     SubMenuButton::new(RichText::new("Roles").color(text)).config(keep_open).ui(ui, |ui| {
         menu_setup(ui);
         for (id, name, color, has) in roles {
-            let color = if *color == 0 { text } else { super::rgb(*color) };
+            let color = if *color == 0 { text } else { crate::theme::readable_on(super::rgb(*color), raised) };
             if menu_item(ui, name, MenuIcon::Check(*has), color) {
                 toggle_role(cx, guild_id, user_id, *id, *has);
             }

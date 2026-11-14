@@ -1132,7 +1132,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         let avatar = Rect::from_center_size(pos2(row.left() + 24.0, row.center().y), Vec2::splat(32.0));
         let url = super::images::user_avatar_url(Some(guild_id), u, Some(m), 64, false);
         super::sidebar::user_avatar_at(ui, images, &url, avatar, false, 1.0, (uid, &name));
-        let color = state.role_color(guild_id, &m.roles).map_or(pal.text, rgb);
+        let color = state.role_color(guild_id, &m.roles).map_or(pal.text, |c| cx.theme.readable_on_pane(rgb(c), pal.bg));
         let name_w = (row.width() * 0.4).max(120.0);
         let n = one_line(ui, name.clone(), FontId::new(pal.body(), crate::theme::medium_family()), color, name_w);
         ui.painter().galley(pos2(row.left() + 52.0, row.center().y - n.size().y), n, color);
@@ -1177,7 +1177,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             menu_setup(ui);
             for (id, name, color, has) in server_menu::assignable_roles(cx.state, guild_id, uid) {
-                let c = if color == 0 { pal.text } else { rgb(color) };
+                let c = if color == 0 { pal.text } else { crate::theme::readable_on(rgb(color), pal.tk.raised) };
                 if menu_item(ui, &name, MenuIcon::Check(has), c) {
                     server_menu::toggle_role(cx, guild_id, uid, id, has);
                 }
@@ -1564,8 +1564,10 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
     let existing = ch.permission_overwrites.iter().find(|o| o.id == target);
     let saved = existing.map_or((0, 0), |o| (o.allow.0, o.deny.0));
     let (allow, deny) = s.overwrite.unwrap_or(saved);
+    // Menu labels: role colours readable on the menu (`raised`).
+    let label = |r: &GuildRole| if r.color == 0 { pal.text } else { crate::theme::readable_on(rgb(r.color), pal.tk.raised) };
     let addable: Vec<(Id, String, Color32)> =
-        sorted_roles(&g.roles).into_iter().filter(|r| r.id != guild_id && !targets.iter().any(|t| t.0 == r.id)).map(|r| (r.id, r.name.clone(), role_color(r, &pal))).collect();
+        sorted_roles(&g.roles).into_iter().filter(|r| r.id != guild_id && !targets.iter().any(|t| t.0 == r.id)).map(|r| (r.id, r.name.clone(), label(r))).collect();
     let list = |ui: &mut egui::Ui, s: &mut ServerSettingsUi| {
         ui.horizontal(|ui| {
             field_label(ui, theme, "Roles and members");
