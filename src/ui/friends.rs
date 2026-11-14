@@ -86,7 +86,6 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 
 fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
     let pending = cx.state.pending_count();
-    let green = presence_color(Presence::Online, &cx.theme.colors);
     let header = egui::Panel::top("rc_friends_header")
         .exact_size(49.0)
         .resizable(false)
@@ -95,49 +94,68 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                // The title goes first when the tabs need the room.
+                // The title goes first when the tabs need the room; a 1x20 rule after it, as in the
+                // chat header.
                 if ui.available_width() > 560.0 {
                     let (icon, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
                     icons::paint(ui.painter(), Icon::Members, icon, pal.muted, pal.bg);
-                    ui.label(RichText::new("Friends").font(bold(pal.size)).color(pal.text));
-                    let (dot, _) = ui.allocate_exact_size(vec2(8.0, 20.0), Sense::hover());
-                    ui.painter().circle_filled(dot.center(), 2.0, pal.muted.gamma_multiply(0.6));
+                    ui.label(RichText::new("Friends").font(super::semibold(pal.heading())).color(pal.text));
+                    let (r, _) = ui.allocate_exact_size(vec2(1.0, 20.0), Sense::hover());
+                    ui.painter().vline(r.center().x, r.y_range(), Stroke::new(1.0, pal.tk.rule));
                 }
-                let tabs = [(FriendsTab::Online, "Online"), (FriendsTab::All, "All"), (FriendsTab::Pending, "Pending"), (FriendsTab::Blocked, "Blocked")];
-                for (tab, label) in tabs {
-                    let badge = if tab == FriendsTab::Pending { pending } else { 0 };
-                    if tab_button(ui, cx, pal, label, cx.view.friends_ui.tab == Tab::List(tab), badge, None).clicked() {
-                        cx.view.friends_ui.tab = Tab::List(tab);
+                // The list tabs: one segmented control (docs/DESIGN.md §9) on the well colour.
+                let track_slot = ui.painter().add(Shape::Noop);
+                let mut track = Rect::NOTHING;
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let tabs = [(FriendsTab::Online, "Online"), (FriendsTab::All, "All"), (FriendsTab::Pending, "Pending"), (FriendsTab::Blocked, "Blocked")];
+                    for (tab, label) in tabs {
+                        let badge = if tab == FriendsTab::Pending { pending } else { 0 };
+                        let resp = tab_button(ui, cx, pal, label, cx.view.friends_ui.tab == Tab::List(tab), badge, None);
+                        track = track.union(resp.rect);
+                        if resp.clicked() {
+                            cx.view.friends_ui.tab = Tab::List(tab);
+                        }
                     }
-                }
-                if tab_button(ui, cx, pal, "Add Friend", cx.view.friends_ui.tab == Tab::AddFriend, 0, Some(green)).clicked() {
+                });
+                let well = cx.theme.colors.code_background.to_color32();
+                ui.painter().set(track_slot, Shape::rect_filled(track.expand(2.0), pal.radius, well));
+                ui.add_space(4.0);
+                // The view's one primary action.
+                if tab_button(ui, cx, pal, "Add friend", cx.view.friends_ui.tab == Tab::AddFriend, 0, Some(pal.accent)).clicked() {
                     cx.view.friends_ui.tab = Tab::AddFriend;
                 }
             });
         });
     let r = header.response.rect;
-    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
 }
 
-/// A header tab: tinted while selected or hovered; `green` makes it the filled Add Friend
-/// button (green text while selected). `badge` = a count pill after the label.
-fn tab_button(ui: &mut egui::Ui, cx: &UiCx<'_>, pal: &Pal, text: &str, selected: bool, badge: usize, green: Option<Color32>) -> egui::Response {
-    let g = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(pal.size), pal.text);
+/// A header tab: a segment of the list tabs (32 tall, ui 14/500; selected on the `selected`
+/// fill, `raised` on light themes); `primary` (the accent) makes it the filled Add friend button,
+/// a plain selected segment while its page is open. `badge` = a count pill after the label.
+fn tab_button(ui: &mut egui::Ui, cx: &UiCx<'_>, pal: &Pal, text: &str, selected: bool, badge: usize, primary: Option<Color32>) -> egui::Response {
+    let font = FontId::new(pal.ui(), crate::theme::medium_family());
+    let g = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), pal.text);
     let badge_w = if badge > 0 { 24.0 } else { 0.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0 + badge_w, 30.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 24.0 + badge_w, 32.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, text));
     let hot = resp.hovered() || resp.has_focus();
-    let (fill, color) = match green {
-        Some(c) if selected => (Color32::TRANSPARENT, c),
-        Some(c) => (if hot { c.gamma_multiply(0.85) } else { c }, Color32::WHITE),
-        None if selected => (pal.text.gamma_multiply(0.14), pal.text),
-        None if hot => (pal.tint(), pal.text),
-        None => (Color32::TRANSPARENT, pal.muted),
+    let on = if pal.tk.mode == crate::theme::Mode::Light { pal.tk.raised } else { pal.tk.selected };
+    let (fill, color) = match primary {
+        Some(c) if !selected => (if hot { c.lerp_to_gamma(Color32::WHITE, 0.08) } else { c }, pal.accent_text),
+        _ if selected => (on, pal.text),
+        _ if hot => (pal.tk.hover, pal.text),
+        _ => (Color32::TRANSPARENT, pal.muted),
     };
-    ui.painter().rect_filled(rect, pal.radius, fill);
-    ui.painter().text(pos2(rect.left() + 8.0, rect.center().y), egui::Align2::LEFT_CENTER, text, FontId::proportional(pal.size), color);
+    let radius = if primary.is_some() { pal.radius } else { pal.radius.saturating_sub(2) };
+    ui.painter().rect_filled(rect, radius, fill);
+    ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, color);
     if badge > 0 {
-        sidebar::badge(ui, &cx.theme.colors, pos2(rect.right() - 6.0, rect.center().y), badge as u32, None);
+        sidebar::badge(ui, &cx.theme.colors, pos2(rect.right() - 8.0, rect.center().y), badge as u32, None);
+    }
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, pal, rect, f32::from(radius));
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -172,7 +190,7 @@ fn list_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, tab: FriendsTab) {
     if total == 0 {
         let text = match tab {
             FriendsTab::Online => "No one's around to play with.",
-            FriendsTab::All => "No friends yet.",
+            FriendsTab::All => "No friends yet. Select Add friend to send a request.",
             FriendsTab::Pending | FriendsTab::Spam => "No pending friend requests.",
             FriendsTab::Blocked => "You haven't blocked anyone.",
         };
@@ -184,8 +202,11 @@ fn list_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, tab: FriendsTab) {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut shown = 0;
             for (title, ids) in sections.iter().filter(|(_, ids)| !ids.is_empty()) {
+                // The label role left, the count right-aligned in meta (docs/DESIGN.md §10.4).
                 let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-                let g = one_line(ui, format!("{title} — {}", ids.len()), bold(pal.meta()), pal.muted, row.width());
+                let n = one_line(ui, ids.len().to_string(), FontId::proportional(pal.meta()), pal.muted, row.width());
+                let g = one_line(ui, *title, super::semibold(pal.label()), pal.muted, row.width() - n.size().x - 28.0);
+                ui.painter().galley(pos2(row.right() - 10.0 - n.size().x, row.center().y - n.size().y / 2.0), n, pal.muted);
                 ui.painter().galley(pos2(row.left() + 10.0, row.center().y - g.size().y / 2.0), g, pal.muted);
                 for &id in ids {
                     friend_row(ui, cx, pal, id);
@@ -202,7 +223,7 @@ fn list_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, tab: FriendsTab) {
 fn section_title(tab: FriendsTab) -> &'static str {
     match tab {
         FriendsTab::Online => "Online",
-        FriendsTab::All => "All Friends",
+        FriendsTab::All => "All friends",
         FriendsTab::Pending => "Pending",
         FriendsTab::Spam => "Spam",
         FriendsTab::Blocked => "Blocked",
@@ -224,7 +245,7 @@ fn friend_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
     if hot {
         ui.painter().set(bg_slot, Shape::rect_filled(row, pal.card_radius(), ring));
     } else {
-        ui.painter().hline(row.x_range().shrink(10.0), row.top() + 0.5, Stroke::new(1.0, pal.line()));
+        ui.painter().hline(row.x_range().shrink(10.0), row.top() + 0.5, Stroke::new(1.0, pal.tk.rule));
     }
     let name = cx.state.friend_name(id);
     let avatar = Rect::from_min_size(pos2(row.left() + 10.0, row.center().y - 16.0), Vec2::splat(32.0));
@@ -268,12 +289,12 @@ fn friend_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
 
     let text_left = avatar.right() + 12.0;
     let max_w = right - 8.0 - text_left;
-    let name_g = one_line(ui, name.as_str(), bold(pal.size), pal.text, max_w);
+    let name_g = one_line(ui, name.as_str(), FontId::new(pal.size, crate::theme::medium_family()), pal.text, max_w);
     let name_w = name_g.size().x;
     let status = match kind {
         FRIEND => user_status_text(cx.state, id).or_else(|| Some((None, sidebar::presence_label(sidebar::user_presence(cx.state, id)).to_owned()))),
-        INCOMING => Some((None, "Incoming Friend Request".to_owned())),
-        OUTGOING => Some((None, "Outgoing Friend Request".to_owned())),
+        INCOMING => Some((None, "Incoming friend request".to_owned())),
+        OUTGOING => Some((None, "Outgoing friend request".to_owned())),
         BLOCKED => Some((None, "Blocked".to_owned())),
         _ => None,
     };
@@ -321,7 +342,7 @@ fn active_now(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         .show_separator_line(false)
         .frame(Frame::new().inner_margin(Margin::same(16)))
         .show(ui, |ui| {
-            ui.label(RichText::new("Active Now").font(bold(pal.size + 4.0)).color(pal.text));
+            ui.label(RichText::new("Active now").font(bold(pal.size + 4.0)).color(pal.text));
             ui.add_space(8.0);
             let s = &*cx.state;
             let active: Vec<Id> = s.friends_tab(FriendsTab::Online).into_iter().filter(|id| s.presence_of(*id).is_some_and(|p| p.activity.is_some())).collect();
@@ -427,7 +448,7 @@ fn add_friend_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
     let green = presence_color(Presence::Online, &cx.theme.colors);
     Frame::new().inner_margin(Margin::symmetric(30, 20)).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.label(RichText::new("Add Friend").font(bold(pal.size + 2.0)).color(pal.text));
+        ui.label(RichText::new("Add friend").font(super::semibold(pal.title())).color(pal.text));
         ui.label(RichText::new("You can add friends with their username.").color(pal.muted));
         let name = cx.view.friends_ui.add_name.trim().to_owned();
         // The answer to what is in the field now (a new name hides the old answer).
@@ -436,7 +457,7 @@ fn add_friend_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         let border = match &answer {
             Some(Some(Ok(()))) => green,
             Some(Some(Err(_))) => pal.danger,
-            _ => pal.line(),
+            _ => pal.tk.edge,
         };
         let mut send = false;
         Frame::new().fill(pal.surface).stroke(Stroke::new(1.0, border)).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
@@ -452,9 +473,7 @@ fn add_friend_page(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
                 let resp = ui.add(edit);
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ready = !name.is_empty() && !sending;
-                let text = RichText::new("Send Friend Request").color(Color32::WHITE);
-                let button = egui::Button::new(text).fill(if ready { pal.accent } else { pal.accent.gamma_multiply(0.5) }).min_size(vec2(button_w, 32.0));
-                send = (ui.add_enabled(ready, button).clicked() || enter) && ready;
+                send = (super::messages::button(ui, pal, super::messages::Btn::Primary, "Send friend request", ready).clicked() || enter) && ready;
             });
         });
         match answer {
@@ -514,7 +533,7 @@ fn remove(cx: &mut UiCx<'_>, user: Id, location: ContextLocation) {
 pub(super) fn ask_remove(cx: &mut UiCx<'_>, user: Id, location: ContextLocation) {
     let name = cx.state.friend_name(user);
     let then = Command::Social(SocialCommand::RemoveRelationship { user_id: user, location });
-    cx.view.confirm(format!("Remove '{name}'"), format!("Are you sure you want to remove {name} from your friends?"), "Remove Friend", then);
+    cx.view.confirm(format!("Remove {name} as a friend?"), "To be friends again, one of you sends a new friend request.", "Remove friend", then);
 }
 
 /// Block, after asking (it also ends a friendship).
@@ -576,21 +595,21 @@ fn relationship_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id, location: 
     let kind = cx.state.social.relationships.get(&user).map(|r| r.kind);
     match kind {
         Some(FRIEND) => {
-            if menu_item(ui, "Remove Friend", MenuIcon::Glyph("➖"), danger) {
+            if menu_item(ui, "Remove friend", MenuIcon::Glyph("➖"), danger) {
                 ask_remove(cx, user, location);
             }
         }
         Some(INCOMING) => {
-            if menu_item(ui, "Accept Friend Request", MenuIcon::Glyph("✔"), text) {
+            if menu_item(ui, "Accept friend request", MenuIcon::Glyph("✔"), text) {
                 add_friend(cx, user, location);
             }
         }
         Some(OUTGOING) => {
-            if menu_item(ui, "Cancel Friend Request", MenuIcon::Glyph("✖"), text) {
+            if menu_item(ui, "Cancel friend request", MenuIcon::Glyph("✖"), text) {
                 remove(cx, user, location);
             }
         }
-        _ if can_add_friend(cx.state, user) && menu_item(ui, "Add Friend", MenuIcon::Glyph("➕"), text) => add_friend(cx, user, location),
+        _ if can_add_friend(cx.state, user) && menu_item(ui, "Add friend", MenuIcon::Glyph("➕"), text) => add_friend(cx, user, location),
         _ => {}
     }
     if kind == Some(BLOCKED) {
@@ -614,17 +633,17 @@ pub fn dm_menu_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, channel_id: Id) {
         }
         return;
     }
-    if menu_item(ui, "Add Friends", MenuIcon::Glyph("➕"), text) {
+    if menu_item(ui, "Add friends", MenuIcon::Glyph("➕"), text) {
         open_picker(cx, Some(channel_id));
     }
-    if menu_item(ui, "Rename Group", MenuIcon::Glyph("✏"), text) {
+    if menu_item(ui, "Rename group", MenuIcon::Glyph("✏"), text) {
         cx.view.friends_ui.rename = Some(cx.state.channels.get(&channel_id).and_then(|c| c.name.clone()).unwrap_or_default());
         cx.view.modal = Some(Modal::GroupDm { channel_id: Some(channel_id) });
     }
-    if menu_item(ui, "Leave Group", MenuIcon::Glyph("🚪"), danger) {
+    if menu_item(ui, "Leave group", MenuIcon::Glyph("🚪"), danger) {
         let name = cx.state.channel_name(channel_id);
         let then = Command::Social(SocialCommand::CloseDm { channel_id, silent: false });
-        cx.view.confirm(format!("Leave '{name}'"), "You won't be able to rejoin unless you are re-added.", "Leave Group", then);
+        cx.view.confirm(format!("Leave {name}?"), "You can come back only if someone in the group adds you again.", "Leave group", then);
     }
 }
 
@@ -664,7 +683,7 @@ pub fn group_dm_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Option
         .filter(|id| !present.contains(id))
         .filter(|id| query.is_empty() || cx.state.friend_name(*id).to_lowercase().contains(&query))
         .collect();
-    let title = if channel_id.is_some() { "Add Friends to DM" } else { "Select Friends" };
+    let title = if channel_id.is_some() { "Add friends to DM" } else { "Select friends" };
     let action = if group { "Add" } else { "Create DM" };
     let picked = cx.view.friends_ui.picked.len();
     let pal = Pal::new(cx.theme);
@@ -743,13 +762,11 @@ fn pick_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id, room: bool)
         ui.painter().galley(pos2(left + w + 8.0, row.center().y - g.size().y / 2.0), g, pal.muted);
     }
     let check = Rect::from_center_size(pos2(row.right() - 20.0, row.center().y), Vec2::splat(20.0));
-    if on {
-        ui.painter().rect_filled(check, 4, pal.accent);
-        let tick = vec![check.left_center() + vec2(4.0, 0.0), check.center_bottom() + vec2(-1.0, -5.0), check.right_top() + vec2(-4.0, 5.0)];
-        ui.painter().add(Shape::line(tick, Stroke::new(2.0, cx.theme.colors.accent_text.to_color32())));
-    } else {
-        ui.painter().rect_stroke(check, 4, Stroke::new(1.5, pal.muted.gamma_multiply(if room { 1.0 } else { 0.4 })), egui::StrokeKind::Inside);
-    }
+    // The shared checkbox (green when on, never accent); faded once the group is full.
+    ui.scope(|ui| {
+        ui.multiply_opacity(if on || room { 1.0 } else { 0.4 });
+        super::messages::paint_checkbox(ui.painter(), &pal.tk, check, on, f32::from(pal.radius / 2));
+    });
     if resp.clicked() && enabled {
         let picked = &mut cx.view.friends_ui.picked;
         match picked.iter().position(|p| *p == id) {
@@ -766,7 +783,7 @@ fn rename_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Id) {
     let current = cx.state.channels.get(&channel_id).and_then(|c| c.name.clone()).unwrap_or_default();
     let theme = cx.theme.clone();
     let mut enter = false;
-    let resp = dialog(ctx, &theme, "rc_rename_group", 440.0, "Rename Group", |ui| {
+    let resp = dialog(ctx, &theme, "rc_rename_group", 440.0, "Rename group", |ui| {
         let name = cx.view.friends_ui.rename.as_mut()?;
         let r = ui.add(egui::TextEdit::singleline(name).hint_text(cx.state.channel_name(channel_id)).char_limit(100).desired_width(f32::INFINITY));
         if ui.memory(|m| m.focused().is_none()) {
