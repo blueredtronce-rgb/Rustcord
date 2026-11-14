@@ -11,13 +11,28 @@
 //! - Single instance per data dir: a named mutex (`claim_instance`); a second start posts
 //!   "show" (or "quit", `--quit`) to the running one's tray window (`signal_running`).
 //!
-//! Other platforms: no tray and no notifications yet; every start runs.
+//! Linux and macOS (`notify/unix.rs`): single instance over a Unix socket, notifications on the
+//! thread "rustcord-notify" with the same rate limit. The tray: Linux a StatusNotifierItem
+//! (`notify/linux.rs`, ksni; none without a tray host, closing then quits), macOS the menu bar
+//! icon (`notify/macos.rs`, tray-icon, on the main thread).
 //!
 //! OWNERSHIP: desktop engineer.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux as os;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as os;
+#[cfg(unix)]
+mod unix;
 
 /// A tray click (or a message from a second start) for the UI thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +48,14 @@ static WAKE: OnceLock<egui::Context> = OnceLock::new();
 /// The panel's voice toggles, for the menu's check marks: bit 0 muted, bit 1 deafened.
 static VOICE: AtomicU8 = AtomicU8::new(0);
 
-/// Puts the icon in the notification area (once, at startup). Tray clicks wake `ctx`.
+/// Puts the icon in the notification area / menu bar (once, at startup, on the main thread).
+/// Tray clicks wake `ctx`.
 pub fn start(ctx: &egui::Context) {
     let _ = WAKE.set(ctx.clone());
     #[cfg(windows)]
     imp::start();
+    #[cfg(unix)]
+    unix::start();
 }
 
 /// The tray icon is up (or coming up), so a closed window can wait there.
@@ -46,10 +64,34 @@ pub fn has_tray() -> bool {
     {
         imp::has_tray()
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        false
+        os::has_tray()
     }
+}
+
+/// The tray was tried and is not there (Linux without a tray host): closing quits.
+pub fn tray_failed() -> bool {
+    #[cfg(windows)]
+    {
+        imp::failed()
+    }
+    #[cfg(unix)]
+    {
+        os::tray_failed()
+    }
+}
+
+/// The window just went to the tray (macOS: the app hides, so a Dock click brings it back).
+pub fn to_tray_os() {
+    #[cfg(target_os = "macos")]
+    macos::to_tray();
+}
+
+/// The window is about to show again (macOS: the app unhides).
+pub fn shown_os() {
+    #[cfg(target_os = "macos")]
+    macos::shown();
 }
 
 /// Show a notification (non-blocking; only once `start` ran). Title/body are truncated to the
@@ -57,14 +99,16 @@ pub fn has_tray() -> bool {
 pub fn show(title: &str, body: &str) {
     #[cfg(windows)]
     imp::show(title, body);
-    #[cfg(not(windows))]
-    let _ = (title, body);
+    #[cfg(unix)]
+    unix::show(title, body);
 }
 
 /// Remove the tray icon (call on exit).
 pub fn shutdown() {
     #[cfg(windows)]
     imp::shutdown();
+    #[cfg(unix)]
+    unix::shutdown();
 }
 
 /// Tray clicks since the last call, oldest first.
@@ -74,14 +118,72 @@ pub fn take_actions() -> Vec<TrayAction> {
 
 /// The panel's mute / deafen state, shown as check marks in the tray menu.
 pub fn set_voice_state(muted: bool, deafened: bool) {
-    VOICE.store(u8::from(muted) | (u8::from(deafened) << 1), Ordering::Relaxed);
+    let bits = u8::from(muted) | (u8::from(deafened) << 1);
+    let changed = VOICE.swap(bits, Ordering::Relaxed) != bits;
+    #[cfg(unix)]
+    if changed {
+        os::voice_changed();
+    }
+    #[cfg(windows)]
+    let _ = changed;
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 fn push(action: TrayAction) {
     ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).push(action);
+    wake();
+}
+
+/// A repaint, so `App::logic` runs (also while the window is hidden).
+fn wake() {
     if let Some(ctx) = WAKE.get() {
         ctx.request_repaint();
+    }
+}
+
+/// At most one notification per this interval; messages in between are summarized.
+const MIN_GAP: Duration = Duration::from_secs(3);
+
+/// Rate limiting of notifications: the first message shows right away, later ones within
+/// `MIN_GAP` are counted and shown as one summary once the gap has passed.
+#[derive(Default)]
+struct Coalescer {
+    last_shown: Option<Instant>,
+    pending: u32,
+    latest: Option<(String, String)>,
+}
+
+impl Coalescer {
+    fn ready(&self, now: Instant) -> bool {
+        self.last_shown.is_none_or(|t| now.duration_since(t) >= MIN_GAP)
+    }
+
+    fn push(&mut self, now: Instant, title: String, body: String) -> Option<(String, String)> {
+        if self.pending == 0 && self.ready(now) {
+            self.last_shown = Some(now);
+            return Some((title, body));
+        }
+        self.pending += 1;
+        self.latest = Some((title, body));
+        None
+    }
+
+    fn flush(&mut self, now: Instant) -> Option<(String, String)> {
+        if self.pending == 0 || !self.ready(now) {
+            return None;
+        }
+        let count = std::mem::take(&mut self.pending);
+        let latest = self.latest.take();
+        self.last_shown = Some(now);
+        if count == 1 {
+            latest
+        } else {
+            Some((crate::config::APP_NAME.to_owned(), format!("{count} new messages")))
+        }
+    }
+
+    /// Time until a pending summary may be shown, `None` if nothing is pending.
+    fn next_flush(&self, now: Instant) -> Option<Duration> {
+        (self.pending > 0).then(|| self.last_shown.map_or(Duration::ZERO, |t| MIN_GAP.saturating_sub(now.duration_since(t))))
     }
 }
 
@@ -93,7 +195,6 @@ pub fn instance_name(data_dir: &Path) -> String {
     format!("Rustcord-{}", hash[..8].iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 fn my_instance_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| instance_name(&crate::config::paths().config_dir))
@@ -106,9 +207,9 @@ pub fn claim_instance() -> bool {
     {
         imp::claim_instance()
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        true
+        unix::claim_instance()
     }
 }
 
@@ -119,16 +220,15 @@ pub fn signal_running(quit: bool) -> bool {
     {
         imp::signal_running(quit)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = quit;
-        false
+        unix::signal_running(quit)
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::{TrayAction, push};
+    use super::{Coalescer, TrayAction, push};
     use std::cell::RefCell;
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
@@ -149,9 +249,6 @@ mod imp {
         SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WM_USER,
         WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
-
-    /// At most one balloon per this interval; messages in between are summarized.
-    const MIN_GAP: Duration = Duration::from_secs(3);
 
     /// Icon callbacks.
     const WM_TRAY: u32 = WM_APP + 1;
@@ -196,6 +293,10 @@ mod imp {
 
     pub fn has_tray() -> bool {
         matches!(STATE.load(SeqCst), STARTING | RUNNING)
+    }
+
+    pub fn failed() -> bool {
+        STATE.load(SeqCst) == FAILED
     }
 
     pub fn show(title: &str, body: &str) {
@@ -365,51 +466,6 @@ mod imp {
             ID_DEAFEN => push(TrayAction::ToggleDeafen),
             ID_QUIT => push(TrayAction::Quit),
             _ => {}
-        }
-    }
-
-    /// Rate limiting of balloons: the first message shows right away, later ones within
-    /// `MIN_GAP` are counted and shown as one summary once the gap has passed.
-    #[derive(Default)]
-    struct Coalescer {
-        last_shown: Option<Instant>,
-        pending: u32,
-        latest: Option<(String, String)>,
-    }
-
-    impl Coalescer {
-        fn ready(&self, now: Instant) -> bool {
-            self.last_shown.is_none_or(|t| now.duration_since(t) >= MIN_GAP)
-        }
-
-        fn push(&mut self, now: Instant, title: String, body: String) -> Option<(String, String)> {
-            if self.pending == 0 && self.ready(now) {
-                self.last_shown = Some(now);
-                return Some((title, body));
-            }
-            self.pending += 1;
-            self.latest = Some((title, body));
-            None
-        }
-
-        fn flush(&mut self, now: Instant) -> Option<(String, String)> {
-            if self.pending == 0 || !self.ready(now) {
-                return None;
-            }
-            let count = std::mem::take(&mut self.pending);
-            let latest = self.latest.take();
-            self.last_shown = Some(now);
-            if count == 1 {
-                latest
-            } else {
-                Some((crate::config::APP_NAME.to_owned(), format!("{count} new messages")))
-            }
-        }
-
-        /// Time until a pending summary may be shown, `None` if nothing is pending.
-        fn next_flush(&self, now: Instant) -> Option<Duration> {
-            (self.pending > 0)
-                .then(|| self.last_shown.map_or(Duration::ZERO, |t| MIN_GAP.saturating_sub(now.duration_since(t))))
         }
     }
 
@@ -600,38 +656,38 @@ mod imp {
             fill_wide(&mut buf, &long);
             assert_eq!(buf[63], 0);
         }
-
-        #[test]
-        fn coalescer_rate_limits_and_summarizes() {
-            let t0 = Instant::now();
-            let s = |n: u64| t0 + Duration::from_millis(n);
-            let mut c = Coalescer::default();
-            let msg = |i: u32| (format!("t{i}"), format!("b{i}"));
-
-            assert_eq!(c.push(s(0), "t0".into(), "b0".into()), Some(msg(0)));
-            assert_eq!(c.push(s(100), "t1".into(), "b1".into()), None);
-            assert_eq!(c.next_flush(s(1000)), Some(Duration::from_millis(2000)));
-            assert_eq!(c.flush(s(2999)), None);
-            // A single throttled message is shown as itself.
-            assert_eq!(c.flush(s(3000)), Some(msg(1)));
-            assert_eq!(c.next_flush(s(3000)), None);
-
-            for i in 2..6 {
-                assert_eq!(c.push(s(3500), format!("t{i}"), format!("b{i}")), None);
-            }
-            let (_, body) = c.flush(s(6000)).unwrap();
-            assert_eq!(body, "4 new messages");
-            assert_eq!(c.flush(s(9000)), None);
-
-            // Quiet for long enough: shown immediately again.
-            assert_eq!(c.push(s(9001), "t9".into(), "b9".into()), Some(msg(9)));
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalescer_rate_limits_and_summarizes() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_millis(n);
+        let mut c = Coalescer::default();
+        let msg = |i: u32| (format!("t{i}"), format!("b{i}"));
+
+        assert_eq!(c.push(s(0), "t0".into(), "b0".into()), Some(msg(0)));
+        assert_eq!(c.push(s(100), "t1".into(), "b1".into()), None);
+        assert_eq!(c.next_flush(s(1000)), Some(Duration::from_millis(2000)));
+        assert_eq!(c.flush(s(2999)), None);
+        // A single throttled message is shown as itself.
+        assert_eq!(c.flush(s(3000)), Some(msg(1)));
+        assert_eq!(c.next_flush(s(3000)), None);
+
+        for i in 2..6 {
+            assert_eq!(c.push(s(3500), format!("t{i}"), format!("b{i}")), None);
+        }
+        let (_, body) = c.flush(s(6000)).unwrap();
+        assert_eq!(body, "4 new messages");
+        assert_eq!(c.flush(s(9000)), None);
+
+        // Quiet for long enough: shown immediately again.
+        assert_eq!(c.push(s(9001), "t9".into(), "b9".into()), Some(msg(9)));
+    }
 
     #[test]
     fn instance_name_follows_the_data_dir() {

@@ -97,6 +97,10 @@ fn main() -> eframe::Result {
             ui::images::mem_trace("gl_ready");
             let (settings, snapshot, token) = preload.join().unwrap_or_default();
             trace_startup("preload_joined", started);
+            // On the main thread with the event loop running (macOS' menu bar icon needs both).
+            if !test_run {
+                notify::start(&cc.egui_ctx);
+            }
             let app = ui::RustcordApp::new(&cc.egui_ctx, rt, backend, settings, snapshot, token, started);
             ui::images::mem_trace("app_built");
             Ok(Box::new(app))
