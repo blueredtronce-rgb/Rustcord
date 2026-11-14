@@ -233,6 +233,29 @@ pub fn game_cover_url(url: &str) -> Option<String> {
     is_discord_media_host(url).then(|| url.to_owned())
 }
 
+/// A quest asset (`assets.hero`, `game_tile`, a task video): an absolute URL only on Discord's
+/// media hosts, else a name under `/assets/quests/{id}/`; only with one of `exts` (lowercase,
+/// the path's end, query ignored). Which form newer quests use is UNCONFIRMED (QUESTS_NOTES §1.5).
+fn quest_url(quest_id: Id, asset: &str, exts: &[&str]) -> Option<String> {
+    let url = if asset.starts_with("https://") {
+        is_discord_media_host(asset).then(|| asset.to_owned())?
+    } else {
+        plain_path(asset).then(|| format!("{CDN}/assets/quests/{quest_id}/{asset}"))?
+    };
+    let path = Url::parse(&url).ok()?.path().to_ascii_lowercase();
+    exts.iter().any(|e| path.ends_with(e)).then_some(url)
+}
+
+/// A quest image (hero, game tile) the image loader can decode; `.webm` / `.mp4` heroes -> None.
+pub fn quest_asset_url(quest_id: Id, asset: &str) -> Option<String> {
+    quest_url(quest_id, asset, &[".png", ".jpg", ".jpeg", ".webp", ".gif"])
+}
+
+/// A quest video for the in-app player (MP4 only; never HLS).
+pub fn quest_video_url(quest_id: Id, url: &str) -> Option<String> {
+    quest_url(quest_id, url, &[".mp4"])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +410,27 @@ mod tests {
         assert_eq!(embed_media_url(&EmbedMedia { proxy_url: None, ..m.clone() }, 400, 300), None);
         let evil = EmbedMedia { proxy_url: Some("https://example.com/x.png".into()), ..m };
         assert_eq!(embed_media_url(&evil, 400, 300), None);
+    }
+
+    #[test]
+    fn quest_asset_urls() {
+        let q = Id(101);
+        assert_eq!(quest_asset_url(q, "hero.png").as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/hero.png"));
+        let abs = "https://cdn.discordapp.com/assets/quests/101/tile.JPG?x=1";
+        assert_eq!(quest_asset_url(q, abs).as_deref(), Some(abs));
+        assert_eq!(quest_asset_url(q, "https://evil.example/hero.png"), None);
+        assert_eq!(quest_asset_url(q, "../../avatars/hero.png"), None);
+        assert_eq!(quest_asset_url(q, "hero.webm"), None);
+        assert_eq!(quest_asset_url(q, "trailer.mp4"), None);
+        assert_eq!(quest_video_url(q, "trailer.mp4").as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/trailer.mp4"));
+        assert_eq!(quest_video_url(q, "https://cdn.discordapp.com/assets/quests/101/hls/master.m3u8"), None);
+        assert_eq!(quest_video_url(q, "hero.png"), None);
+    }
+
+    #[test]
+    fn guild_profile_urls() {
+        assert_eq!(guild_icon_hash_url(Id(7), "b47f", 100, false).unwrap(), "https://cdn.discordapp.com/icons/7/b47f.webp?size=128");
+        assert_eq!(guild_icon_hash_url(Id(7), "../x", 100, false), None);
+        assert_eq!(discovery_splash_url(Id(7), "c0ffee", 600).unwrap(), "https://cdn.discordapp.com/discovery-splashes/7/c0ffee.png?size=1024");
     }
 }

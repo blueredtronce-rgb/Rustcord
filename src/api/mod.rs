@@ -13,6 +13,7 @@ pub mod collectibles;
 pub mod cosmetics;
 pub mod guild_admin;
 pub mod props;
+pub mod quests;
 pub mod ratelimit;
 pub mod settings_proto;
 pub mod social;
@@ -33,6 +34,8 @@ use std::time::Duration;
 pub const API_BASE: &str = "https://discord.com/api/v9";
 /// Discord error code of a 401 that asks for a 2FA re-check.
 const MFA_REQUIRED: u64 = 60003;
+/// What a captcha answer (400 with `captcha_key`) becomes; quests turn it into their own copy.
+pub(crate) const CAPTCHA_MSG: &str = "Discord wants a captcha for this action. Complete it in the official app, then try again.";
 
 #[derive(Debug, Clone)]
 pub enum ApiError {
@@ -102,11 +105,7 @@ fn error_from(status: u16, body: &[u8]) -> ApiError {
         403 => ApiError::Forbidden(message),
         404 => ApiError::NotFound,
         429 => ApiError::RateLimited,
-        400 if json.as_ref().is_some_and(|v| v.get("captcha_key").is_some()) => ApiError::Http {
-            status,
-            message: "Discord wants a captcha for this action. Complete it in the official app, then try again."
-                .into(),
-        },
+        400 if json.as_ref().is_some_and(|v| v.get("captcha_key").is_some()) => ApiError::Http { status, message: CAPTCHA_MSG.into() },
         _ => ApiError::Http { status, message },
     }
 }
