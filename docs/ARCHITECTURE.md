@@ -28,6 +28,10 @@ directly as a **user** client. Not a port of the official client.
   Every request is user-triggered, except the gateway heartbeat/identify/resume, read acks while
   a channel is viewed (setting `send_read_acks`), and an op 37 guild subscription (member list
   range 0-99 + typing) for the viewed guild channel, sent even when the member list is hidden.
+  Quests: the page's fetch when it opens (at most every 10 min), and quest video progress
+  (`POST /quests/{id}/video-progress`, at most one per 10 s) only while the user plays a quest
+  video in Rustcord's player, capped by real play time. Never quest heartbeats, never an
+  Electron user agent (docs/QUESTS_NOTES.md).
 - **Rate limits**: respect REST buckets + global + 429 `retry_after`; gateway send limit
   (120 / 60 s, keep headroom); reconnect backoff with jitter; never hammer on errors (cap retries;
   4xx other than 429 are not retried).
@@ -259,6 +263,12 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   go out with op 3 like a real game, so use it offline. With `RUSTCORD_OPEN=status:<s>` my
   sample presence carries no game then. Activity art comes from the image cache only offline
   (`members::demo_activity` names the URLs to seed).
+- `RUSTCORD_OPEN=quests[:blocked|empty|error|loading|watch|watch-play|claim]` (ui/quests.rs `demo`): the
+  Quests page (DM home) with made-up quests (`DEMO_JSON`: Orbs, every section, a reward code, a
+  captcha notice; dates relative to today), the blocked banner, the empty / failed / loading
+  states, the quest video modal (a still frame, nothing sent; `watch-play` plays the media
+  fixture's demo.mp4 muted in it, use `RUSTCORD_SCREENSHOT_FRAME=90`) or the claim platform
+  modal. No request is sent.
 - `RUSTCORD_CALL_DEMO=<comma list>` (ui/call.rs `demo`), with
   `RUSTCORD_OPEN=voice:<id>,channel:<id>` (the call view): `people` (cached users in the call:
   speaking, muted, deafened + live, camera), `video` (synthetic camera / stream frames, my camera
