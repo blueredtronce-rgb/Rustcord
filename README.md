@@ -11,7 +11,7 @@
 
 <p align="center">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-f74c00?logo=rust&logoColor=white">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078d6">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078d6">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -48,8 +48,13 @@
   strike, code, code blocks, links, spoilers, quotes, headings, lists, timestamps), mentions,
   custom and unicode emoji, image/GIF attachments, basic embeds, stickers.
 - Send, edit and delete own messages, reply (with or without ping), reactions.
-- Unread indicators and mention badges; desktop notifications for mentions and DMs
-  (Windows only, also while minimized; no-op on Linux/macOS).
+- Videos and pictures stay in the app, like on Discord: video uploads, video embeds and GIFV
+  play inline (MP4 with H.264 and AAC, decoded by Rustcord itself), and images, GIFs and videos
+  open in a viewer with zoom, pan, arrows, Save, Copy image and Copy link. The browser opens only
+  from "Open in browser", for videos the player can't play (WebM) and for YouTube or Twitch.
+- Unread indicators and mention badges; desktop notifications for mentions and DMs, also while
+  minimized (Windows notifications, freedesktop notifications on Linux, Notification Center on
+  macOS).
 - Disk cache of servers/channels/DMs/recent messages and images: the second start shows the
   cached UI immediately and refreshes in the background.
 - Themes (TOML) with a live editor, three built-ins, import/export.
@@ -57,6 +62,17 @@
 - Profile cosmetics loaded from Discord: avatar decorations, nameplates, profile effects and
   frames, display-name styles, profile themes, clan tags, badges, connections and games; an
   uploaded banner fades into the profile's background colour.
+- Clicking a badge shows what it means in Rustcord's own words (with its date, such as
+  "Subscriber since …", when Discord gives one) instead of opening a link. Clicking a server
+  tag opens that server's card with Go to server, Join server or Apply to join; joining is sent
+  only on that click.
+- Server marks: verified, partnered and the boost level show before the server name in the
+  server bar tooltip and the server header ("Boost level 2, 9 boosts").
+- Discord Quests: a Quests row under Friends lists your quests, their rewards and your Orbs;
+  accept and claim each one with a click. Video quests count only while the video really plays
+  in Rustcord's player in a visible window. Play and stream quests say to finish them in the
+  Discord desktop app, because their progress needs the official desktop client. Rustcord never
+  fakes progress and doesn't complete quests for you.
 - Cosmetics editor with Discord's shop catalog: items you own go on your account only via
   "Apply to account"; without (full) Nitro your picks show only in this client, never sent.
 - Gradient app themes (the Nitro colour themes), free and only on this device.
@@ -71,13 +87,14 @@
 - Activities like Discord's: games with their art, party size and elapsed time, Spotify with
   album art and a progress bar, streaming, watching; detected games show the game's icon, or
   a controller when there is none. Member list, DMs, friends and profile cards show them.
-- Game detection (Windows): every 15 s Rustcord looks at the running programs and matches
-  them against Discord's list of detectable games and the games you added in Settings →
-  Registered games ("Add it!" picks an open window). Others see your game only while
-  Settings → Activity privacy → "Share detected activity" is on (synced with your account,
-  like in the official app); your added games stay on this PC.
-- Notification-area (tray) icon, close to tray, start when you sign in to Windows, and a
-  per-user installer (see [Install](#install)).
+- Game detection: every 15 s Rustcord looks at the running programs (on Linux also Wine and
+  Proton games, on macOS app bundles) and matches them against Discord's list of detectable
+  games and the games you added in Settings → Registered games ("Add it!" picks an open
+  window). Others see your game only while Settings → Activity privacy → "Share detected
+  activity" is on (synced with your account, like in the official app); your added games stay
+  on this PC.
+- Tray icon (notification area on Windows, system tray on Linux, menu bar on macOS), close to
+  tray, open at login, and an installer for each system (see [Install](#install)).
 - File uploads (button, drag & drop, paste), emoji and GIF pickers, `@ # :` autocomplete,
   typing indicator, online status + custom status, pins, search, mark unread.
 - Threads (sidebar rows, thread panel, create), forum/media channels (posts, tags, new post).
@@ -97,9 +114,10 @@
 - Server administration (channels, categories, roles, permission overwrites, members,
   kick/ban, bans, invites, emoji, notification settings).
 - Discord's UI font (gg sans), downloaded at runtime from discord.com into the cache folder
-  (never bundled; Settings → Appearance switches it off); otherwise Segoe UI. Decorated
-  channel and role names (`・〢┊꒰ᘏ`, 𝐛𝐨𝐥𝐝 letters, box drawing) use the system's fallback fonts
-  instead of empty boxes.
+  (never bundled; Settings → Appearance switches it off); otherwise the system font (Segoe UI
+  on Windows, Noto Sans or DejaVu Sans on Linux, Arial on macOS). Decorated channel and role
+  names (`・〢┊꒰ᘏ`, 𝐛𝐨𝐥𝐝 letters, box drawing) use the system's fallback fonts instead of empty
+  boxes.
 - Plugins (Settings → Plugins), rebuilt from Vencord's, all off by default and local to this
   app: AccountPanelServerProfile, BetterFolders, BetterRoleDot, CallTimer, CharacterCounter,
   ClearURLs, CopyUserURLs, CustomIdle, FavoriteEmojiFirst, FriendsSince, GameActivityToggle,
@@ -109,13 +127,16 @@
   RelationshipNotifier, ReplyTimestamp, ReverseImageSearch, ServerInfo, ShowConnections,
   ShowHiddenChannels, ShowMeYourName, ShowTimeoutDuration, SilentMessageToggle, SilentTyping,
   TextReplace, Translate, TypingIndicator, TypingTweaks, UserVoiceShow, ValidUser, VcNarrator
-  (Windows speech), ViewIcons, ViewRaw, VoiceMessages (playback), VolumeBooster (up to 400 %,
-  local mix only), WhoReacted. Their options live in `plugins.toml`.
+  (Windows speech, `say` on macOS, `spd-say` on Linux), ViewIcons, ViewRaw, VoiceMessages
+  (playback), VolumeBooster (up to 400 %, local mix only), WhoReacted. Their options live in
+  `plugins.toml`.
 - Voice channels and calls with DAVE end-to-end encryption, camera, screen share (Go Live)
-  and watching streams. Camera and screen are only captured after an explicit click.
+  and watching streams. Camera and screen are only captured after an explicit click. Camera and
+  screen share are Windows only for now; on Linux and macOS you can still watch others.
 
 Not included: other Nitro features, account creation, stickers picker, slash commands/bot
-components, solving captchas (when Discord asks for one, do that step in the official app).
+components, solving captchas (when Discord asks for one, do that step in the official app),
+completing quests automatically.
 
 ## Logging in
 
@@ -369,6 +390,7 @@ Settings → Local profile: pick any image/GIF as your banner and a GIF, APNG or
 | 2 – customization | 45 ms | 154 ms | 94.6 MB (104 MB with animated avatar + banner) | 0 % (7 % of one core with an always-animating avatar) |
 | 3 – logo & polish | 30 ms (466 ms on the first, cold run) | 155 ms | 95.6 MB (103.6 MB with animated avatar + banner) | 0 % |
 | 4 – installer, tray, activities & new look | 161 ms (GL context ready) | 174 ms | 102.3 MB (87.6 MB private) | 0 % (game detection: ~16 ms CPU per 15 s scan) |
+| 5 – Linux & macOS, quests, media viewer | 183 ms (GL context ready) | 199 ms | 96.0 MB (87.0 MB private) | 0 % (16 ms CPU in 20 s) |
 
 Measured on a Ryzen 7 5825U, Windows 11, median of 5 runs. These runs had no network images
 loaded; with a live connection, avatars and attachments add to RAM (textures are capped at a
@@ -386,6 +408,8 @@ loaded; with a live connection, avatars and attachments add to RAM (textures are
   protocol (incl. DAVE) and the `src/voice/` engine.
 - `docs/CHAT_ESSENTIALS_DESIGN.md`, `docs/SOCIAL_DESIGN.md`, `docs/ACCOUNT_SERVER_DESIGN.md`,
   `docs/SOCIAL_UI_DESIGN.md` – backend contracts and UI hook-up per feature block.
+- `docs/MEDIA_DESIGN.md` – the inline video player and the media viewer; `docs/QUESTS_NOTES.md` –
+  quests, the video progress rule and why play and stream quests aren't advanced.
 
 ## License
 
