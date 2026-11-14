@@ -21,7 +21,7 @@ use super::server_menu::radio_item;
 use super::threads::{self, ago, archive_combo, field_label};
 use super::{Modal, UiCx, bold, composer, dialog, dialog_buttons, images, one_line};
 use crate::api::cdn;
-use crate::backend::{Command, ForumPost, SocialCommand, ThreadList, ThreadQuery, ThreadSort};
+use crate::backend::{Command, ConnState, ForumPost, SocialCommand, ThreadList, ThreadQuery, ThreadSort};
 use crate::model::{Channel, ForumTag, Id, Message, User, channel_type};
 use crate::state::AppState;
 use crate::theme::bold_family;
@@ -236,19 +236,22 @@ fn posts(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, available: 
     let ids = post_ids(cx.state, forum, unfiltered, sort);
     let (loading, error, more) = cx.state.social.threads.as_ref().filter(|v| v.channel_id == forum).map_or((false, None, false), |v| (v.loading, v.error.clone(), v.has_more));
     if ids.is_empty() {
-        ui.add_space(48.0);
-        ui.vertical_centered(|ui| {
-            let text = match (&error, loading) {
-                (_, true) => "Loading posts…".to_owned(),
-                (Some(e), _) => e.clone(),
-                _ if unfiltered => "No posts yet. Start one with New Post.".to_owned(),
-                _ => "No posts match.".to_owned(),
-            };
-            ui.add(Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
-            if error.is_some() && !loading && small_button(ui, pal, "Retry", pal.text).clicked() {
-                threads::retry(cx.state);
-            }
-        });
+        if loading {
+            ui.add_space(48.0);
+            ui.vertical_centered(|ui| ui.label(RichText::new("Loading posts…").size(pal.meta()).color(pal.muted)));
+            return;
+        }
+        let offline = crate::config::offline_mode() || cx.state.conn != ConnState::Connected;
+        let (heading, text) = match &error {
+            Some(_) if offline => ("Couldn't load posts", "Posts load when you're connected."),
+            Some(e) => ("Couldn't load posts", e.as_str()),
+            None if unfiltered => ("No posts yet", "Start one with New post."),
+            None => ("No posts match", "Try another search or fewer tags."),
+        };
+        let media = cx.state.channels.get(&forum).is_some_and(|c| c.kind == channel_type::GUILD_MEDIA);
+        if empty_state(ui, pal, if media { Icon::Media } else { Icon::Forum }, heading, text, error.is_some()) {
+            threads::retry(cx.state);
+        }
         return;
     }
     let width = ui.available_width() - 32.0;
@@ -297,6 +300,23 @@ fn posts(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, available: 
     if let Some(id) = open {
         threads::open_in_panel(cx, id);
     }
+}
+
+/// Empty state (docs/DESIGN.md §9), its block centred near 30 % of the height: a 48 px muted
+/// icon, a heading, one meta sentence and, with `retry`, a secondary Retry. True when clicked.
+fn empty_state(ui: &mut egui::Ui, pal: &Pal, icon: Icon, heading: &str, text: &str, retry: bool) -> bool {
+    ui.add_space((ui.available_height() * 0.3 - 76.0).max(24.0));
+    ui.vertical_centered(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+        icons::paint(ui.painter(), icon, rect, pal.muted, pal.bg);
+        ui.add_space(12.0);
+        ui.label(RichText::new(heading).font(FontId::new(pal.heading(), crate::theme::semibold_family())).color(pal.text));
+        ui.add(Label::new(RichText::new(text).size(pal.meta()).color(pal.muted)).wrap());
+        ui.add_space(12.0);
+        retry && super::messages::button(ui, pal, super::messages::Btn::Secondary, "Retry", true).clicked()
+    })
+    .inner
 }
 
 /// What a card shows of a post.

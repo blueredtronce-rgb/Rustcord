@@ -1443,19 +1443,14 @@ fn top_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx) {
             });
         });
     } else if loaded && !more {
-        let sub = match lc.kind {
-            channel_type::DM => format!("This is the start of your conversation with {}.", lc.name),
-            channel_type::GROUP_DM => format!("This is the start of the {} group.", lc.name),
-            _ => format!("This is the start of the #{} channel.", lc.name),
-        };
-        Frame::new().inner_margin(Margin { left: 16, right: 16, top: 24, bottom: 8 }).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            let label = format!("{}{}", channel_prefix(lc.kind), lc.name);
-            ui.add(Label::new(RichText::new(label).family(bold_family()).size(pal.display()).color(pal.text)).selectable(false));
-            ui.add(Label::new(RichText::new(sub).color(pal.muted)).selectable(false));
-        });
+        start_block(ui, cx, lc, None);
     } else if empty && !loaded && cx.state.conn != ConnState::Connected {
         let text = if crate::config::offline_mode() || cx.state.conn == ConnState::Offline { "Messages load when you're connected." } else { "Connecting…" };
+        if matches!(lc.kind, channel_type::DM | channel_type::GROUP_DM) {
+            // A conversation without cached messages still opens on its start (§13).
+            start_block(ui, cx, lc, Some(text));
+            return;
+        }
         // The shared empty state: one muted meta line, centred in the pane (minus the list's
         // 16 px bottom space, so nothing scrolls). Floored: with fractional pane heights (125 %
         // scaling) a sub-pixel overflow made the scroll-to-bottom correction redo every pass.
@@ -1464,6 +1459,33 @@ fn top_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx) {
     } else {
         ui.add_space(48.0);
     }
+}
+
+/// The start of the history: a DM shows the other person's 80 px avatar (a group its icon) over
+/// the name in the display role, a channel "#name"; then one sentence and the optional `note`.
+fn start_block(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, note: Option<&str>) {
+    let pal = lc.pal;
+    let dm = matches!(lc.kind, channel_type::DM | channel_type::GROUP_DM);
+    let sub = match lc.kind {
+        channel_type::DM => format!("This is the start of your conversation with {}.", lc.name),
+        channel_type::GROUP_DM => format!("This is the start of the {} group.", lc.name),
+        _ => format!("This is the start of the #{} channel.", lc.name),
+    };
+    Frame::new().inner_margin(Margin { left: 16, right: 16, top: 24, bottom: 8 }).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        if dm {
+            let (slot, _) = ui.allocate_exact_size(Vec2::splat(80.0), Sense::hover());
+            super::sidebar::dm_avatar_at(ui, cx, lc.ch, slot);
+            ui.add_space(8.0);
+        }
+        let label = if dm { lc.name.clone() } else { format!("{}{}", channel_prefix(lc.kind), lc.name) };
+        ui.add(Label::new(RichText::new(label).family(bold_family()).size(pal.display()).color(pal.text)).selectable(false));
+        ui.add(Label::new(RichText::new(sub).color(pal.muted)).selectable(false));
+        if let Some(note) = note {
+            ui.add_space(4.0);
+            ui.add(Label::new(RichText::new(note).size(pal.meta()).color(pal.muted)).selectable(false));
+        }
+    });
 }
 
 /// Day label centred on a hairline and/or the unread marker (a `danger` line with the "New" tag
@@ -3213,7 +3235,7 @@ mod tests {
             self.frame_with(Vec::new());
         }
 
-        fn frame_with(&mut self, events: Vec<egui::Event>) {
+        fn frame_with(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
             let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 600.0));
             let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
             let ctx = self.ctx.clone();
@@ -3235,6 +3257,13 @@ mod tests {
                 crate::ui::profile::show_popup(ui.ctx(), &mut cx);
             });
             out.textures_delta.clear();
+            out
+        }
+
+        /// The text drawn by one frame.
+        fn texts(&mut self) -> Vec<String> {
+            let out = self.frame_with(Vec::new());
+            out.shapes.iter().filter_map(|s| if let Shape::Text(t) = &s.shape { Some(t.galley.text().to_owned()) } else { None }).collect()
         }
 
         fn memo(&self) -> Memo {
@@ -3342,6 +3371,17 @@ mod tests {
         h.state.mark_read(ch);
         h.frame();
         assert_eq!(h.state.unread_marker, Some((ch, read)));
+    }
+
+    #[test]
+    fn empty_dm_offline_opens_on_its_start() {
+        let mut h = Harness::new();
+        let dm = h.state.dm_order[0];
+        h.state.select_channel(dm);
+        let start = format!("This is the start of your conversation with {}.", h.state.channel_name(dm));
+        let texts = h.texts();
+        assert!(texts.contains(&start), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "Messages load when you're connected."), "{texts:?}");
     }
 
     #[test]
