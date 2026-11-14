@@ -93,7 +93,7 @@ fn with_params(url: &str, params: &[(&str, String)]) -> Option<String> {
 }
 
 /// Only Discord's own media hosts; anything else would leak the user's IP to third parties.
-fn is_discord_media_host(url: &str) -> bool {
+pub(crate) fn is_discord_media_host(url: &str) -> bool {
     let Ok(u) = Url::parse(url) else { return false };
     if u.scheme() != "https" {
         return false;
@@ -378,6 +378,7 @@ mod tests {
             proxy_url: Some("https://images-ext-1.discordapp.net/external/abc/https/example.com/x.png".into()),
             width: Some(800),
             height: Some(800),
+            content_type: None,
         };
         assert_eq!(
             embed_media_url(&m, 400, 300).unwrap(),

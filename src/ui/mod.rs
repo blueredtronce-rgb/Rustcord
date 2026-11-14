@@ -32,6 +32,7 @@ pub mod server_settings;
 pub mod sidebar;
 pub mod threads;
 pub mod user_settings;
+pub mod viewer;
 
 use crate::auth::Token;
 use crate::backend::{BackendEvent, BackendHandle, Command, CommandSender, ConnState};
@@ -182,6 +183,8 @@ pub struct ViewState {
     pub server_settings_ui: server_settings::ServerSettingsUi,
     pub user_settings_ui: user_settings::UserSettingsUi,
     pub call_ui: call::CallUi,
+    pub quests_ui: quests::QuestsUi,
+    pub media_ui: viewer::MediaUi,
 }
 
 /// A modal dialog (`ViewState::modal`, drawn by `show_modals` through the owning module).
@@ -211,6 +214,14 @@ pub enum Modal {
     PrivacySettings { guild_id: Id },
     /// screen_share.rs: the screen share picker (Go Live).
     ScreenShare,
+    /// server_menu.rs: apply to join a server (its questions), or accept its rules after a join.
+    JoinApplication { guild_id: Id },
+    /// quests.rs: the quest video (its progress counts while it plays there).
+    QuestVideo { quest_id: Id },
+    /// quests.rs: the platform a quest reward is claimed for.
+    QuestClaim { quest_id: Id },
+    /// viewer.rs: the media lightbox (its items live in `ViewState::media_ui`).
+    Media,
 }
 
 /// A pending confirmation: `show_modals` asks, `then` goes out on the danger button.
@@ -276,6 +287,8 @@ impl Default for ViewState {
             server_settings_ui: Default::default(),
             user_settings_ui: Default::default(),
             call_ui: Default::default(),
+            quests_ui: Default::default(),
+            media_ui: Default::default(),
         }
     }
 }
@@ -831,6 +844,7 @@ impl eframe::App for RustcordApp {
                 main_layout(ui, &mut cx);
                 profile::show_popup(&ctx, &mut cx);
                 show_modals(&ctx, &mut cx);
+                viewer::end_frame(&ctx, &mut cx);
                 crate::plugins::frame(&ctx, &mut cx);
                 dm_call::incoming(&ctx, &mut cx, accept);
             }
@@ -1118,7 +1132,16 @@ pub fn show_modals(ctx: &egui::Context, cx: &mut UiCx<'_>) {
         Some(Modal::CustomStatus) => user_settings::custom_status_modal(ctx, cx),
         Some(Modal::PrivacySettings { guild_id }) => server_menu::privacy_modal(ctx, cx, guild_id),
         Some(Modal::ScreenShare) => screen_share::modal(ctx, cx),
-        None => {}
+        Some(Modal::QuestVideo { quest_id }) => quests::video_modal(ctx, cx, quest_id),
+        Some(Modal::QuestClaim { quest_id }) => quests::claim_modal(ctx, cx, quest_id),
+        Some(Modal::JoinApplication { guild_id }) => server_menu::join_application_modal(ctx, cx, guild_id),
+        Some(Modal::Media) => viewer::lightbox(ctx, cx),
+        // A server just joined from its tag card wants its rules accepted first.
+        None => {
+            if let Some(g) = cx.state.account.verify_after_join.take() {
+                server_menu::open_application(cx, g);
+            }
+        }
     }
     confirm_dialog(ctx, cx);
 }

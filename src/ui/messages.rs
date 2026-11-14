@@ -1055,6 +1055,8 @@ fn demo_setup(ctx: &egui::Context, cx: &mut UiCx<'_>, ch: Id, newest: Option<Id>
         return;
     }
     ONCE.call_once(|| {
+        // Media (viewer.rs): `media`, `viewer`, `viewer-zoom`, `viewer-video`, `player`, `play`.
+        super::viewer::demo(ctx, cx, ch, demo);
         if demo("emoji") {
             ctx.data_mut(|d| d.insert_temp(composer::emoji_picker_id(), 0u64));
         }
@@ -1869,7 +1871,7 @@ fn body(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo, msg: &M
     attachments(ui, cx, lc, msg);
     stickers(ui, cx, lc, msg);
     if msg.flags & SUPPRESS_EMBEDS == 0 {
-        let media = |e: &Embed| matches!(e.kind.as_deref(), Some("image" | "gifv"));
+        let media = |e: &Embed| matches!(e.kind.as_deref(), Some("image" | "gifv")) || super::viewer::plays_inline(e);
         for (i, e) in msg.embeds.iter().enumerate().filter(|(_, e)| if media(e) { links } else { embeds }) {
             embed(ui, cx, lc, msg, e, i);
         }
@@ -1947,13 +1949,26 @@ pub(super) fn overlay_open(ctx: &egui::Context, cx: &UiCx<'_>) -> bool {
         || cx.view.profile_card.is_some()
         || egui::Popup::is_any_open(ctx)
         || composer::emoji_picker_open(ctx)
+        || cx.view.modal == Some(super::Modal::Media)
+}
+
+/// The lightbox (viewer.rs) on `msg`'s media at `item`, with the author as the header shows them.
+fn open_viewer(ctx: &egui::Context, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, item: &super::viewer::MediaItem) {
+    let member = message_member(cx.state, lc.guild_id, msg);
+    let author = super::viewer::Author {
+        id: msg.author.id,
+        name: cx.state.member_display_name(lc.guild_id, &msg.author, member.as_ref()),
+        avatar: images::user_avatar_url(lc.guild_id, &msg.author, member.as_ref(), 64, false),
+        time: format_timestamp(&msg.timestamp),
+    };
+    super::viewer::open(ctx, cx, msg, Some(author), item);
 }
 
 fn attachments(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
     let pal = lc.pal;
     for (i, a) in msg.attachments.iter().enumerate() {
         // Settings > Chat > "When uploaded" off: every upload as a file card.
-        if !a.is_image() || !cx.state.account.settings.chat_shows(9) {
+        if !(a.is_image() || a.is_video()) || !cx.state.account.settings.chat_shows(9) {
             if !crate::plugins::voice_messages::player(ui, msg, a, cx.settings.voice_output.as_deref()) {
                 file_chip(ui, &pal, a);
             }
@@ -1975,17 +1990,27 @@ fn attachments(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
             }
             continue;
         }
+        // Videos play in place (viewer.rs); Full screen opens the lightbox.
+        if a.is_video() {
+            let item = super::viewer::attachment_item(a);
+            if super::viewer::video(ui, cx, &item, max) {
+                open_viewer(ui.ctx(), cx, lc, msg, &item);
+            }
+            continue;
+        }
         let px = shown * ui.ctx().pixels_per_point();
         let url = cdn::attachment_preview_url(a, px.x.round() as u32, px.y.round() as u32);
-        let r = images::fit_image(ui, cx.images, &url, max, natural, is_gif(a))
+        // GIFs move like gifv: always with "Play animated GIFs" on, else while hovered.
+        let animate = is_gif(a) && (lc.animate_always || ui.rect_contains_pointer(Rect::from_min_size(ui.cursor().min, shown)));
+        let r = images::fit_image(ui, cx.images, &url, max, natural, animate)
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text(&a.filename);
         // ImageZoom: a held click shows the lens instead of opening the image.
         if crate::plugins::media::image_zoom(ui, cx.images, &r, &url) {
             continue;
         }
-        if r.clicked() && markdown::is_web_scheme(&a.url) {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(&a.url));
+        if r.clicked() {
+            open_viewer(ui.ctx(), cx, lc, msg, &super::viewer::attachment_item(a));
         }
     }
 }
@@ -2032,21 +2057,39 @@ fn stickers(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message) {
 }
 
 fn embed(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: &Embed, idx: usize) {
-    match e.kind.as_deref().unwrap_or("rich") {
-        kind @ ("image" | "gifv") => {
-            // Media-only embeds keep the picture in `thumbnail`; gifv has a still/animated preview.
-            if let Some(m) = e.thumbnail.as_ref().or(e.image.as_ref()) {
-                embed_media(ui, cx, m, media_box(ui, MAX_MEDIA), kind == "gifv", e.url.as_deref());
+    let kind = e.kind.as_deref().unwrap_or("rich");
+    // gifv and proxied videos play in place, images open the lightbox (viewer.rs).
+    let item = matches!(kind, "image" | "gifv" | "video").then(|| super::viewer::embed_item(e)).flatten();
+    match (kind, item) {
+        (_, Some(item)) if item.play_url.is_some() => {
+            let max = media_box(ui, MAX_MEDIA);
+            let open = if item.kind == super::viewer::Kind::Gifv { super::viewer::gifv(ui, cx, &item, max) } else { super::viewer::video(ui, cx, &item, max) };
+            if open {
+                open_viewer(ui.ctx(), cx, lc, msg, &item);
             }
         }
-        kind => embed_card(ui, cx, lc, msg, e, kind, idx),
+        ("image" | "gifv", item) => {
+            // Media-only embeds keep the picture in `thumbnail`; gifv without a proxied video has its still.
+            if let Some(m) = e.thumbnail.as_ref().or(e.image.as_ref()) {
+                let (natural, max) = (natural_size(m.width, m.height), media_box(ui, MAX_MEDIA));
+                let px = fit_size(natural, max) * ui.ctx().pixels_per_point();
+                // Only proxied media is shown; third-party hosts are never contacted directly.
+                let Some(url) = cdn::embed_media_url(m, px.x.round() as u32, px.y.round() as u32) else { return };
+                let r = images::fit_image(ui, cx.images, &url, max, natural, kind == "gifv").on_hover_cursor(CursorIcon::PointingHand);
+                if r.clicked()
+                    && let Some(item) = item
+                {
+                    open_viewer(ui.ctx(), cx, lc, msg, &item);
+                }
+            }
+        }
+        _ => embed_card(ui, cx, lc, msg, e, kind, idx),
     }
 }
 
 fn embed_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: &Embed, kind: &str, idx: usize) {
     let pal = lc.pal;
     let small_thumb = e.thumbnail.is_some() && !matches!(kind, "article" | "video");
-    let link = e.url.as_deref();
     let bg = ui.painter().add(Shape::Noop);
     let rect = Frame::new()
         .inner_margin(Margin { left: 16, right: 12, top: 12, bottom: 12 })
@@ -2061,15 +2104,15 @@ fn embed_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: 
                     embed_text(ui, cx, lc, msg, e, idx, small_thumb);
                 });
                 if small_thumb && let Some(t) = &e.thumbnail {
-                    embed_media(ui, cx, t, vec2(80.0, 80.0), false, link);
+                    embed_media(ui, cx, lc, msg, e, t, vec2(80.0, 80.0));
                 }
             });
             let big = media_box(ui, vec2(400.0, 300.0));
             if let Some(img) = &e.image {
-                embed_media(ui, cx, img, big, false, link);
+                embed_media(ui, cx, lc, msg, e, img, big);
             }
             if !small_thumb && let Some(t) = &e.thumbnail {
-                embed_media(ui, cx, t, big, false, link);
+                embed_media(ui, cx, lc, msg, e, t, big);
             }
             embed_footer(ui, cx, &pal, e);
         })
@@ -2139,15 +2182,24 @@ fn embed_footer(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, e: &Embed) {
     });
 }
 
-fn embed_media(ui: &mut egui::Ui, cx: &mut UiCx<'_>, m: &EmbedMedia, max: Vec2, animate: bool, link: Option<&str>) {
+/// An embed card's image or thumbnail `m`: a click opens it in the lightbox; a video embed's
+/// (YouTube, Twitch: no proxied file) opens the video in the browser.
+fn embed_media(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, msg: &Message, e: &Embed, m: &EmbedMedia, max: Vec2) {
     let natural = natural_size(m.width, m.height);
     let px = fit_size(natural, max) * ui.ctx().pixels_per_point();
     // Only proxied media is shown; third-party hosts are never contacted directly.
     let Some(url) = cdn::embed_media_url(m, px.x.round() as u32, px.y.round() as u32) else { return };
-    let r = images::fit_image(ui, cx.images, &url, max, natural, animate).on_hover_cursor(CursorIcon::PointingHand);
-    let target = link.unwrap_or(m.url.as_str());
-    if r.clicked() && markdown::is_web_scheme(target) {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(target));
+    if !images::fit_image(ui, cx.images, &url, max, natural, false).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        return;
+    }
+    match super::viewer::embed_image_item(e, m).filter(|_| e.kind.as_deref() != Some("video")) {
+        Some(item) => open_viewer(ui.ctx(), cx, lc, msg, &item),
+        None => {
+            let target = e.url.as_deref().unwrap_or(m.url.as_str());
+            if markdown::is_web_scheme(target) {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(target));
+            }
+        }
     }
 }
 

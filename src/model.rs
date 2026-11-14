@@ -676,6 +676,16 @@ impl Attachment {
     pub fn is_spoiler(&self) -> bool {
         self.filename.starts_with("SPOILER_") || self.flags & (1 << 3) != 0
     }
+    /// A video upload (media: plays inline when MP4/MOV, else the can't-play card).
+    pub fn is_video(&self) -> bool {
+        match &self.content_type {
+            Some(ct) => ct.starts_with("video/"),
+            None => {
+                let f = self.filename.to_ascii_lowercase();
+                [".mp4", ".mov", ".m4v", ".webm", ".mkv"].iter().any(|e| f.ends_with(e))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -686,6 +696,8 @@ pub struct EmbedMedia {
     pub proxy_url: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// `video/mp4` … on video media (media: the can't-play pre-check).
+    pub content_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1992,5 +2004,15 @@ mod tests {
         assert!(v.self_mute && !v.self_deaf && !v.self_stream);
         let g = Guild { voice_states: vec![v], ..Default::default() };
         assert!(!serde_json::to_string(&g).unwrap().contains("voice_states"));
+    }
+
+    #[test]
+    fn attachment_videos() {
+        let a = |ct: Option<&str>, name: &str| Attachment { content_type: ct.map(Into::into), filename: name.into(), ..Default::default() };
+        assert!(a(Some("video/mp4"), "x").is_video());
+        assert!(a(Some("video/quicktime"), "x.mov").is_video());
+        assert!(!a(Some("image/gif"), "x.mp4").is_video(), "the content type wins");
+        assert!(a(None, "Clip.MOV").is_video() && a(None, "a.webm").is_video() && a(None, "a.m4v").is_video());
+        assert!(!a(None, "a.mp3").is_video());
     }
 }

@@ -98,6 +98,23 @@ pub(crate) enum Icon {
     Star,
     Globe,
     Info,
+    // Quests (ui/quests.rs).
+    Quest,
+    Orb,
+    Gift,
+    // Server marks (`guild_mark`).
+    Verified,
+    Partnered,
+    BoostTier1,
+    BoostTier2,
+    BoostTier3,
+    // Media (ui/viewer.rs).
+    Play,
+    Pause,
+    Download,
+    VoiceOff,
+    Expand,
+    Collapse,
     // Arrows.
     ArrowLeft,
     ArrowRight,
@@ -126,13 +143,13 @@ pub(crate) enum Badge {
 
 impl Icon {
     /// Every icon, in declaration order (the icon sheet hook, tests).
-    pub(crate) const ALL: [Icon; 88] = {
+    pub(crate) const ALL: [Icon; 102] = {
         use Icon::*;
         [
             Text, Voice, Announcement, Stage, Forum, Media, Thread, Rules, Directory, Playing, Listening, Streaming, Watching, Competing, Mic, MicOff, Headphones,
             Deafened, Camera, CameraOff, Screen, Hangup, Phone, Gear, Person, PersonAdd, PersonRemove, Members, At, IdCard, Close, Plus, Minus, Check, Search, Edit,
             Trash, Reply, Copy, Link, External, Leave, Block, Shield, Ban, Refresh, Reset, Sort, Grip, More, Inbox, Pin, Message, Bell, BellOff, Archive, Envelope,
-            SplitView, File, Attach, Hourglass, Key, Desktop, Card, Video, Eye, EyeOff, Lock, Unlock, Boost, Clock, Star, Globe, Info, ArrowLeft, ArrowRight, ChevronUp,
+            SplitView, File, Attach, Hourglass, Key, Desktop, Card, Video, Eye, EyeOff, Lock, Unlock, Boost, Clock, Star, Globe, Info, Quest, Orb, Gift, Verified, Partnered, BoostTier1, BoostTier2, BoostTier3, Play, Pause, Download, VoiceOff, Expand, Collapse, ArrowLeft, ArrowRight, ChevronUp,
             ChevronDown,
             ChevronLeft, ChevronRight, Smile, Leaf, Food, Ball, Car, Bulb, Heart, Flag,
         ]
@@ -146,6 +163,7 @@ impl Icon {
             Icon::Camera => Icon::CameraOff,
             Icon::Eye => Icon::EyeOff,
             Icon::Bell => Icon::BellOff,
+            Icon::Voice => Icon::VoiceOff,
             i => i,
         }
     }
@@ -558,13 +576,16 @@ fn draw(k: &mut Pen, icon: Icon, locked: bool) {
     use Icon::*;
     match icon {
         Text => hash(k, 1.0, (0.0, 0.0)),
-        Voice => {
+        Voice | VoiceOff => {
             k.rrect(3.0, 9.0, 7.5, 15.0, 1.0);
             k.fill(&[(7.0, 9.0), (12.0, 4.5), (12.0, 19.5), (7.0, 15.0)]);
             k.arc(12.5, 12.0, 4.25, -45.0, 45.0);
             // A lock badge takes the outer wave's place.
             if !locked {
                 k.arc(12.5, 12.0, 8.0, -48.0, 48.0);
+            }
+            if icon == VoiceOff {
+                k.slash();
             }
         }
         Announcement => {

@@ -111,6 +111,10 @@ carries the tokens. `presence_color` (ui/mod.rs:1355) and `theme/apply.rs` read 
 | `selection` | `link` @ 35 % | `link` @ 22 % | `link` @ 35 % | selected text (replaces orange) |
 | `heat` | `[#a42d15, accent, #feeec1]` | `[accent; 3]` | `[accent; 3]` | heat bar: cold end, body, core |
 | `scrim` | black 60 % | black 40 % | black 80 % | behind modals |
+| `media_scrim` | black 88 % | black 88 % | black 95 % | the media lightbox backdrop (§10.3 Media) |
+| `on_media` | white 92 % | white 92 % | white 92 % | text and icons on media and on its black 56 % discs |
+| `on_media_muted` | white 64 % | white 64 % | white 64 % | secondary text on media (time, "2 of 3", "Esc") |
+| `media_hover` | white 14 % | white 14 % | white 14 % | hover of icon buttons and discs on media |
 
 Presence: online = `positive`, idle = `attention`, dnd = `danger`, offline = `text_muted`,
 streaming = `live`. The shapes stay: dot, crescent, bar, phone.
@@ -393,6 +397,13 @@ The rest are drawn on the same rules from these shapes:
   - `Heart`
   - `Flag`
   - plus the existing `Clock` and `Star`
+- Media (ui/viewer.rs):
+  - `Play`: filled triangle (7,4.5)(19.5,12)(7,19.5)
+  - `Pause`: filled rrects (6,4.5)–(10,19.5) and (14,4.5)–(18,19.5), r1
+  - `Download`: stroke (12,3.5)→(12,15); head (7.5,10.5)→(12,15)→(16.5,10.5); tray (4,16)→(4,20)→(20,20)→(20,16)
+  - `VoiceOff`: `Voice` with the off slash (`Voice.off()`)
+  - `Expand`: four outward L corners, legs 5.5 units, at the 3.5 / 20.5 lines
+  - `Collapse`: four inward L corners meeting at (9,9), (15,9), (15,15), (9,15)
 
 ### 8.4 Channel icon matrix
 
@@ -637,6 +648,31 @@ Glyphs inside strings lose the glyph and get a painted 14 px icon in front:
 **Embeds:** `surface`, a 4 px left bar in the embed colour, radius control.
 
 **Code:** `code_background`, mono B−1, radius control.
+
+**Media** (ui/viewer.rs, docs/MEDIA_DESIGN.md):
+- Images and GIFs keep their look; a click opens the lightbox (never the browser). GIF uploads
+  move like gifv: always with "Play animated GIFs" on, else while hovered.
+- Video uploads and Discord-proxied video embeds play in place, fitted into 420 × 320, radius
+  control: the proxy's still (else black, or the first frame when the file is on disk), a 48 px
+  black 56 % disc with `Play` 24 (`Refresh` "Replay" at the end, a spinner while loading),
+  `Download` disc 32 top right on hover. Controls bar 40 on a black 0 → 64 % gradient, shown on
+  hover and while paused after a start, hidden 2 s after the pointer stops while playing:
+  `Play`/`Pause`, "0:12 / 1:03" meta `on_media`, seek bar (4 px track `on_media` @ 30 %,
+  played part `on_media`, 12 px knob on hover; ←/→ 5 s), `Voice` / `VoiceOff` (hover reveals a
+  64 px volume slider; session only), `Expand` "Full screen" (the lightbox).
+- gifv: muted, looping, no controls; plays with "Play animated GIFs" on while the window is
+  focused, or while hovered; at rest a "GIF" badge (badge 11/700, chip radius, black 56 %).
+- Can't-play card in the player's place: `surface`, `rule` edge, meta `text_muted` text and
+  secondary 32 buttons: "Rustcord can't play this video format." [Open in browser] [Download];
+  "This video is too large to play here."; "Video didn't load. Check your connection, then
+  select Retry." [Retry]; "This video is no longer available." [Open in browser].
+- Lightbox (`Modal::Media`) under the title bar, which stays usable: `media_scrim`; top bar 56
+  (avatar 32, name body 15/600 `on_media`, time `on_media_muted`; `Download`, `Copy` "Copy
+  image", `Link` "Copy link", `Close` with "Esc"); arrows 40 discs 16 in from the sides when
+  there is more than one item; the media fitted, never upscaled, 72 px from the sides and 56 from
+  the bars; bottom bar "Open in browser" + `External` 16 (the only way to the browser) and
+  "2 of 3". Images zoom (click fit ↔ 1:1, wheel up to 2×, drag pans); 140 ms fade + 0.97 → 1
+  scale on open, none with reduced motion. No accent anywhere on media.
 
 **Composer:**
 - E1 `surface`, radius container, min 44, no border.

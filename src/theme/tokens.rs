@@ -76,6 +76,12 @@ pub struct Tokens {
     pub heat: [Color32; 3],
     /// Behind modals.
     pub scrim: Color32,
+    /// Media surrounds, the same in every theme (§10.3 media): the lightbox backdrop, text and
+    /// icons on media (and on its black 56 % discs), and their hover fill.
+    pub media_scrim: Color32,
+    pub on_media: Color32,
+    pub on_media_muted: Color32,
+    pub media_hover: Color32,
 }
 
 /// Straw (`attention`) of the dark and light modes, for gradient themes' mention tint.
@@ -122,6 +128,10 @@ impl Tokens {
             selection: at(c.link, k(0.35, 0.22, 0.35)),
             heat: if mode == Mode::Dark { [hex(0xa42d15), accent, hex(0xfeeec1)] } else { [accent; 3] },
             scrim: Color32::from_black_alpha((255.0 * k(0.6, 0.4, 0.8)).round() as u8),
+            media_scrim: Color32::from_black_alpha(if hc { 242 } else { 224 }),
+            on_media: Color32::from_white_alpha(235),
+            on_media_muted: Color32::from_white_alpha(163),
+            media_hover: Color32::from_white_alpha(36),
         }
     }
 }

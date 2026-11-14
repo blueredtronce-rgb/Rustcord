@@ -1208,6 +1208,15 @@ Source: https://docs.discord.food/resources/message (Embed Object). Dissent clie
 - GIF: `https://media.discordapp.net/stickers/{id}.gif` (not served from the cdn host).
 - LOTTIE: `https://cdn.discordapp.com/stickers/{id}.json`.
 
+**Played in the app** (src/media, docs/MEDIA_DESIGN.md): gifv `video.proxy_url` and `video`
+embeds whose `video.proxy_url` is on a Discord media host (muted loop / inline player), and video
+uploads from the attachment `url`. Requests carry no token, through the image client and host
+list. UNCONFIRMED (no request was sent while building it): `Range` support (206) of
+`cdn.discordapp.com` and `images-ext-*` (fallback: a 200 body is read whole up to 32 MiB, else
+"Open in browser" / "Download"), and the proxy's still of a video upload at
+`proxy_url?format=webp&quality=lossless&width=…&height=…` (fallback: black poster). YouTube and
+other `video` embeds without a Discord proxy keep opening the browser.
+
 ---
 
 ## 4. Discord markdown: rules as implemented
