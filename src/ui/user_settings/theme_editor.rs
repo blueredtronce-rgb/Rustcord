@@ -87,7 +87,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         }
     });
     ui.add_space(4.0);
-    egui::Grid::new("theme_editor").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+    // Labels wrap on the narrowest page at large sizes: wider fonts (DejaVu Sans on Linux) overflow it.
+    let max_col = (ui.available_width() * 0.45).max(120.0);
+    egui::Grid::new("theme_editor").num_columns(2).spacing([16.0, 6.0]).max_col_width(max_col).show(ui, |ui| {
         ui.spacing_mut().slider_width = 90.0; // with the label column, fits 384 px up to font size 24
         let t = &mut *cx.theme;
         let muted = t.colors.text_muted.to_color32();
