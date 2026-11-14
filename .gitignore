@@ -1,5 +1,7 @@
 # build output
 /target/
+# installers (scripts/build-installer.ps1)
+/dist/
 # leftovers from replacing a running exe on Windows
 *.old
 *.tmp
