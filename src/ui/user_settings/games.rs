@@ -1,7 +1,7 @@
 //! Registered Games (docs/SETTINGS_NOTES.md §4): the game Rustcord sees me playing, "Add it!"
-//! (pick an open window's program as a game) and my added games with Remove. The list stays on
-//! this device (`crate::activity`); others see the game only while Share detected activity
-//! (Activity Privacy, settings 11.3) is on, through op 3.
+//! (pick an open window's program as a game; "Add another game" while one is detected) and my
+//! added games with Remove. The list stays on this device (`crate::activity`); others see the
+//! game only while Share detected activity (Activity Privacy, settings 11.3) is on, through op 3.
 //! OWNERSHIP: activities engineer.
 
 use super::super::messages::Pal;
@@ -58,18 +58,18 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     section(ui, cx.theme, "Activity sharing");
     let on = crate::activity::sharing(cx.state);
     let text = if on { "Others see the game you play while Share detected activity is on." } else { "Share detected activity is off: nobody sees your game." };
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(text).size(pal.size - 1.0).color(pal.muted));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if secondary(ui, &pal, "Activity privacy").clicked() {
-                cx.view.settings_page = Page::ActivityPrivacy;
-            }
-        });
+    // The button first (right), then the text in the room left of it, wrapping in narrow windows.
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 32.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if secondary(ui, &pal, "Activity privacy").clicked() {
+            cx.view.settings_page = Page::ActivityPrivacy;
+        }
+        let label = egui::Label::new(RichText::new(text).size(pal.size - 1.0).color(pal.muted)).wrap();
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(label));
     });
 }
 
-/// The detected game (its icon, name, whether others see it), or "No game detected" with
-/// "Add it!".
+/// The detected game (its icon, name, whether others see it), or "No game detected"; either
+/// way the button that opens the picker.
 fn now_playing(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, picking: &mut bool) {
     let game = cx.state.activity.detected.clone();
     let shared = crate::activity::sharing(cx.state);
@@ -79,23 +79,22 @@ fn now_playing(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, picking: &mut bo
         ui.horizontal(|ui| {
             game_icon(ui, cx, pal, game.as_ref(), ICON, pal.surface);
             ui.add_space(4.0);
-            ui.vertical(|ui| {
-                let (title, line) = match &game {
-                    Some(g) => (g.name.as_str(), if shared { "Now playing. Others see it as your activity." } else { "Now playing. Hidden: Share detected activity is off." }),
-                    None => ("No game detected", "What are you playing?"),
-                };
-                ui.label(RichText::new(title).font(FontId::new(pal.size + 1.0, crate::theme::semibold_family())).color(pal.text));
-                ui.label(RichText::new(line).size(pal.meta()).color(pal.muted));
-            });
-            if game.is_none() && !*picking {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if secondary(ui, pal, "Add it!").clicked() {
-                        *picking = true;
-                        cx.state.activity.windows = None;
-                        cx.cmd.send(Command::Activity(ActivityCommand::ListWindows));
-                    }
+            // The button first (right), then the text in the room left of it.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !*picking && secondary(ui, pal, if game.is_some() { "Add another game" } else { "Add it!" }).clicked() {
+                    *picking = true;
+                    cx.state.activity.windows = None;
+                    cx.cmd.send(Command::Activity(ActivityCommand::ListWindows));
+                }
+                ui.vertical(|ui| {
+                    let (title, line) = match &game {
+                        Some(g) => (g.name.as_str(), if shared { "Now playing. Others see it as your activity." } else { "Now playing. Hidden: Share detected activity is off." }),
+                        None => ("No game detected", "What are you playing?"),
+                    };
+                    ui.add(egui::Label::new(RichText::new(title).font(FontId::new(pal.size + 1.0, crate::theme::semibold_family())).color(pal.text)).truncate());
+                    ui.add(egui::Label::new(RichText::new(line).size(pal.meta()).color(pal.muted)).wrap());
                 });
-            }
+            });
         });
     });
 }
@@ -117,7 +116,7 @@ fn picker(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, picking: &mut bool) {
     };
     let fresh: Vec<&Window> = windows.iter().filter(|w| !cx.state.activity.added.iter().any(|g| g.exe == w.exe)).collect();
     if fresh.is_empty() {
-        super::super::hint(ui, cx.theme, "No other program has a window open. Start your game, then select Add it! again.");
+        super::super::hint(ui, cx.theme, "No other program has a window open. Start your game, then try again.");
         return;
     }
     // One group of rows with hairlines between them (docs/DESIGN.md §9 option lists).
@@ -176,9 +175,8 @@ fn game_icon(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, game: Option<&Game
     }
 }
 
-/// Secondary button (docs/DESIGN.md §9): `selected` fill, 32 tall.
+/// Secondary button (docs/DESIGN.md §9), the shared one.
 fn secondary(ui: &mut egui::Ui, pal: &Pal, label: &str) -> egui::Response {
-    let b = egui::Button::new(RichText::new(label).size(pal.size - 1.0).color(pal.text)).fill(pal.text.gamma_multiply(0.1)).corner_radius(pal.radius).min_size(vec2(64.0, 32.0));
-    ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand)
+    super::super::messages::button(ui, pal, super::super::messages::Btn::Secondary, label, true)
 }
 
