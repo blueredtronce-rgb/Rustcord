@@ -191,6 +191,7 @@ pub(in crate::ui) fn frame(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     if ctx.global_style().animation_time != want {
         ctx.all_styles_mut(|s| s.animation_time = want);
     }
+    caret_timeout(ctx);
     // Signed in only; recording a shortcut on the Keybinds page takes every key.
     if cx.view.screen == super::super::Screen::Main && !keybinds::recording(ctx) {
         save |= global_keys(ctx, cx);
@@ -200,6 +201,25 @@ pub(in crate::ui) fn frame(ctx: &egui::Context, cx: &mut UiCx<'_>) {
         && let Err(e) = cx.settings.save()
     {
         cx.view.toast(format!("Could not save settings: {e}"), true);
+    }
+}
+
+/// Like Windows' caret timeout: the text caret blinks for 5 s after the last input, then stays
+/// on. A blinking caret repaints the whole window twice a second, so a focused composer in a
+/// window left in front would never go idle.
+fn caret_timeout(ctx: &egui::Context) {
+    const BLINK_FOR: f64 = 5.0;
+    let id = egui::Id::unique("rc_last_input");
+    let (now, input) = ctx.input(|i| (i.time, !i.events.is_empty()));
+    let last = ctx.data_mut(|d| {
+        if input {
+            d.insert_temp(id, now);
+        }
+        *d.get_temp_mut_or_insert_with(id, || now)
+    });
+    let blink = now - last < BLINK_FOR;
+    if ctx.global_style().visuals.text_cursor.blink != blink {
+        ctx.all_styles_mut(|s| s.visuals.text_cursor.blink = blink);
     }
 }
 
@@ -328,5 +348,24 @@ fn toggle_voice(view: &mut ViewState, cmd: &CommandSender, mic: bool) {
     }
     if m != mute {
         cmd.send(Command::SetSelfMute(m));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn caret_stops_blinking_5_s_after_input() {
+        let ctx = egui::Context::default();
+        let frame = |time: f64, key: bool| {
+            let events = if key { vec![egui::Event::Text("a".into())] } else { vec![] };
+            let input = egui::RawInput { time: Some(time), events, ..Default::default() };
+            ctx.run_pass(input, super::caret_timeout).drop_without_applying_deltas();
+            ctx.global_style().visuals.text_cursor.blink
+        };
+        assert!(frame(0.0, false), "blinks after the start");
+        assert!(!frame(5.5, false), "no input for 5 s: steady");
+        assert!(frame(6.0, true), "typing wakes it");
+        assert!(frame(10.5, false));
+        assert!(!frame(11.5, false));
     }
 }
