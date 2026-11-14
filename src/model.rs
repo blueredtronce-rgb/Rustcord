@@ -1858,6 +1858,9 @@ pub enum GatewayEvent {
     GuildBanAdd { guild_id: Id, user: User },
     /// GUILD_BAN_REMOVE.
     GuildBanRemove { guild_id: Id, user_id: Id },
+    /// QUESTS_USER_STATUS_UPDATE, QUESTS_USER_COMPLETION_UPDATE, VIRTUAL_CURRENCY_BALANCE_UPDATE
+    /// (docs/QUESTS_NOTES.md).
+    Quests(crate::quests::QuestEvent),
 }
 
 #[cfg(test)]

@@ -876,6 +876,7 @@ pub(super) fn dispatch(t: &str, b: &[u8], me: Id) -> serde_json::Result<Vec<Gate
         }
         _ if super::social::PEOPLE_EVENTS.contains(&t) => return Ok(super::social::people(t, b)?.into_iter().collect()),
         _ if super::account::EVENTS.contains(&t) => return Ok(super::account::dispatch(t, b)?.into_iter().collect()),
+        _ if super::quests::EVENTS.contains(&t) => return Ok(super::quests::dispatch(t, b)?.into_iter().collect()),
         _ if super::stream::EVENTS.contains(&t) => return Ok(super::stream::dispatch(t, b)?.into_iter().collect()),
         _ if super::calls::EVENTS.contains(&t) => return super::calls::dispatch(t, b),
         _ if super::threads::EVENTS.contains(&t) => return Ok(super::threads::dispatch(t, b, me)?.into_iter().collect()),

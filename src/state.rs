@@ -147,6 +147,8 @@ pub struct AppState {
     pub unread_marker: Option<(Id, Id)>,
     /// Game detection, my added games, activity icons (`crate::activity`). Not cached.
     pub activity: crate::activity::ActivityState,
+    /// The Quests page: quests, Orbs, clicks on their way (`crate::quests`). Not cached.
+    pub quests: crate::quests::QuestState,
 }
 
 /// What `BackendEvent::Voice` reported so far (read by the voice panel).
@@ -199,6 +201,7 @@ impl Default for AppState {
             account: account::AccountState::default(),
             unread_marker: None,
             activity: Default::default(),
+            quests: Default::default(),
         }
     }
 }
@@ -536,6 +539,11 @@ impl AppState {
             }
             GatewayEvent::ChannelPinsUpdate { channel_id, last_pin_timestamp, .. } => {
                 self.on_pins_update(channel_id, last_pin_timestamp);
+            }
+            // Not cached: nothing to persist.
+            GatewayEvent::Quests(ev) => {
+                self.quests.apply(ev);
+                return None;
             }
         }
         self.dirty = true;

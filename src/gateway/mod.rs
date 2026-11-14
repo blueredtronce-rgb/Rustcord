@@ -14,6 +14,7 @@ mod calls;
 mod conn;
 mod inflate;
 mod normalize;
+mod quests;
 pub mod remote_auth;
 mod social;
 mod stream;
