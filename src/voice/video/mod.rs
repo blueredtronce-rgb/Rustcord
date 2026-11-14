@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// H.264 RTP payload type and its RTX payload type (Select Protocol, VOICE_NOTES §2.3, §5.1).
@@ -405,7 +405,9 @@ impl FrameWriter {
             fill(Arc::make_mut(&mut frame.image).as_raw_mut());
             frame.generation += 1;
         }
-        self.ctx.request_repaint();
+        // One paint per frame: egui answers a zero-delay request with two (a 30 fps video
+        // painted 60 times a second); a pending earlier wake absorbs this one.
+        self.ctx.request_repaint_after(Duration::from_millis(1));
         true
     }
 }
@@ -450,6 +452,21 @@ mod tests {
 
         let _busy = w.slot.lock().unwrap();
         assert!(frames.latest(&key).is_none(), "the UI never waits for a writer");
+    }
+
+    #[test]
+    fn a_frame_wakes_one_paint() {
+        let ctx = egui::Context::default();
+        let w = VideoFrames::new(ctx.clone()).writer(VideoKey::User(Id(1))).unwrap();
+        let pass = || ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        for _ in 0..3 {
+            pass();
+        }
+        assert!(!ctx.has_requested_repaint(), "settled");
+        w.write(2, 2, |_| {});
+        assert!(ctx.has_requested_repaint());
+        pass();
+        assert!(!ctx.has_requested_repaint(), "no second paint for the same frame");
     }
 
     #[test]
