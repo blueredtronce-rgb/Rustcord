@@ -252,17 +252,17 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
     }
     for action in crate::notify::take_actions() {
         match action {
-            TrayAction::Show => {
-                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
-            }
+            TrayAction::Show => show_window(ctx),
             TrayAction::ToggleMute | TrayAction::ToggleDeafen => toggle_voice(view, cmd, action == TrayAction::ToggleMute),
             TrayAction::Quit => {
                 ctx.data_mut(|d| d.insert_temp(quitting, true));
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         }
+    }
+    // The tray went away while the window waited there (Linux: no tray host after all).
+    if ctx.data(|d| d.get_temp::<bool>(in_tray_id()).unwrap_or(false)) && !crate::notify::has_tray() {
+        show_window(ctx);
     }
     let quit = ctx.data(|d| d.get_temp::<bool>(quitting).unwrap_or(false));
     // Without a tray icon (screenshot runs, a failed icon) closing quits as before.
@@ -274,41 +274,65 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
             if let Err(e) = settings.save() {
                 view.toast(format!("Could not save settings: {e}"), true);
             }
-            crate::notify::show(crate::config::APP_NAME, "Rustcord is still running in the tray. Quit it from the tray icon.");
+            crate::notify::show(crate::config::APP_NAME, DESKTOP.first_close);
         }
     }
     crate::notify::set_voice_state(view.self_mute, view.self_deaf);
+    // Linux, macOS: push to talk from this window's keys (no global key state there).
+    #[cfg(not(windows))]
+    crate::voice::audio::set_ptt_held(view.window_focused && settings.push_to_talk && ctx.input(|i| super::voice::key_held(i, settings.push_to_talk_key)));
+}
+
+/// The window waits in the tray (`to_tray` .. `show_window`).
+fn in_tray_id() -> egui::Id {
+    egui::Id::unique("rc_in_tray")
 }
 
 /// Hides the window, taskbar button included. Minimized as well, so eframe runs only `logic`
-/// (no ui pass, no painting) while it waits in the tray.
+/// (no ui pass, no painting) while it waits in the tray. macOS: hidden only (miniaturizing an
+/// ordered-out window puts it back in the Dock), and the app hides itself.
 fn to_tray(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(in_tray_id(), true));
     ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+    if !cfg!(target_os = "macos") {
+        ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+    }
+    crate::notify::to_tray_os();
+}
+
+/// Back from the tray (tray click, a second start, a notification click).
+fn show_window(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(in_tray_id(), false));
+    crate::notify::shown_os();
+    ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(ViewportCommand::Focus);
 }
 
 /// Streamer Mode's "Hide window from screen capture": the window's display affinity follows
 /// `on`, set when it changes (retried each frame until the window is active: the UI thread's
 /// active window is ours then, no window handle needed).
+#[cfg(windows)]
 fn exclude_from_capture(ctx: &egui::Context, on: bool) {
     let id = egui::Id::unique("rc_capture_hidden");
     if ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false)) == on {
         return;
     }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
-        // SAFETY: plain Win32 calls on this thread's own active window (null: not active yet).
-        let done = unsafe {
-            let hwnd = GetActiveWindow();
-            !hwnd.is_null() && SetWindowDisplayAffinity(hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE }) != 0
-        };
-        if done {
-            ctx.data_mut(|d| d.insert_temp(id, on));
-        }
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
+    // SAFETY: plain Win32 calls on this thread's own active window (null: not active yet).
+    let done = unsafe {
+        let hwnd = GetActiveWindow();
+        !hwnd.is_null() && SetWindowDisplayAffinity(hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE }) != 0
+    };
+    if done {
+        ctx.data_mut(|d| d.insert_temp(id, on));
     }
 }
+
+/// Linux, macOS: not offered (the switch is Windows only).
+#[cfg(not(windows))]
+fn exclude_from_capture(_: &egui::Context, _: bool) {}
 
 /// `Settings::zoom` -> egui, and egui's own Ctrl +/−/0 -> `Settings::zoom` (true: save).
 fn sync_zoom(ctx: &egui::Context, cx: &mut UiCx<'_>) -> bool {

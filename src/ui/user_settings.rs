@@ -152,7 +152,8 @@ impl Page {
             Page::Notifications => ("Notifications", "notifications", "desktop taskbar push mute servers"),
             Page::Keybinds => ("Keybinds", "keybinds", "shortcuts hotkeys keyboard"),
             Page::Language => ("Language", "language", "locale"),
-            Page::Windows => ("Windows settings", "windows", "startup minimize tray close"),
+            // One id on every OS; title and rows say Windows, Linux or macOS.
+            Page::Windows => (app::DESKTOP.title, "windows", "startup login autostart minimize tray menu bar close"),
             Page::StreamerMode => ("Streamer mode", "streamer", "streaming obs hide"),
             Page::Advanced => ("Advanced", "advanced", "developer mode copy id hardware acceleration"),
             Page::ActivityPrivacy => ("Activity privacy", "activity", "activity status game join"),
@@ -178,7 +179,7 @@ impl Page {
                 "Reduced motion",
                 "Play animated avatars, emoji and GIFs",
             ],
-            Page::Windows => &["Open Rustcord when I sign in to Windows", "Start minimized", "Minimize to tray when I close the window"],
+            Page::Windows => &app::DESKTOP_LABELS,
             Page::StreamerMode => &["Streamer mode", "Hide personal information", "Hide invite links", "Disable notifications", "Hide window from screen capture"],
             Page::Privacy => &["Send read receipts"],
             Page::Notifications => &["Desktop notifications", "Flash the taskbar"],
