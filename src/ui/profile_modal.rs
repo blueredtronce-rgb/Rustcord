@@ -217,12 +217,7 @@ fn actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user_id: Id, is_me: 
     if is_me {
         return;
     }
-    let more = icon_button(ui, pal, "", "More", 32.0, false, pal.text);
-    // Painted dots: the fonts have no "⋯".
-    let dots = if more.hovered() { pal.text } else { pal.muted };
-    for dx in [-5.0, 0.0, 5.0] {
-        ui.painter().circle_filled(more.rect.center() + vec2(dx, 0.0), 1.8, dots);
-    }
+    let more = icon_button(ui, pal, "⋯", "More", 32.0, false, pal.text);
     egui::Popup::menu(&more).show(|ui| {
         menu_setup(ui);
         super::friends::user_menu_items(ui, cx, user_id);
@@ -312,8 +307,8 @@ fn about(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, guild_id:
         let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[] };
         super::markdown::render(ui, cx, &bio, &opts);
     }
-    if let Some(a) = cx.state.presence_of(user.id).and_then(|p| p.activity.clone()) {
-        label(ui, pal, crate::model::Activity::verb(a.kind));
+    if let Some(a) = crate::activity::activity_of(cx.state, user.id).map(std::borrow::Cow::into_owned) {
+        label(ui, pal, &a.heading());
         super::profile::activity_section(ui, cx, pal, &a, 64.0, pal.surface);
     }
     label(ui, pal, "Member Since");

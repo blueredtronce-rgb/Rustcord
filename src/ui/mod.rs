@@ -14,6 +14,7 @@ pub mod cosmetics;
 pub mod dm_call;
 pub mod forum;
 pub mod friends;
+pub mod icons;
 pub mod images;
 pub mod inbox;
 pub mod login;
@@ -483,6 +484,8 @@ impl RustcordApp {
                         self.view.toast(msg, true);
                     }
                 }
+                // Game detection, added games, app icons (crate::activity).
+                BackendEvent::Activity(ev) => self.state.activity.apply(ev),
             }
         }
     }
@@ -770,10 +773,14 @@ impl eframe::App for RustcordApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.view.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         self.drain_events(ctx);
+        // Tray menu clicks, closing to the tray, `--minimized` (also while hidden in the tray).
+        user_settings::logic(ctx, &mut self.view, &self.backend.cmd, &mut self.settings);
         if self.view.screen == Screen::Main {
             self.selection_effects(ctx);
             // Plugins (CustomIdle): auto-idle, also while minimized.
             crate::plugins::idle::logic(ctx, &self.state, &self.backend.cmd);
+            // My detected game in op 3 (while shared), batched app-icon requests.
+            crate::activity::logic(&mut self.state, &self.backend.cmd);
         }
         self.maybe_save_cache(false);
         // My id and Nitro (local cosmetics apply only without it).
@@ -804,7 +811,7 @@ impl eframe::App for RustcordApp {
             cmd: &self.backend.cmd,
             overrides: &mut self.overrides,
         };
-        // Zoom, reduced motion, global keybinds, start minimized, close button minimizes.
+        // Zoom, reduced motion, global keybinds, capture exclusion.
         user_settings::frame(&ctx, &mut cx);
         match cx.view.screen {
             Screen::Login => {
@@ -1249,7 +1256,7 @@ pub fn settings_layer(
     let resp = ui.interact(x, ui.make_persistent_id((salt, "close")), egui::Sense::click());
     let color = if resp.hovered() || resp.has_focus() { c.text } else { c.text_muted }.to_color32();
     ui.painter().circle_stroke(x.center(), 17.0, egui::Stroke::new(2.0, color));
-    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(24.0), color);
+    icons::paint(ui.painter(), icons::Icon::Close, Rect::from_center_size(x.center(), vec2(20.0, 20.0)), color, egui::Color32::TRANSPARENT);
     ui.painter().text(x.center_bottom() + vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, "ESC", bold(11.0), color);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close"));
     let esc = ui.input(|i| i.key_pressed(egui::Key::Escape))
@@ -1378,19 +1385,6 @@ pub fn one_line(ui: &egui::Ui, text: impl Into<String>, font: egui::FontId, colo
     let mut job = egui::text::LayoutJob { break_on_newline: false, ..Default::default() };
     crate::theme::append_boxed(&mut job, &text, &egui::TextFormat::simple(font, color));
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
-    ui.painter().layout_job(job)
-}
-
-/// `one_line` in bold after `glyph` (if any) drawn as a monochrome icon (`icon_family`): bold
-/// text alone would draw it as the OS color emoji.
-pub fn icon_line(ui: &egui::Ui, glyph: &str, text: &str, size: f32, color: egui::Color32, max_width: f32) -> Arc<egui::Galley> {
-    use egui::text::{LayoutJob, TextFormat, TextWrapping};
-    let mut job = LayoutJob { break_on_newline: false, ..Default::default() };
-    if !glyph.is_empty() {
-        job.append(&format!("{glyph} "), 0.0, TextFormat::simple(egui::FontId::new(size, crate::theme::icon_family()), color));
-    }
-    job.append(text, 0.0, TextFormat::simple(bold(size), color));
-    job.wrap = TextWrapping::truncate_at_width(max_width.max(0.0));
     ui.painter().layout_job(job)
 }
 

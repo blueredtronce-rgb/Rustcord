@@ -2,6 +2,8 @@
 name = "rustcord"
 version = "0.1.0"
 edition = "2024"
+# src/bin/rustcord-setup is the installer (scripts/build-installer.ps1 packs the app into it).
+default-run = "rustcord"
 
 [dependencies]
 aes-gcm = "=0.10.3"
@@ -47,12 +49,15 @@ zeroize = "1.9.1"
 # Camera capture via Media Foundation: same 0.62.2 as cpal's, features only (approved).
 # Win32_Graphics_Dwm: hide cloaked windows from the screen-share list. Direct3D11 + Dxgi_Common:
 # the screen share's reused staging texture (windows-capture builds them already).
-# Win32_Media_Speech: SAPI voice for the VcNarrator plugin.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_Media_Speech", "Win32_System_Com"] }
+# Win32_Media_Speech: SAPI voice for the VcNarrator plugin. Win32_UI_Shell: the installer's
+# shortcuts (IShellLinkW) and known folders.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_Media_Speech", "Win32_System_Com", "Win32_UI_Shell"] }
 # Screen / window capture (Windows Graphics Capture; approved).
 windows-capture = "=2.0.1"
 # Win32_System_SystemInformation: GetTickCount for the CustomIdle plugin's idle time.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
+# Registry: autostart + the installer's Apps entry. Threading + Security: the single-instance mutex.
+# Diagnostics_ToolHelp (+ Threading): the process list of game detection (src/activity/scan.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_System_Threading", "Win32_Security", "Win32_System_Diagnostics_ToolHelp"] }
 
 [target."cfg(windows)".build-dependencies]
 embed-resource = "3.0.12"

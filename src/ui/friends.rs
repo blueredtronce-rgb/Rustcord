@@ -12,6 +12,7 @@
 //! Remove Friend, Block, Leave Group go through `ViewState::confirm`.
 //! OWNERSHIP: friends/DMs/inbox/profile engineer (docs/SOCIAL_UI_DESIGN.md).
 
+use super::icons::{self, Icon};
 use super::messages::{MenuIcon, Pal, menu_item, menu_setup};
 use super::sidebar::{self, empty_state, name_and_status, user_avatar_at, user_dot, user_status_text};
 use super::{Modal, UiCx, bold, dialog, dialog_buttons, dialog_text, one_line, presence_color};
@@ -97,7 +98,7 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
                 // The title goes first when the tabs need the room.
                 if ui.available_width() > 560.0 {
                     let (icon, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
-                    paint_people(ui.painter(), icon, pal.muted);
+                    icons::paint(ui.painter(), Icon::Members, icon, pal.muted, pal.bg);
                     ui.label(RichText::new("Friends").font(bold(pal.size)).color(pal.text));
                     let (dot, _) = ui.allocate_exact_size(vec2(8.0, 20.0), Sense::hover());
                     ui.painter().circle_filled(dot.center(), 2.0, pal.muted.gamma_multiply(0.6));
@@ -139,18 +140,6 @@ fn tab_button(ui: &mut egui::Ui, cx: &UiCx<'_>, pal: &Pal, text: &str, selected:
         sidebar::badge(ui, &cx.theme.colors, pos2(rect.right() - 6.0, rect.center().y), badge as u32, None);
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
-}
-
-/// Two people: the Friends glyph (header, DM list row).
-pub(super) fn paint_people(p: &egui::Painter, rect: Rect, color: Color32) {
-    let (c, s) = (rect.center(), rect.width());
-    for (dx, r, alpha) in [(0.18, 0.15, 0.6), (-0.08, 0.18, 1.0)] {
-        let color = color.gamma_multiply(alpha);
-        let head = c + vec2(dx * s, -0.16 * s);
-        p.circle_filled(head, r * s, color);
-        let body = Rect::from_center_size(c + vec2(dx * s, 0.27 * s), vec2(2.6 * r * s, 0.36 * s));
-        p.rect_filled(body, egui::CornerRadius { nw: (r * s) as u8 + 2, ne: (r * s) as u8 + 2, sw: 2, se: 2 }, color);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +257,13 @@ fn friend_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
         } else if resp.clicked() {
             run(cx, action, id);
         }
+    }
+    // A friend's activity picture left of the actions (`members::art_slot`, docs/DESIGN.md §10.4).
+    if kind == FRIEND && let Some(a) = crate::activity::activity_of(cx.state, id).map(std::borrow::Cow::into_owned) {
+        let r = Rect::from_min_size(pos2(right - super::members::ART, row.center().y - super::members::ART / 2.0), Vec2::splat(super::members::ART));
+        let tip = super::members::art_slot(ui, cx, &a, r, ring);
+        ui.interact(r, ui.make_persistent_id(("rc_friend_art", id)), Sense::hover()).on_hover_text(tip);
+        right -= super::members::ART + 10.0;
     }
 
     let text_left = avatar.right() + 12.0;
@@ -412,33 +408,14 @@ fn round_button(ui: &mut egui::Ui, cx: &UiCx<'_>, pal: &Pal, (user, rect): (Id, 
         _ => pal.text,
     };
     let color = if hot { hot_color } else { pal.muted };
-    let c = rect.center();
-    let stroke = Stroke::new(2.0, color);
-    match action {
-        Action::More => {
-            for dy in [-5.0, 0.0, 5.0] {
-                p.circle_filled(c + vec2(0.0, dy), 1.8, color);
-            }
-        }
-        Action::Accept => {
-            p.add(Shape::line(vec![c + vec2(-6.0, 0.0), c + vec2(-2.0, 4.5), c + vec2(6.5, -5.0)], stroke));
-        }
-        Action::Remove => {
-            for d in [vec2(5.0, 5.0), vec2(5.0, -5.0)] {
-                p.line_segment([c - d, c + d], stroke);
-            }
-        }
-        Action::Message => {
-            // A speech bubble with a tail.
-            let b = Rect::from_center_size(c + vec2(0.0, -1.0), vec2(16.0, 12.0));
-            p.rect_filled(b, 4, color);
-            p.add(Shape::convex_polygon(vec![b.left_bottom() + vec2(3.0, -1.0), b.left_bottom() + vec2(9.0, -1.0), b.left_bottom() + vec2(2.0, 5.0)], color, Stroke::NONE));
-        }
-        Action::Unblock => {
-            p.circle_stroke(c, 7.0, stroke);
-            p.line_segment([c + vec2(-5.0, 5.0), c + vec2(5.0, -5.0)], stroke);
-        }
-    }
+    let icon = match action {
+        Action::More => Icon::More,
+        Action::Accept => Icon::Check,
+        Action::Remove => Icon::Close,
+        Action::Message => Icon::Message,
+        Action::Unblock => Icon::Block,
+    };
+    icons::paint(p, icon, Rect::from_center_size(rect.center(), Vec2::splat(20.0)), color, fill);
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -582,9 +559,8 @@ fn call_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: Id) {
     let Some(dm) = cx.state.dm_with(user).filter(|dm| cx.state.voice.channel_id != Some(*dm)) else { return };
     let verb = if cx.state.call_in(dm) { "Join" } else { "Start" };
     let text = cx.theme.colors.text.to_color32();
-    let camera: fn(&egui::Painter, Rect, Color32) = |p, r, c| sidebar::paint_icon(p, sidebar::Icon::Camera, r, c, false, Color32::TRANSPARENT);
-    for (video, what, icon) in [(false, "Voice", super::dm_call::paint_phone as fn(&egui::Painter, Rect, Color32)), (true, "Video", camera)] {
-        if menu_item(ui, &format!("{verb} {what} Call"), MenuIcon::Paint(icon), text) {
+    for (video, what, icon) in [(false, "Voice", Icon::Phone), (true, "Video", Icon::Camera)] {
+        if menu_item(ui, &format!("{verb} {what} Call"), MenuIcon::Icon(icon), text) {
             super::dm_call::open_and_join(cx, dm, video);
         }
     }

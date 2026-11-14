@@ -1,6 +1,7 @@
 //! Rustcord – a lightweight third-party chat client.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod api;
 mod auth;
 mod backend;
@@ -16,13 +17,29 @@ mod state;
 mod theme;
 mod ui;
 mod voice;
+#[cfg(windows)]
+mod winreg;
 
 use std::time::Instant;
 
+/// Flags: `--minimized` (sign-in autostart: start hidden in the tray), `--quit` (asks the running
+/// Rustcord to quit and waits for it; the installer uses it before replacing files).
 fn main() -> eframe::Result {
     let started = Instant::now();
     trace_startup("main", started);
     ui::images::mem_trace("main");
+
+    // One Rustcord per data dir: a second start brings the running one to the front and exits.
+    // Screenshot runs skip it (and the tray): they must never touch another window.
+    let test_run = std::env::var_os("RUSTCORD_SCREENSHOT").is_some();
+    let quit = std::env::args().any(|a| a == "--quit");
+    if !test_run && !notify::claim_instance() {
+        notify::signal_running(quit);
+        return Ok(());
+    }
+    if quit {
+        return Ok(());
+    }
 
     // Read settings, the disk cache and the keyring while the window is being created.
     let preload = std::thread::spawn(|| {
@@ -45,6 +62,9 @@ fn main() -> eframe::Result {
     // Create the egui context up front so the backend can start connecting immediately.
     let ctx = egui::Context::default();
     let backend = backend::spawn(rt.handle(), ctx.clone());
+    if !test_run {
+        notify::start(&ctx);
+    }
 
     // eframe's defaults are already the lean ones: no MSAA, depth or stencil buffer, vsync on
     // (measured: none of these, nor dithering, changes RAM; the GL driver's own ~80 MB does not move).

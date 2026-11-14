@@ -10,7 +10,8 @@
 //! OWNERSHIP: navigation-social engineer (docs/SOCIAL_UI_DESIGN.md).
 
 use super::images::{ImageCache, initial, initial_colors, paint_initial};
-use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, paint_megaphone};
+use super::icons::{self, Icon};
+use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup};
 use super::{UiCx, bold, one_line, presence_color, rgb, server_menu, threads};
 use crate::api::cdn;
 use crate::backend::{AccountCommand, Command, ConnState};
@@ -271,7 +272,8 @@ fn demo_folders(ui: &egui::Ui, state: &mut AppState) {
 /// Test hook `RUSTCORD_NAV_DEMO=<comma list>`: navigation / social states offline mode can't
 /// reach, none sends a request. `folders` / `folder-open` (server-bar folders), `mentions`
 /// (inbox mentions from cached messages), `profile` (loaded profiles: bio, pronouns, mutual
-/// servers and friends, a note), `tab:<online|all|pending|blocked|add>` (Friends tab).
+/// servers and friends, a note), `tab:<online|all|pending|blocked|add>` (Friends tab), `icons`
+/// (every vector icon over the window, `icons::sheet`).
 pub(super) fn nav_demo(flag: &str) -> bool {
     nav_flags().split(',').any(|f| f.trim() == flag)
 }
@@ -397,7 +399,7 @@ fn add_server_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let fill = c.surface.to_color32().lerp_to_gamma(c.accent.to_color32(), morph);
     ui.painter().rect_filled(icon, ICON_R, fill);
     let fg = c.accent.to_color32().lerp_to_gamma(c.accent_text.to_color32(), morph);
-    ui.painter().text(icon.center(), Align2::CENTER_CENTER, "+", FontId::proportional(24.0), fg);
+    icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(icon.center(), Vec2::splat(20.0)), fg, fill);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a Server"));
     side_tooltip(&resp, "Add a Server");
     if resp.clicked() {
@@ -499,6 +501,9 @@ fn paint_guild_icon(ui: &mut egui::Ui, cx: &mut UiCx<'_>, index: usize, rect: Re
 /// Title bar: the current location (server, DM or home) centred as a 16 px icon and its name;
 /// the inbox button on the right (FEATURES_NOTES §4.5), except under a settings layer.
 pub fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    if nav_demo("icons") {
+        icons::sheet(ui.ctx(), cx.theme.colors.text_muted.to_color32(), cx.theme.colors.background.to_color32());
+    }
     let rect = ui.max_rect();
     if !cx.view.chat_hidden() {
         let pal = super::messages::Pal::new(cx.theme);
@@ -725,14 +730,13 @@ pub(super) fn status_tooltip(ui: &egui::Ui, (_, text): &StatusText) -> Option<St
     Some(text)
 }
 
-/// `status_text` of a user; mine uses my own custom status. None while offline.
+/// `status_text` of a user; mine uses my own custom status and game. None while offline.
 pub(super) fn user_status_text(state: &AppState, user: Id) -> Option<StatusText> {
-    let p = state.presence_of(user);
-    let activity = p.and_then(|p| p.activity.as_ref());
+    let activity = crate::activity::activity_of(state, user);
     if state.me.as_ref().is_some_and(|m| m.id == user) {
-        return status_text(state.chat.my_custom_status.as_ref(), activity);
+        return status_text(state.chat.my_custom_status.as_ref(), activity.as_deref());
     }
-    status_text(p?.custom_status.as_ref(), activity)
+    status_text(state.presence_of(user)?.custom_status.as_ref(), activity.as_deref())
 }
 
 /// Paints a status line in `format` with its top-left at `pos`, wrapped to `max_rows` (cut with
@@ -795,72 +799,12 @@ pub(super) fn paint_status_text(
                     egui::Image::from_texture(tex).paint_at(ui, icon);
                 }
             }
-            Lead::Activity(kind) => paint_activity_icon(ui.painter(), *kind, icon, color),
+            Lead::Activity(kind) => icons::paint(ui.painter(), icons::activity(*kind), icon, color, Color32::TRANSPARENT),
         }
         painted = painted.union(icon);
     }
     ui.painter().galley(at, g, color);
     painted
-}
-
-/// Line-art icon of an activity type in the square `rect`: a controller (playing, also unknown
-/// types), broadcast waves (streaming), beamed notes (listening), an eye (watching), a trophy
-/// (competing).
-pub(super) fn paint_activity_icon(p: &egui::Painter, kind: u8, rect: Rect, color: Color32) {
-    let (c, s) = (rect.center(), rect.width());
-    let stroke = Stroke::new((0.1 * s).max(1.2), color);
-    let at = |x: f32, y: f32| c + vec2(x * s, y * s);
-    let arc = |center: egui::Pos2, r: f32, from: f32, to: f32| {
-        let pts = (0..=12).map(|i| center + r * s * Vec2::angled(from + (to - from) * i as f32 / 12.0)).collect();
-        p.add(Shape::line(pts, stroke));
-    };
-    match kind {
-        1 => {
-            p.circle_filled(c, 0.1 * s, color);
-            for r in [0.24, 0.42] {
-                arc(c, r, PI - 0.7, PI + 0.7);
-                arc(c, r, -0.7, 0.7);
-            }
-        }
-        2 => {
-            let (h1, h2) = (at(-0.2, 0.28), at(0.26, 0.2));
-            for h in [h1, h2] {
-                p.circle_filled(h, 0.14 * s, color);
-            }
-            let (t1, t2) = (at(-0.08, -0.36), at(0.38, -0.44));
-            p.line_segment([pos2(t1.x, h1.y), t1], stroke);
-            p.line_segment([pos2(t2.x, h2.y), t2], stroke);
-            let beam = vec2(0.0, 0.16 * s);
-            p.add(Shape::convex_polygon(vec![t1, t2, t2 + beam, t1 + beam], color, Stroke::NONE));
-        }
-        3 => {
-            let lid = |sign: f32| (0..=16).map(move |i| {
-                let t = i as f32 / 16.0;
-                at(0.46 * (2.0 * t - 1.0), sign * 0.28 * (t * PI).sin())
-            });
-            p.add(Shape::closed_line(lid(-1.0).chain(lid(1.0).rev().skip(1).take(15)).collect(), stroke));
-            p.circle_filled(c, 0.14 * s, color);
-        }
-        5 => {
-            let top = c.y - 0.38 * s;
-            let cup = (0..=12).map(|i| pos2(c.x + 0.26 * s * (PI * i as f32 / 12.0).cos(), top + 0.42 * s * (PI * i as f32 / 12.0).sin()));
-            p.add(Shape::convex_polygon(cup.collect(), color, Stroke::NONE));
-            arc(at(-0.26, -0.22), 0.12, FRAC_PI_2, 3.0 * FRAC_PI_2);
-            arc(at(0.26, -0.22), 0.12, -FRAC_PI_2, FRAC_PI_2);
-            p.line_segment([at(0.0, 0.0), at(0.0, 0.28)], stroke);
-            p.rect_filled(Rect::from_min_max(at(-0.2, 0.26), at(0.2, 0.4)), 0, color);
-        }
-        _ => {
-            let body = Rect::from_center_size(at(0.0, 0.04), vec2(0.92 * s, 0.56 * s));
-            p.rect_stroke(body, CornerRadius::same((0.26 * s) as u8), stroke, egui::StrokeKind::Inside);
-            let d = at(-0.2, 0.04);
-            p.line_segment([d - vec2(0.12 * s, 0.0), d + vec2(0.12 * s, 0.0)], stroke);
-            p.line_segment([d - vec2(0.0, 0.12 * s), d + vec2(0.0, 0.12 * s)], stroke);
-            for b in [at(0.17, -0.02), at(0.27, 0.1)] {
-                p.circle_filled(b, (0.06 * s).max(0.9), color);
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,19 +944,6 @@ fn category_row(ui: &mut egui::Ui, cx: &UiCx<'_>, id: Id, name: &str, collapsed:
     resp
 }
 
-/// Prefix glyph per channel type (monochrome emoji glyphs render as plain text). Announcement
-/// channels get the painted megaphone instead (`channel_row`): the emoji smudges at body size.
-fn channel_glyph(kind: u8) -> &'static str {
-    match kind {
-        ct::GUILD_VOICE => "🔊",
-        ct::GUILD_STAGE_VOICE => "🎙",
-        ct::GUILD_FORUM => "💬",
-        ct::GUILD_MEDIA => "🖼",
-        ct::GUILD_DIRECTORY => "📁",
-        _ => "#",
-    }
-}
-
 /// Row background / unread pill shared by channel, DM and voice-user rows. Returns the fill
 /// painted behind the row (transparent when none).
 fn row_chrome(ui: &egui::Ui, cx: &UiCx<'_>, bg_slot: egui::layers::ShapeIdx, row: Rect, selected: bool, hovered: bool, unread: bool) -> Color32 {
@@ -1032,6 +963,11 @@ fn row_chrome(ui: &egui::Ui, cx: &UiCx<'_>, bg_slot: egui::layers::ShapeIdx, row
         ui.painter().rect_filled(pill, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, c.text.to_color32());
     }
     fill
+}
+
+/// The colour under a row's icons: the sidebar with the row's fill (`row_chrome`) on top.
+fn row_bg(c: &ThemeColors, fill: Color32) -> Color32 {
+    c.sidebar.to_color32().blend(fill)
 }
 
 /// (selected, hovered) fills of rows on the sidebar color. Selected is the theme's resting
@@ -1061,7 +997,7 @@ fn channel_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
         return;
     }
     let Some(ch) = cx.state.channels.get(&id) else { return };
-    let (kind, guild_id) = (ch.kind, ch.guild_id);
+    let (kind, guild_id, icon) = (ch.kind, ch.guild_id, icons::of(ch, cx.state));
     // Forum / media channels open their post list (forum.rs).
     let supported = ch.is_text_chat() || matches!(kind, ct::GUILD_FORUM | ct::GUILD_MEDIA);
     let voice = matches!(kind, ct::GUILD_VOICE | ct::GUILD_STAGE_VOICE);
@@ -1077,7 +1013,7 @@ fn channel_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
     let resp = ui.interact(row, ui.make_persistent_id(("channel", id)), if supported { Sense::click() } else { Sense::hover() });
     // Also while the pointer is on the chat button (a widget on top of the row).
     let hovered = supported && ui.rect_contains_pointer(row);
-    row_chrome(ui, cx, bg_slot, row, selected, hovered, unread);
+    let fill = row_chrome(ui, cx, bg_slot, row, selected, hovered, unread);
 
     let c = &cx.theme.colors;
     let size = cx.theme.font.size;
@@ -1086,15 +1022,9 @@ fn channel_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
         ui.painter().rect_filled(bar, 1, presence_color(Presence::Online, c));
     }
     let color = row_text_color(c, !supported || muted, selected || unread || hovered);
-    // The open channel's glyph carries the accent (selection indicator).
-    let glyph_color = if selected { c.accent.to_color32() } else { color };
-    // 20 px icon slot after 8 px of row padding, then the name.
-    let glyph = pos2(row.left() + ROW_INSET + 18.0, row.center().y);
-    if matches!(kind, ct::GUILD_ANNOUNCEMENT | ct::ANNOUNCEMENT_THREAD) {
-        paint_megaphone(ui.painter(), glyph, 18.0, glyph_color);
-    } else {
-        ui.painter().text(glyph, Align2::CENTER_CENTER, channel_glyph(kind), FontId::new(size, crate::theme::icon_family()), glyph_color);
-    }
+    // 20 px icon after 8 px of row padding, then the name; it follows the name's colour.
+    let slot = Rect::from_center_size(pos2(row.left() + ROW_INSET + 18.0, row.center().y), Vec2::splat(20.0));
+    icons::paint_channel(ui.painter(), icon, slot, color, row_bg(c, fill));
     let mut right = row.right() - ROW_INSET - 8.0;
     let mut open_chat = false;
     if voice && hovered {
@@ -1139,7 +1069,7 @@ fn channel_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, guild_id: Option<I
     if let Some(connected) = voice {
         ui.separator();
         if connected {
-            if menu_item(ui, "Disconnect", MenuIcon::Glyph("📞"), danger) {
+            if menu_item(ui, "Disconnect", MenuIcon::Icon(Icon::Hangup), danger) {
                 cx.cmd.send(Command::LeaveVoice);
             }
         } else if menu_item(ui, "Join Voice", MenuIcon::Glyph("🔊"), text) {
@@ -1153,7 +1083,7 @@ fn channel_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id, guild_id: Option<I
     }
     server_menu::channel_menu_items(ui, cx, id);
     ui.separator();
-    if menu_item(ui, "Copy Link", MenuIcon::Link, text) {
+    if menu_item(ui, "Copy Link", MenuIcon::Icon(Icon::Link), text) {
         let place = guild_id.map_or_else(|| "@me".to_owned(), |g| g.0.to_string());
         ui.ctx().copy_text(format!("https://discord.com/channels/{place}/{}", id.0));
     }
@@ -1223,7 +1153,7 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
     if cx.state.voice.speaking.contains(&u.id) {
         ui.painter().circle_stroke(avatar.center(), 13.5, Stroke::new(2.0, presence_color(Presence::Online, c)));
     }
-    let bg = if fill == Color32::TRANSPARENT { c.sidebar.to_color32() } else { fill };
+    let bg = row_bg(c, fill);
     let (muted, mark) = (c.text_muted.to_color32(), if u.by_server { c.danger } else { c.text_muted }.to_color32());
     let (mut right, cy) = (row.right() - ROW_INSET - 6.0, row.center().y);
     // Right to left, 4 px apart: LIVE pill, camera, deafened, muted.
@@ -1234,10 +1164,10 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
         ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
         right = pill.left() - 4.0;
     }
-    for (on, icon, color, slashed) in [(u.video, Icon::Camera, muted, false), (u.deaf, Icon::Headphones, mark, true), (u.muted, Icon::Mic, mark, true)] {
+    for (on, icon, color) in [(u.video, Icon::Camera, muted), (u.deaf, Icon::Deafened, mark), (u.muted, Icon::MicOff, mark)] {
         if on {
             let r = Rect::from_min_max(pos2(right - 16.0, cy - 8.0), pos2(right, cy + 8.0));
-            paint_icon(ui.painter(), icon, r, color, slashed, bg);
+            icons::paint(ui.painter(), icon, r, color, bg);
             right -= 20.0;
         }
     }
@@ -1257,75 +1187,6 @@ fn voice_user_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, u: &VoiceU
     user_context_menu(&resp, cx, u.id, Some(guild_id), anchor);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         cx.view.open_profile(u.id, Some(guild_id), anchor);
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum Icon {
-    Mic,
-    Headphones,
-    Gear,
-    /// A handset lying down (leave the call).
-    Hangup,
-    /// Video camera (camera on).
-    Camera,
-    /// A monitor with an up arrow (screen share).
-    Screen,
-}
-
-/// Icon in the square `rect` (vector-painted, so no font has to carry it); `slashed` crosses
-/// it out like Discord's "off" icons: a diagonal stroke with a gap in `bg` on both sides.
-pub(super) fn paint_icon(p: &egui::Painter, icon: Icon, rect: Rect, color: Color32, slashed: bool, bg: Color32) {
-    let (c, s) = (rect.center(), rect.width());
-    let stroke = Stroke::new((0.09 * s).max(1.4), color);
-    // Half circle (`from` = 0: lower half, PI: upper half, y pointing down).
-    let arc = |center: egui::Pos2, r: f32, from: f32| {
-        let pts = (0..=12).map(|i| center + r * egui::Vec2::angled(from + std::f32::consts::PI * i as f32 / 12.0)).collect();
-        p.add(Shape::line(pts, stroke));
-    };
-    match icon {
-        Icon::Mic => {
-            p.rect_filled(Rect::from_center_size(c + vec2(0.0, -0.15 * s), vec2(0.32 * s, 0.5 * s)), 0.16 * s, color);
-            arc(c + vec2(0.0, -0.08 * s), 0.3 * s, 0.0);
-            p.line_segment([c + vec2(0.0, 0.22 * s), c + vec2(0.0, 0.42 * s)], stroke);
-            p.line_segment([c + vec2(-0.16 * s, 0.42 * s), c + vec2(0.16 * s, 0.42 * s)], stroke);
-        }
-        Icon::Headphones => {
-            arc(c + vec2(0.0, 0.06 * s), 0.38 * s, std::f32::consts::PI);
-            for x in [-0.44, 0.24] {
-                p.rect_filled(Rect::from_min_size(c + vec2(x * s, 0.02 * s), vec2(0.2 * s, 0.36 * s)), 0.07 * s, color);
-            }
-        }
-        Icon::Gear => {
-            p.text(c, Align2::CENTER_CENTER, "⚙", FontId::new(s, crate::theme::icon_family()), color);
-        }
-        Icon::Hangup => {
-            let band = (0..=12).map(|i| c + vec2(0.0, 0.3 * s) + 0.45 * s * egui::Vec2::angled(PI * (1.2 + 0.6 * i as f32 / 12.0))).collect();
-            p.add(Shape::line(band, Stroke::new(0.18 * s, color)));
-            for x in [-0.36, 0.36] {
-                p.rect_filled(Rect::from_center_size(c + vec2(x * s, 0.1 * s), vec2(0.26 * s, 0.2 * s)), 0.08 * s, color);
-            }
-        }
-        Icon::Camera => {
-            p.rect_filled(Rect::from_min_size(c + vec2(-0.46 * s, -0.24 * s), vec2(0.62 * s, 0.48 * s)), 0.1 * s, color);
-            p.add(Shape::convex_polygon(vec![c + vec2(0.2 * s, 0.0), c + vec2(0.46 * s, -0.2 * s), c + vec2(0.46 * s, 0.2 * s)], color, Stroke::NONE));
-        }
-        Icon::Screen => {
-            let screen = Rect::from_center_size(c + vec2(0.0, -0.1 * s), vec2(0.86 * s, 0.6 * s));
-            p.rect_stroke(screen, 0.08 * s, stroke, egui::StrokeKind::Middle);
-            p.line_segment([c + vec2(-0.2 * s, 0.4 * s), c + vec2(0.2 * s, 0.4 * s)], stroke);
-            p.line_segment([c + vec2(0.0, 0.2 * s), c + vec2(0.0, 0.4 * s)], stroke);
-            let tip = c + vec2(0.0, -0.24 * s);
-            p.line_segment([c + vec2(0.0, 0.06 * s), tip], stroke);
-            p.add(Shape::line(vec![tip + vec2(-0.12 * s, 0.12 * s), tip, tip + vec2(0.12 * s, 0.12 * s)], stroke));
-        }
-    }
-    if slashed {
-        let d = vec2(s, -s) * 0.42;
-        let (a, b) = (c + d, c - d);
-        // A narrow gap: a wide one erases a whole headphone cup.
-        p.line_segment([a, b], Stroke::new(stroke.width + 1.5, bg));
-        p.line_segment([a, b], stroke);
     }
 }
 
@@ -1376,11 +1237,12 @@ fn friends_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let bg_slot = ui.painter().add(Shape::Noop);
     let resp = ui.interact(row, ui.make_persistent_id("friends_row"), Sense::click());
     let selected = super::friends::is_open(cx.state);
-    row_chrome(ui, cx, bg_slot, row, selected, resp.hovered(), false);
+    let fill = row_chrome(ui, cx, bg_slot, row, selected, resp.hovered(), false);
     let c = &cx.theme.colors;
     let color = row_text_color(c, false, selected || resp.hovered());
     let size = cx.theme.font.size;
-    super::friends::paint_people(ui.painter(), Rect::from_center_size(pos2(row.left() + ROW_INSET + 24.0, row.center().y), Vec2::splat(24.0)), color);
+    let icon = Rect::from_center_size(pos2(row.left() + ROW_INSET + 24.0, row.center().y), Vec2::splat(24.0));
+    icons::paint(ui.painter(), Icon::Members, icon, color, row_bg(c, fill));
     let mut right = row.right() - ROW_INSET - 8.0;
     let pending = cx.state.pending_count() as u32;
     if pending > 0 {
@@ -1508,12 +1370,19 @@ fn dm_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, id: Id) {
         let x_rect = Rect::from_min_max(pos2(right - 20.0, row.center().y - 10.0), pos2(right, row.center().y + 10.0));
         let x = ui.interact(x_rect, ui.make_persistent_id(("dm_close", id)), Sense::click());
         let x_color = if x.hovered() { c.text.to_color32() } else { c.text_muted.to_color32().gamma_multiply(0.8) };
-        ui.painter().text(x_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(size + 4.0), x_color);
+        icons::paint(ui.painter(), Icon::Close, Rect::from_center_size(x_rect.center(), Vec2::splat(16.0)), x_color, chip_under);
         x.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Close DM"));
         close = x.on_hover_text("Close DM").clicked();
         right -= 24.0;
     } else if mentions > 0 {
         right -= badge(ui, c, pos2(right, row.center().y), mentions, None) + 8.0;
+    }
+    // The other user's activity picture (`members::art_slot`); the close button takes its place.
+    if let Some(a) = other.filter(|_| !hot).and_then(|u| crate::activity::activity_of(cx.state, u)).map(std::borrow::Cow::into_owned) {
+        let art = super::members::ART;
+        let r = Rect::from_min_size(pos2(right - art, row.center().y - art / 2.0), Vec2::splat(art));
+        super::members::art_slot(ui, cx, &a, r, chip_under);
+        right -= art + 8.0;
     }
     right -= super::dm_call::row_mark(ui, cx, id, pos2(right, row.center().y));
     right -= crate::plugins::sidebar::typing_dots(ui, cx.state, id, pos2(right, row.center().y));
@@ -1701,7 +1570,7 @@ fn voice_panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
     let bg = if hot { base.blend(c.text.to_color32().gamma_multiply(0.08)) } else { base };
     ui.painter().rect_filled(button, CornerRadius::from(cx.theme.layout.corner_radius), bg);
     let glyph = if hot { c.danger } else { c.text_muted }.to_color32();
-    paint_icon(ui.painter(), Icon::Hangup, button.shrink(7.0), glyph, false, bg);
+    icons::paint(ui.painter(), Icon::Hangup, button.shrink(7.0), glyph, bg);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Disconnect"));
     if resp.on_hover_text("Disconnect").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         cx.cmd.send(Command::LeaveVoice);
@@ -1804,14 +1673,16 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let name = me.as_ref().map_or_else(|| "Rustcord".to_owned(), |u| cx.state.member_display_name(guild, u, None));
     let label = format!("{name}, {}", line.1);
     let status = line.clone();
-    // My game etc. as my member-list presence carries it.
-    let activity = me.as_ref().and_then(|u| cx.state.presence_of(u.id)).and_then(|p| p.activity.clone());
-    // An activity's icon leads my custom status ("🎮 • text"); without one it is the line.
-    let (lead, line) = match (&me, &activity) {
-        (Some(u), _) if hot && !cx.settings.streamer.hides_personal() => (None, (None, u.username.clone())),
-        (_, Some(a)) if cx.state.chat.my_custom_status.is_some() => (Some(a.kind), line),
-        (_, Some(a)) if detail.is_none() => (None, status_text(None, Some(a)).unwrap_or(line)),
-        _ => (None, line),
+    // My activity (my presence's, or the game I share) once my status is known: its icon in
+    // green and its name, then my custom status after a divider (cut first). Hovered: my username.
+    let activity = me.as_ref().and_then(|u| crate::activity::activity_of(cx.state, u.id)).map(std::borrow::Cow::into_owned);
+    let connecting = matches!(cx.state.conn, ConnState::Connecting | ConnState::Reconnecting { .. }) && !crate::config::offline_mode();
+    let shown = activity.as_ref().filter(|_| cx.state.chat.my_status.is_some() && !connecting);
+    let username = me.as_ref().filter(|_| hot && !cx.settings.streamer.hides_personal()).map(|u| (None, u.username.clone()));
+    let (lead, line) = match (username, shown) {
+        (Some(u), _) => (None, Some(u)),
+        (None, Some(a)) => (Some(a), status_text(cx.state.chat.my_custom_status.as_ref(), None)),
+        (None, None) => (None, Some(line)),
     };
     let name_g = super::cosmetics::name_galley(ui, &name, bold(size - 1.0), fx.name_style.as_ref(), c.text.to_color32(), max_w);
     let sub_font = FontId::proportional(size - 2.0);
@@ -1823,20 +1694,32 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     let name_end = name_at.x + name_g.size().x;
     ui.painter().galley(name_at, name_g, c.text.to_color32());
     let muted = c.text_muted.to_color32();
-    let mut x = text_left;
-    if let Some(kind) = lead {
-        let side = (sub_h * 0.85).round();
+    let (mut x, end) = (text_left, text_left + max_w);
+    let mut sub_right = x;
+    if let Some(a) = lead {
+        let side = 14.0;
         let icon = Rect::from_min_size(pos2(x, sub_y + (sub_h - side) / 2.0), Vec2::splat(side));
-        paint_activity_icon(ui.painter(), kind, icon, presence_color(Presence::Online, &c));
-        let dot = one_line(ui, "•", sub_font.clone(), muted, 16.0);
-        x = icon.right() + 4.0 + dot.size().x + 4.0;
-        ui.painter().galley(pos2(icon.right() + 4.0, sub_y), dot, muted);
+        icons::paint(ui.painter(), icons::activity(a.kind), icon, presence_color(Presence::Online, &c), base);
+        x = icon.right() + 4.0;
+        let g = one_line(ui, a.name.as_str(), sub_font.clone(), muted, end - x);
+        x += g.size().x;
+        ui.painter().galley(pos2(icon.right() + 4.0, sub_y), g, muted);
+        sub_right = x;
+        if line.is_some() && end - x > 24.0 {
+            let mid = sub_y + sub_h / 2.0;
+            ui.painter().vline(x + 6.0, mid - 5.0..=mid + 5.0, Stroke::new(1.0, c.text.to_color32().gamma_multiply(0.1)));
+            x += 13.0;
+        } else {
+            x = end;
+        }
     }
-    let sub = paint_status_text(ui, cx.images, pos2(x, sub_y), &line, egui::TextFormat::simple(sub_font, muted), 16.0, text_left + max_w - x, 1);
+    if let Some(line) = line.as_ref().filter(|_| end - x > 8.0) {
+        sub_right = paint_status_text(ui, cx.images, pos2(x, sub_y), line, egui::TextFormat::simple(sub_font, muted), 16.0, end - x, 1).right();
+    }
     if let Some(np) = &fx.nameplate {
         // Under the voice section only the lower corners are the panel's.
         let corners = if rect.top() > panel.y + 0.5 { CornerRadius { sw: PANEL_R, se: PANEL_R, ..CornerRadius::ZERO } } else { CornerRadius::same(PANEL_R) };
-        let end = name_end.max(sub.right());
+        let end = name_end.max(sub_right);
         let shape = super::cosmetics::nameplate_cover(ui, cx.images, rect, np, fx_anim, corners, base, end);
         // High Contrast: the panel colour stays opaque behind the text (and the buttons).
         let (hc, art) = (crate::theme::is_high_contrast(&c), !matches!(shape, Shape::Noop));
@@ -1850,7 +1733,8 @@ fn account_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect, panel: egui::Po
     // Registered after the avatar widget so the whole area stays clickable.
     let resp = ui.interact(area, ui.make_persistent_id("my_account"), Sense::click());
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, &label));
-    let tip = [activity.map(|a| a.label()), status_tooltip(ui, &status), detail].into_iter().flatten().collect::<Vec<_>>().join("\n");
+    let playing = activity.map(|a| super::members::art_tooltip(&a, threads::unix_ms()));
+    let tip = [playing, status_tooltip(ui, &status), detail].into_iter().flatten().collect::<Vec<_>>().join("\n");
     let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         cx.view.open_profile_above(me.id, guild, panel - vec2(0.0, 8.0));
@@ -1900,7 +1784,7 @@ fn panel_button(ui: &mut egui::Ui, theme: &Theme, rect: Rect, icon: Icon, tip: &
     } else {
         panel_icon_rest(c)
     };
-    paint_icon(ui.painter(), icon, rect.shrink(7.0), color, slashed, user_panel_fill(c));
+    icons::paint(ui.painter(), if slashed { icon.off() } else { icon }, rect.shrink(7.0), color, user_panel_fill(c));
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, on || slashed, tip));
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1919,17 +1803,24 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
     let (hot, more_hot) = (resp.hovered() || resp.has_focus(), open || more.hovered() || more.has_focus());
     let r = cx.theme.layout.corner_radius.clamp(0.0, 16.0).round() as u8;
     let p = ui.painter();
+    // What the icon sits on (the slash's gap).
+    let mut under = user_panel_fill(&c);
     if slashed {
         p.rect_filled(group, r, c.danger.to_color32().gamma_multiply(0.15));
+        under = under.blend(c.danger.to_color32().gamma_multiply(0.15));
     }
     // Discord: one pill around icon and ∨ while either is hovered, the hovered half brighter.
     if hot || more_hot {
         p.rect_filled(group, r, pill_fill(&c));
         let (half, corners) = if hot { (button, CornerRadius { nw: r, sw: r, ..CornerRadius::ZERO }) } else { (chevron, CornerRadius { ne: r, se: r, ..CornerRadius::ZERO }) };
         p.rect_filled(half, corners, c.text.to_color32().gamma_multiply(0.06));
+        under = under.blend(pill_fill(&c));
+        if hot {
+            under = under.blend(c.text.to_color32().gamma_multiply(0.06));
+        }
     }
     let color = if slashed { c.danger.to_color32() } else if hot { c.text.to_color32() } else { panel_icon_rest(&c) };
-    paint_icon(p, icon, button.shrink(7.0), color, slashed, user_panel_fill(&c));
+    icons::paint(p, if slashed { icon.off() } else { icon }, button.shrink(7.0), color, under);
     let k = chevron.center() - vec2(2.0, 0.0);
     let v = if more_hot { c.text.to_color32() } else { panel_icon_rest(&c) };
     p.add(Shape::line(vec![k + vec2(-3.5, -1.75), k + vec2(0.0, 1.75), k + vec2(3.5, -1.75)], Stroke::new(1.5, v)));
@@ -1981,14 +1872,16 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
 }
 
 /// Test hook `RUSTCORD_OPEN=status:<online|idle|dnd|invisible>`: my status as the gateway would
-/// report it, with a sample custom status, and a game as my member-list presence carries it.
+/// report it, with a sample custom status, and a game as my member-list presence carries it
+/// (not with `RUSTCORD_FAKE_GAME`: then my detected game shows).
 pub(super) fn demo_status(state: &mut AppState, status: &str) {
     let Some(status) = UserStatus::parse(status) else { return };
     let emoji = crate::model::Emoji { name: Some("🦀".into()), ..Default::default() };
     let custom_status = Some(CustomStatus { text: Some("Rewriting it in Rust".into()), emoji: Some(emoji) });
     state.apply_gateway(crate::model::GatewayEvent::MyStatus { status, custom_status }, None);
     if let Some(me) = state.me.as_ref().map(|u| u.id) {
-        let p = crate::model::UserPresence { status: status.presence(), activity: Some(super::members::demo_activity(0)), ..Default::default() };
+        let game = std::env::var_os("RUSTCORD_FAKE_GAME").is_none().then(|| super::members::demo_activity(0));
+        let p = crate::model::UserPresence { status: status.presence(), activity: game, ..Default::default() };
         state.apply_gateway(crate::model::GatewayEvent::PresenceUpdate(vec![(me, p)]), None);
     }
 }
@@ -2079,12 +1972,6 @@ mod tests {
         assert_eq!(connection_word(&ConnState::Connected, true), "Offline");
         assert_eq!(connection_word(&ConnState::Reconnecting { attempt: 1, in_secs: 3 }, false), "Reconnecting…");
         assert_eq!(connection_word(&ConnState::Offline, false), "Offline");
-    }
-
-    #[test]
-    fn glyphs() {
-        assert_eq!(channel_glyph(ct::GUILD_TEXT), "#");
-        assert_eq!(channel_glyph(ct::GUILD_VOICE), "🔊");
     }
 
     #[test]

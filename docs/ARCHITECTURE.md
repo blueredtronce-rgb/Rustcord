@@ -108,6 +108,7 @@ cargo check
 | chat essentials | `src/api/chat.rs`, `src/api/upload.rs`, `src/state/chat.rs`, `src/emoji.rs`, gateway typing/presence/op 3/op 8: split in `docs/CHAT_ESSENTIALS_DESIGN.md` |
 | social | `src/api/social.rs`, `src/state/social.rs`, gateway thread/recipient/note dispatches: split in `docs/SOCIAL_DESIGN.md` |
 | account & server | `src/api/account.rs`, `src/api/settings_proto.rs`, `src/api/guild_admin.rs`, `src/state/account.rs`, gateway settings-proto/ban dispatches: split in `docs/ACCOUNT_SERVER_DESIGN.md` |
+| activities | `src/activity/*` (game detection thread, detectable-games table, my game in op 3, app icons), `src/api/apps.rs`, `src/ui/user_settings/games.rs`; activity art and cards in `ui/members.rs` (`art_slot`) and `ui/profile.rs` (`activity_section`) |
 | plugins | `src/plugins/*` (registry + plugins.toml, one module per area), `src/ui/user_settings/plugins.rs`; one-line hooks elsewhere guarded by `plugins::enabled`: see `docs/PLUGINS_NOTES.md` |
 
 Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.rs` (resvg) →
@@ -144,6 +145,16 @@ login hint and README).
 - `RUSTCORD_SCREENSHOT=<file.png>`: save a screenshot after ~30 frames and exit (the window counts
   as focused, so text focus, completion popups and read acks do not depend on the desktop);
   `RUSTCORD_SCREENSHOT_FRAME=<n>` takes it at frame n instead (e.g. 300 to wait for a QR code).
+  Screenshot runs skip the single-instance check and the tray icon (closing then quits).
+- Desktop (`notify.rs`, `user_settings/app.rs` `logic`): one Rustcord per data dir (a named
+  mutex + the tray window, both named after a hash of the config dir, so runs with their own
+  `RUSTCORD_HOME` never meet the user's); `--minimized` starts hidden in the tray, `--quit` asks
+  the running one to quit and waits.
+- Installer (`src/bin/rustcord-setup`, flags in its main.rs): `RUSTCORD_SETUP_TEST=1` switches to
+  the test identity "RustcordSetupTest" (own folder, Run value, shortcuts, Apps entry; use it
+  with `--silent --dir <scratch>` and uninstall with `--uninstall --silent`);
+  `RUSTCORD_SCREENSHOT=<png>` + `RUSTCORD_SETUP_SCREEN=install|progress|done|error|uninstall|removed`
+  renders a screen without installing.
 - `RUSTCORD_LOGIN_TAB=qr|email|token|mfa`: start on the login screen with that tab, ignoring
   any stored token (`mfa` = the 2FA form with all methods, no network). Use with an empty
   `RUSTCORD_HOME`; `qr` connects to the remote-auth gateway (never scan such a code in tests).
@@ -193,7 +204,16 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   `tab:<online|all|pending|blocked|add>` (Friends tab), `settings` (sample devices, authorized apps
   and consents on those Settings pages, two sample security keys),
   `account:<password|totp|scan|sms|codes-key|codes|mfa|removal>` (that My Account security dialog
-  with sample data; `mfa` = the 2FA re-check prompt).
+  with sample data; `mfa` = the 2FA re-check prompt), `games` (Registered Games with its "Add it!"
+  picker open on sample windows), `icons` (every vector icon of `ui/icons.rs` at 16, 20, 24 and
+  48 px, then the channel icon matrix plain / private / age-restricted / rules at 20 px, over the
+  whole window).
+- `RUSTCORD_FAKE_GAME=<name>` (activity/scan.rs): game detection reports that game, started 47
+  minutes ago (its icon from the saved games list `cache/detectable.tsv` when the name is in it):
+  my user panel, my profile and Registered Games show it. Offline nothing is sent; online it would
+  go out with op 3 like a real game, so use it offline. With `RUSTCORD_OPEN=status:<s>` my
+  sample presence carries no game then. Activity art comes from the image cache only offline
+  (`members::demo_activity` names the URLs to seed).
 - `RUSTCORD_CALL_DEMO=<comma list>` (ui/call.rs `demo`), with
   `RUSTCORD_OPEN=voice:<id>,channel:<id>` (the call view): `people` (cached users in the call:
   speaking, muted, deafened + live, camera), `video` (synthetic camera / stream frames, my camera

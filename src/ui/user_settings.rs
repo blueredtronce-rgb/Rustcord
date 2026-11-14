@@ -9,8 +9,7 @@
 //!   Voice & Video, Clips, Chat, Notifications, Keybinds, Language, Windows Settings, Streamer
 //!   Mode, Advanced. Activity Settings: Activity Privacy, Registered Games, Game Overlay.
 //!   Rustcord: Plugins, Local Profile, Theme Editor.
-//! - What Rustcord can't do (billing, game detection, overlay, clip recording, Family Center
-//!   linking) is a Discord-like empty state (`empty_state`) above the page's synced rows.
+//! - What Rustcord can't do (billing, overlay, clip recording, Family Center linking) is a Discord-like empty state (`empty_state`) above the page's synced rows.
 //!
 //! Where options live: Discord's settings proto for synced ones (synced.rs, one table per page),
 //! REST lists (lists.rs: devices, authorized apps, consents), `config::Settings` for this
@@ -26,6 +25,7 @@ mod account;
 mod app;
 mod connections;
 mod cosmetics;
+mod games;
 mod keybinds;
 mod lists;
 pub mod local_profile;
@@ -35,12 +35,13 @@ mod synced;
 pub mod theme_editor;
 mod voice;
 
-pub(super) use app::frame;
+pub(super) use app::{frame, logic};
 pub(super) use keybinds::{Bind, shortcut};
 pub(super) use status::account_popout;
 pub use status::custom_status_modal;
 pub(super) use voice::restore as restore_voice;
 
+use super::icons::{self, Icon};
 use super::messages::Pal;
 use super::{UiCx, ViewState, hint, nav_heading, nav_item, page_title, section, settings_layer};
 use crate::backend::{AccountCommand, AccountOp, Command, NotificationPatch, OpKind};
@@ -177,7 +178,7 @@ impl Page {
                 "Reduced motion",
                 "Play animated avatars, emoji and GIFs",
             ],
-            Page::Windows => &["Open Rustcord when I sign in", "Start minimized", "Close button minimizes"],
+            Page::Windows => &["Open Rustcord when I sign in to Windows", "Start minimized", "Minimize to tray when I close the window"],
             Page::StreamerMode => &["Enable Streamer Mode", "Hide personal information", "Hide invite links", "Disable notifications", "Hide window from screen capture"],
             Page::Privacy => &["Send read receipts"],
             Page::Notifications => &["Desktop notifications", "Flash the taskbar"],
@@ -428,7 +429,7 @@ fn page(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         Page::AuthorizedApps => lists::authorized_apps(ui, cx),
         Page::FamilyCenter => empty_state(ui, cx, "👪", "Set up in the mobile app", "Linking a teen's account happens in the Discord mobile app.", None),
         Page::Billing => empty_state(ui, cx, "💳", "Managed on discord.com", "Nitro, boosts, subscriptions, gifts and payments.", Some("premium")),
-        Page::RegisteredGames => empty_state(ui, cx, "🎮", "No game detection", "Rustcord doesn't scan for running games.", None),
+        Page::RegisteredGames => games::show(ui, cx),
         Page::GameOverlay => empty_state(ui, cx, "🖥", "No in-game overlay", "An overlay needs code injected into games.", None),
         Page::Clips => empty_state(ui, cx, "🎬", "No clip recording", "Rustcord doesn't record clips. The switch below is about clips others record.", None),
         Page::LocalProfile => local_profile::show(ui, cx),
@@ -480,7 +481,7 @@ fn page(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
 /// shortcut: `section` follows the web client's `/settings/<section>` route; unverified per page.
 fn open_in_browser(ui: &mut egui::Ui, section: &str) {
     let url = format!("https://discord.com/settings/{section}");
-    let resp = ui.add(egui::Button::new("Open in browser  ↗").min_size(vec2(64.0, 32.0)));
+    let resp = super::messages::external_button(ui, "Open in browser");
     if resp.on_hover_text(&url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
@@ -494,7 +495,12 @@ fn empty_state(ui: &mut egui::Ui, cx: &UiCx<'_>, icon: &str, title: &str, text: 
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 48.0, pal.surface);
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::new(44.0, crate::theme::icon_family()), pal.muted);
+        match icons::from_glyph(icon) {
+            Some(i) => icons::paint(ui.painter(), i, egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(48.0)), pal.muted, pal.surface),
+            None => {
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::new(44.0, crate::theme::icon_family()), pal.muted);
+            }
+        }
         ui.add_space(16.0);
         ui.label(RichText::new(title).font(super::bold(pal.size + 4.0)).color(pal.text));
         ui.add_space(4.0);
@@ -688,12 +694,7 @@ fn primary_button(ui: &mut egui::Ui, theme: &Theme, text: &str, enabled: bool) -
 /// its tooltip, so the page needs no path text.
 fn folder_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, dir: &std::path::Path, what: &str) {
     let pal = Pal::new(cx.theme);
-    let resp = super::messages::icon_button(ui, &pal, "", &format!("{what}\n{}", dir.display()), 28.0, false, pal.text);
-    // Painted: the emoji font's 📂 is a thin tilted sketch at this size.
-    let color = if resp.hovered() || resp.has_focus() { pal.text } else { pal.muted };
-    let r = egui::Rect::from_center_size(resp.rect.center(), vec2(16.0, 12.0));
-    let tab = [r.left_top(), r.left_top() + vec2(6.0, 0.0), r.left_top() + vec2(8.0, 2.0), r.right_top() + vec2(0.0, 2.0), r.right_bottom(), r.left_bottom()];
-    ui.painter().add(egui::Shape::closed_line(tab.to_vec(), egui::Stroke::new(1.5, color)));
+    let resp = super::messages::vector_button(ui, &pal, Icon::Directory, &format!("{what}\n{}", dir.display()), 28.0, false, pal.text);
     if !resp.clicked() {
         return;
     }
@@ -715,28 +716,10 @@ fn bell_button(ui: &mut egui::Ui, pal: &Pal, muted: bool) -> egui::Response {
             ui.painter().rect_filled(rect, pal.radius, bg);
         }
         let color = if muted { pal.danger } else if hot { pal.text } else { pal.muted };
-        paint_bell(ui.painter(), rect.center(), color, bg, muted);
+        let bell = if muted { Icon::BellOff } else { Icon::Bell };
+        icons::paint(ui.painter(), bell, egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(20.0)), color, bg);
     }
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// A 20 px outline bell centred on `c` (the emoji font's 🔔 reads as a blob), crossed out while
-/// `muted`; `bg` cuts the cross line free of the outline. Also the thread panel's bell.
-pub(super) fn paint_bell(p: &egui::Painter, c: egui::Pos2, color: egui::Color32, bg: egui::Color32, muted: bool) {
-    let s = 20.0;
-    let stroke = egui::Stroke::new(1.6, color);
-    // Dome from the left over the top, the sides down to a flared rim, the clapper below.
-    let top = c - vec2(0.0, s * 0.08);
-    let r = s * 0.28;
-    let mut pts: Vec<egui::Pos2> = (0..=12).map(|i| top + r * egui::Vec2::angled(std::f32::consts::PI * (1.0 + i as f32 / 12.0))).collect();
-    pts.extend([c + vec2(r, s * 0.18), c + vec2(r + s * 0.1, s * 0.27), c + vec2(-r - s * 0.1, s * 0.27), c + vec2(-r, s * 0.18)]);
-    p.add(egui::Shape::closed_line(pts, stroke));
-    p.circle_filled(c + vec2(0.0, s * 0.37), s * 0.07, color);
-    if muted {
-        let ends = [c - vec2(s * 0.4, s * 0.4), c + vec2(s * 0.4, s * 0.4)];
-        p.line_segment(ends, egui::Stroke::new(4.0, bg));
-        p.line_segment(ends, stroke);
-    }
 }
 
 /// A pill switch (Discord's toggle): accent when on. `changed()` when clicked.
