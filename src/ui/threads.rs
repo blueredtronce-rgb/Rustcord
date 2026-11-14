@@ -100,42 +100,46 @@ pub fn sidebar_rows(ui: &mut egui::Ui, cx: &mut UiCx<'_>, parent: Id, threads: &
     for (i, &t) in threads.iter().enumerate() {
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
         let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
-        let x = row.left() + SPINE_X;
-        let y = row.center().y;
-        let p = ui.painter();
         // From under the parent's glyph (first row) or the previous row; on past the curve
         // only while more rows follow.
         let top = row.top() - gap - if i == 0 { 6.0 } else { 0.0 };
-        let last = i + 1 == threads.len();
-        p.line_segment([pos2(x, top), pos2(x, if last { y - 8.0 } else { row.bottom() })], spine);
-        p.add(QuadraticBezierShape::from_points_stroke([pos2(x, y - 8.0), pos2(x, y), pos2(x + 8.0, y)], false, Color32::TRANSPARENT, spine));
-        let body = Rect::from_min_max(pos2(x + 10.0, row.top()), pos2(row.right() - 8.0, row.bottom()));
         let selected = cx.state.selected_channel == Some(t) || cx.view.thread_panel == Some(t);
-        let muted = cx.state.is_channel_muted(t);
-        let unread = !selected && !muted && cx.state.is_unread(t);
-        let mentions = cx.state.mention_count(t);
-        if selected || resp.hovered() {
-            ui.painter().rect_filled(body, cx.theme.layout.corner_radius, if selected { selected_fill } else { hover_fill });
-        }
-        if unread {
-            let pill = Rect::from_min_size(pos2(row.left(), y - 4.0), vec2(4.0, 8.0));
-            ui.painter().rect_filled(pill, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, c.text.to_color32());
-        }
-        let mut right = body.right() - 8.0;
-        if mentions > 0 {
-            right -= super::sidebar::badge(ui, &c, pos2(right, y), mentions, None) + 6.0;
-        }
-        let color = if muted && !selected {
-            c.text_muted.to_color32().gamma_multiply(0.55)
-        } else if selected || unread || resp.hovered() {
-            c.text.to_color32()
-        } else {
-            c.text_muted.to_color32()
-        };
         let name = cx.state.channel_name(t);
-        let font = if unread { bold(size) } else { FontId::proportional(size) };
-        let g = one_line(ui, name.as_str(), font, color, right - body.left() - 8.0);
-        ui.painter().galley(pos2(body.left() + 8.0, y - g.size().y / 2.0), g, color);
+        // Out of view (the channel list isn't virtualized) the row keeps its widget but skips
+        // the paint, like `sidebar::channel_row`; the rect includes the spine above the row.
+        if ui.is_rect_visible(Rect::from_min_max(pos2(row.left(), top), row.max).expand(4.0)) {
+            let x = row.left() + SPINE_X;
+            let y = row.center().y;
+            let p = ui.painter();
+            let last = i + 1 == threads.len();
+            p.line_segment([pos2(x, top), pos2(x, if last { y - 8.0 } else { row.bottom() })], spine);
+            p.add(QuadraticBezierShape::from_points_stroke([pos2(x, y - 8.0), pos2(x, y), pos2(x + 8.0, y)], false, Color32::TRANSPARENT, spine));
+            let body = Rect::from_min_max(pos2(x + 10.0, row.top()), pos2(row.right() - 8.0, row.bottom()));
+            let muted = cx.state.is_channel_muted(t);
+            let unread = !selected && !muted && cx.state.is_unread(t);
+            let mentions = cx.state.mention_count(t);
+            if selected || resp.hovered() {
+                ui.painter().rect_filled(body, cx.theme.layout.corner_radius, if selected { selected_fill } else { hover_fill });
+            }
+            if unread {
+                let pill = Rect::from_min_size(pos2(row.left(), y - 4.0), vec2(4.0, 8.0));
+                ui.painter().rect_filled(pill, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, c.text.to_color32());
+            }
+            let mut right = body.right() - 8.0;
+            if mentions > 0 {
+                right -= super::sidebar::badge(ui, &c, pos2(right, y), mentions, None) + 6.0;
+            }
+            let color = if muted && !selected {
+                c.text_muted.to_color32().gamma_multiply(0.55)
+            } else if selected || unread || resp.hovered() {
+                c.text.to_color32()
+            } else {
+                c.text_muted.to_color32()
+            };
+            let font = if unread { bold(size) } else { FontId::proportional(size) };
+            let g = one_line(ui, name.as_str(), font, color, right - body.left() - 8.0);
+            ui.painter().galley(pos2(body.left() + 8.0, y - g.size().y / 2.0), g, color);
+        }
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
         resp.context_menu(|ui| thread_menu(ui, cx, t));
         if resp.clicked() {
