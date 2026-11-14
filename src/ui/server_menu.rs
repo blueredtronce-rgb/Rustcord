@@ -64,9 +64,9 @@ const BAN_DELETE: [(u32, &str); 7] = [
 ];
 /// Create channel: the kinds offered and what each is for (its one-line description).
 const KINDS: [(u8, &str, &str); 4] = [
-    (ct::GUILD_TEXT, "Text", "Messages, images, GIFs, emoji, opinions and puns"),
-    (ct::GUILD_VOICE, "Voice", "Talk together with voice, video and screen share"),
-    (ct::GUILD_FORUM, "Forum", "Organized discussions, one post per topic"),
+    (ct::GUILD_TEXT, "Text", "Messages, images and links in one channel"),
+    (ct::GUILD_VOICE, "Voice", "Talk live, with cameras and screen sharing"),
+    (ct::GUILD_FORUM, "Forum", "One post per topic, each with its own replies"),
     (ct::GUILD_ANNOUNCEMENT, "Announcement", "Updates that other servers can follow"),
 ];
 
