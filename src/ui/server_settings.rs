@@ -20,15 +20,15 @@
 //! OWNERSHIP: server engineer (docs/SOCIAL_UI_DESIGN.md).
 
 use super::icons::{self, Icon};
-use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, small_button, vector_icon};
+use super::messages::{Btn, MenuIcon, Pal, button, focus_ring, menu_item, menu_setup, paint_radio, vector_button, vector_icon};
 use super::server_menu::{self, choice, error_text, field_label, op_state, switch};
-use super::{UiCx, bold, hint, nav_heading, nav_item, one_line, page_title, rgb, section, settings_layer};
+use super::{UiCx, hint, nav_heading, nav_item, one_line, page_title, rgb, section, settings_layer};
 use crate::api::cdn;
 use crate::backend::{AccountCommand, AccountOp, ChannelPatch, ChatCommand, Command, GuildPatch, OpKind, RolePatch};
 use crate::model::{Id, Member, MemberListItem, Overwrite, Perms, Role as GuildRole, channel_type as ct, perm};
 use crate::state::AppState;
 use crate::state::account::{BansView, InvitesView, OpState};
-use egui::{Align2, Button, Color32, FontId, Rect, RichText, Sense, Stroke, TextEdit, UiBuilder, Vec2, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, TextEdit, UiBuilder, Vec2, pos2, vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -279,11 +279,11 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, page: Page) {
                 }
                 if cx.state.account_check(&AccountCommand::DeleteChannel { channel_id: c }).is_ok() {
                     ui.separator();
-                    delete = nav_item(ui, cx.theme, if category { "Delete Category" } else { "Delete Channel" }, false, true);
+                    delete = nav_item(ui, cx.theme, if category { "Delete category" } else { "Delete channel" }, false, true);
                 }
             }
             _ => {
-                for (heading, pages) in [(name.as_str(), &Page::SERVER), ("User Management", &Page::PEOPLE)] {
+                for (heading, pages) in [(name.as_str(), &Page::SERVER), ("User management", &Page::PEOPLE)] {
                     let shown: Vec<Page> = pages.iter().copied().filter(|p| p.allowed(cx.state, guild_id) || *p == page).collect();
                     if shown.is_empty() {
                         continue;
@@ -343,27 +343,36 @@ fn set<T: PartialEq>(draft: &mut Option<T>, saved: T, v: T) {
     *draft = (v != saved).then_some(v);
 }
 
-/// Label (wrapping, tooltip `tip`) left, on/off switch right, a hairline under it. Some(new
-/// value) when toggled.
+/// A setting row (§12): the label (ui 14/500) and `tip` as its muted description on the left,
+/// the switch on the right, a hairline under it. Some(new value) when toggled.
 fn switch_row(ui: &mut egui::Ui, pal: &Pal, label: &str, tip: &str, on: bool, enabled: bool) -> Option<bool> {
     let mut v = on;
-    let (_, sw) = egui::Sides::new().height(40.0).shrink_left().show(
-        ui,
-        |ui| {
-            let l = ui.add(egui::Label::new(RichText::new(label).color(pal.text)).wrap());
-            if !tip.is_empty() {
-                l.on_hover_text(tip);
-            }
-        },
-        |ui| ui.add_enabled(enabled, |ui: &mut egui::Ui| switch(ui, pal, &mut v)),
-    );
+    let changed = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(0, 12))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                let w = (ui.available_width() - 56.0).max(80.0);
+                ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(RichText::new(label).font(FontId::new(pal.ui(), crate::theme::medium_family())).color(pal.text)).wrap());
+                    if !tip.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(tip).size(pal.meta()).color(pal.muted)).wrap());
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| ui.add_enabled(enabled, |ui: &mut egui::Ui| switch(ui, pal, &mut v)).changed()).inner
+            })
+            .inner
+        })
+        .inner;
     hairline(ui, pal);
-    sw.changed().then_some(v)
+    changed.then_some(v)
 }
 
+/// The `rule` hairline between rows of one list.
 fn hairline(ui: &mut egui::Ui, pal: &Pal) {
     let r = ui.available_rect_before_wrap();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, pal.tk.rule));
     ui.add_space(1.0);
 }
 
@@ -380,17 +389,13 @@ fn save_bar(ui: &mut egui::Ui, cx: &UiCx<'_>, dirty: bool, why_not: Option<&str>
         return None;
     }
     let pal = Pal::new(cx.theme);
-    let accent_text = cx.theme.colors.accent_text.to_color32();
     let clip = ui.clip_rect();
     let col = ui.max_rect();
     let width = col.width().min(clip.width() - 20.0).max(200.0);
     let pos = pos2(col.left(), clip.bottom() - 20.0 - 52.0);
-    let frame = egui::Frame::new().fill(pal.surface).corner_radius(pal.card_radius()).stroke(Stroke::new(1.0, pal.line())).inner_margin(egui::Margin::symmetric(12, 10)).shadow(egui::Shadow {
-        offset: [0, 4],
-        blur: 16,
-        spread: 0,
-        color: Color32::from_black_alpha(60),
-    });
+    // A float (E2): `raised`, a `rule` edge, the popup shadow.
+    let shadow = ui.ctx().global_style().visuals.popup_shadow;
+    let frame = egui::Frame::new().fill(pal.tk.raised).corner_radius(pal.card_radius()).stroke(Stroke::new(1.0, pal.tk.rule)).inner_margin(egui::Margin::symmetric(12, 10)).shadow(shadow);
     egui::Area::new(ui.make_persistent_id("rc_save_bar"))
         .order(egui::Order::Middle)
         .fixed_pos(pos)
@@ -400,7 +405,7 @@ fn save_bar(ui: &mut egui::Ui, cx: &UiCx<'_>, dirty: bool, why_not: Option<&str>
                     ui.set_width(width - 24.0);
                     let (text, color) = match failed {
                         Some(e) => (e, pal.danger),
-                        None => ("Careful — you have unsaved changes!", pal.text),
+                        None => ("You have unsaved changes.", pal.text),
                     };
                     egui::Sides::new()
                         .height(32.0)
@@ -409,13 +414,12 @@ fn save_bar(ui: &mut egui::Ui, cx: &UiCx<'_>, dirty: bool, why_not: Option<&str>
                             ui,
                             |ui| ui.add(egui::Label::new(RichText::new(text).color(color)).truncate()).on_hover_text(text),
                             |ui| {
-                                let label = if pending { "Saving…" } else { "Save Changes" };
-                                let save = Button::new(RichText::new(label).color(accent_text)).fill(Color32::from_rgb(0x2d, 0x9b, 0x52)).min_size(vec2(110.0, 32.0));
-                                let mut r = ui.add_enabled(!pending && dirty && why_not.is_none(), save);
+                                let label = if pending { "Saving…" } else { "Save changes" };
+                                let mut r = button(ui, &pal, Btn::Primary, label, !pending && dirty && why_not.is_none());
                                 if let Some(w) = why_not {
                                     r = r.on_disabled_hover_text(w);
                                 }
-                                let reset = ui.add_enabled(!pending, Button::new(RichText::new("Reset").color(pal.text)).frame(false)).clicked();
+                                let reset = button(ui, &pal, Btn::Ghost, "Reset", !pending).clicked();
                                 if r.clicked() { Some(true) } else { reset.then_some(false) }
                             },
                         )
@@ -437,20 +441,43 @@ fn search_field(ui: &mut egui::Ui, text: &mut String, hint_text: &str) -> bool {
     resp.changed()
 }
 
+/// A list heading with its count right-aligned (meta, muted), as the member list groups do:
+/// "Roles" .... 12. No "Roles — 12".
+fn section_count(ui: &mut egui::Ui, theme: &crate::theme::Theme, title: &str, n: usize) {
+    // `section`'s spacing and type, plus the count at the row's right edge.
+    let pal = Pal::new(theme);
+    ui.add_space(32.0 - ui.spacing().item_spacing.y);
+    let head = ui.label(RichText::new(title).font(super::semibold(pal.heading())).color(pal.text)).rect;
+    ui.painter().text(pos2(ui.max_rect().right(), head.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::proportional(pal.meta()), pal.muted);
+}
+
 /// A muted line in the middle of an empty list.
 fn empty(ui: &mut egui::Ui, pal: &Pal, text: &str) {
     ui.add_space(24.0);
     ui.vertical_centered(|ui| ui.label(RichText::new(text).color(pal.muted)));
 }
 
+/// The page's one primary action (Create role, Upload emoji): `messages::button` `Primary`.
 fn accent_button(ui: &mut egui::Ui, theme: &crate::theme::Theme, label: &str, enabled: bool) -> egui::Response {
-    let b = Button::new(RichText::new(label).color(theme.colors.accent_text.to_color32())).fill(theme.colors.accent.to_color32()).min_size(vec2(0.0, 32.0));
-    ui.add_enabled(enabled, b)
+    button(ui, &Pal::new(theme), Btn::Primary, label, enabled)
 }
 
 fn danger_button(ui: &mut egui::Ui, pal: &Pal, label: &str, enabled: bool) -> egui::Response {
-    let b = Button::new(RichText::new(label).color(Color32::WHITE)).fill(pal.danger).min_size(vec2(0.0, 32.0));
-    ui.add_enabled(enabled, b)
+    button(ui, pal, Btn::Danger, label, enabled)
+}
+
+/// A radio row (§9): the 20 px radio, then the label (ui 14/500). Clicked = picked.
+fn radio_row(ui: &mut egui::Ui, pal: &Pal, label: &str, on: bool, enabled: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(360.0), 32.0), if enabled { Sense::click() } else { Sense::hover() });
+    let dot = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), Vec2::splat(20.0));
+    paint_radio(ui.painter(), pal, dot, on);
+    let color = if enabled { pal.text } else { pal.muted };
+    ui.painter().text(pos2(rect.left() + 32.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::new(pal.ui(), crate::theme::medium_family()), color);
+    if resp.has_focus() {
+        focus_ring(ui, pal, rect, f32::from(pal.radius));
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, on, label));
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 /// Roles highest first (rank: position, then the lower id higher); @everyone last.
@@ -477,7 +504,7 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let (saved_name, saved_notify) = (g.name.clone(), g.default_message_notifications);
     let icon_url = cdn::guild_icon_url(g, 160, false);
     let theme = &*cx.theme;
-    page_title(ui, theme, "Server Overview");
+    page_title(ui, theme, "Server overview");
     if let Err(why) = check {
         hint(ui, theme, why);
     }
@@ -487,7 +514,7 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(80.0), Sense::hover());
         match (&s.guild.icon, icon_url) {
             (Some(Some(_)), _) => {
-                ui.painter().circle_filled(rect.center(), 40.0, pal.accent.gamma_multiply(0.3));
+                ui.painter().circle_filled(rect.center(), 40.0, pal.tk.selected);
                 icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(rect.center(), Vec2::splat(28.0)), pal.text, Color32::TRANSPARENT);
             }
             (None, Some(url)) => {
@@ -503,12 +530,12 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         ui.vertical(|ui| {
             hint(ui, theme, "At least 512×512 recommended.");
             ui.horizontal(|ui| {
-                let picked = ui.add_enabled(can, Button::new("Upload Image")).clicked();
+                let picked = button(ui, &pal, Btn::Secondary, "Upload image", can).clicked();
                 if picked && let Some(path) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file() {
                     s.guild.icon = Some(Some(path));
                 }
                 let has = !matches!(s.guild.icon, Some(None)) && (s.guild.icon.is_some() || g.icon.is_some());
-                if has && ui.add_enabled(can, Button::new(RichText::new("Remove").color(pal.muted)).frame(false)).clicked() {
+                if has && button(ui, &pal, Btn::Ghost, "Remove", can).clicked() {
                     s.guild.icon = if g.icon.is_some() { Some(None) } else { None };
                 }
             });
@@ -517,12 +544,13 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
             }
         });
     });
-    field_label(ui, theme, "Server Name");
+    field_label(ui, theme, "Server name");
     text_field(ui, &mut s.guild.name, &saved_name, 100, 1, can);
-    section(ui, theme, "Default Notification Settings");
+    section(ui, theme, "Default notifications");
+    ui.add_space(8.0);
     let now = s.guild.default_message_notifications.unwrap_or(saved_notify);
-    for (v, label) in [(0, "All Messages"), (1, "Only @mentions")] {
-        if ui.add_enabled(can, egui::RadioButton::new(now == v, label)).clicked() {
+    for (v, label) in [(0, "All messages"), (1, "Only @mentions")] {
+        if radio_row(ui, &pal, label, now == v, can).clicked() {
             set(&mut s.guild.default_message_notifications, saved_notify, v);
         }
     }
@@ -540,13 +568,12 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     }
 }
 
-/// A server without an icon: the first letters of its words on its own colour (as in the
-/// server bar).
-fn paint_initials(ui: &egui::Ui, rect: Rect, guild_id: Id, name: &str, pal: &Pal) {
-    let (fill, fg) = super::images::initial_colors(guild_id.0, pal.dark);
-    ui.painter().circle_filled(rect.center(), rect.width() / 2.0, fill);
+/// A server without an icon: the first letters of its words in `text` 600 on `surface` (the
+/// server bar's neutral initials tiles, docs/DESIGN.md §10.1).
+fn paint_initials(ui: &egui::Ui, rect: Rect, _guild_id: Id, name: &str, pal: &Pal) {
+    ui.painter().circle_filled(rect.center(), rect.width() / 2.0, pal.surface);
     let text: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(3).collect();
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, bold(rect.height() * 0.36), fg);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, super::semibold(rect.height() * 0.32), pal.text);
 }
 
 /// Reset in the save bar: drafts and a failed save go.
@@ -596,10 +623,13 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     // @everyone: the Default Permissions card, over the search (as on the web).
     let (card, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
     let hot = resp.hovered() || resp.has_focus();
-    ui.painter().rect(card, pal.card_radius(), if hot { pal.tint() } else { pal.text.gamma_multiply(0.04) }, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
-    ui.painter().text(pos2(card.left() + 16.0, card.center().y - 9.0), Align2::LEFT_CENTER, "Default Permissions", bold(pal.size), pal.text);
-    ui.painter().text(pos2(card.left() + 16.0, card.center().y + 10.0), Align2::LEFT_CENTER, "@everyone · applies to all server members", FontId::proportional(pal.meta()), pal.muted);
-    icons::paint(ui.painter(), Icon::ChevronRight, Rect::from_center_size(pos2(card.right() - 18.0, card.center().y), Vec2::splat(20.0)), pal.muted, Color32::TRANSPARENT);
+    ui.painter().rect(card, pal.radius, if resp.hovered() { pal.tk.hover } else { Color32::TRANSPARENT }, Stroke::new(1.0, pal.tk.rule), egui::StrokeKind::Inside);
+    if resp.has_focus() {
+        focus_ring(ui, &pal, card, f32::from(pal.radius));
+    }
+    ui.painter().text(pos2(card.left() + 16.0, card.center().y - 9.0), Align2::LEFT_CENTER, "Default permissions", FontId::new(pal.ui(), crate::theme::medium_family()), pal.text);
+    ui.painter().text(pos2(card.left() + 16.0, card.center().y + 10.0), Align2::LEFT_CENTER, "@everyone: what every member of the server can do", FontId::proportional(pal.meta()), pal.muted);
+    icons::paint(ui.painter(), Icon::ChevronRight, Rect::from_center_size(pos2(card.right() - 18.0, card.center().y), Vec2::splat(20.0)), if hot { pal.text } else { pal.muted }, Color32::TRANSPARENT);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         acts.push(Act::Go(Page::Role(guild_id)));
     }
@@ -608,8 +638,8 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let can_create = state.account_check(&create);
     let creating = matches!(op_state(state, s.op), Some(OpState::Pending));
     ui.horizontal(|ui| {
-        search_field(ui, &mut s.filter, "Search Roles");
-        let mut b = accent_button(ui, theme, if creating { "Creating…" } else { "Create Role" }, can_create.is_ok() && !creating);
+        search_field(ui, &mut s.filter, "Search roles");
+        let mut b = accent_button(ui, theme, if creating { "Creating…" } else { "Create role" }, can_create.is_ok() && !creating);
         if let Err(w) = can_create {
             b = b.on_disabled_hover_text(w);
         }
@@ -621,7 +651,7 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         error_text(ui, theme, e);
     }
     let list: Vec<&GuildRole> = sorted_roles(&g.roles).into_iter().filter(|r| r.id != guild_id).collect();
-    section(ui, theme, &format!("Roles — {}", list.len()));
+    section_count(ui, theme, "Roles", list.len());
     let counts = role_counts(state, guild_id);
     let q = s.filter.trim().to_lowercase();
     let order: Vec<(Id, i32)> = list.iter().map(|r| (r.id, r.position)).collect();
@@ -634,14 +664,14 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         rows.push((r.id, row));
         let hot = resp.hovered() || resp.has_focus() || s.drag == Some(r.id);
         if hot {
-            ui.painter().rect_filled(row, pal.radius, pal.tint());
+            ui.painter().rect_filled(row, pal.radius, pal.tk.hover);
         }
         if movable && hot {
             icons::paint(ui.painter(), Icon::Grip, Rect::from_center_size(pos2(row.left() + 10.0, row.center().y), Vec2::splat(16.0)), pal.muted, Color32::TRANSPARENT);
         }
         // Shield-ish dot in the role colour.
         ui.painter().circle_filled(pos2(row.left() + 30.0, row.center().y), 6.0, role_color(r, &pal));
-        let name = one_line(ui, r.name.clone(), FontId::proportional(pal.size), pal.text, row.width() - 160.0);
+        let name = one_line(ui, r.name.clone(), FontId::new(pal.body(), crate::theme::medium_family()), pal.text, row.width() - 160.0);
         ui.painter().galley(pos2(row.left() + 46.0, row.center().y - name.size().y / 2.0), name, pal.text);
         if let Some(n) = counts.as_ref().map(|c| c.get(&r.id).copied().unwrap_or(0)) {
             let count = ui.painter().text(pos2(row.right() - 48.0, row.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::proportional(pal.meta()), pal.muted);
@@ -661,13 +691,13 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
             acts.push(Act::Go(Page::Role(r.id)));
         }
     }
-    // Drag reorder: the gap under the pointer gets an accent line; dropping sends the moved range.
+    // Drag reorder: the gap under the pointer gets a `focus` line; dropping sends the moved range.
     if let Some(dragged) = s.drag {
         let y = ui.ctx().pointer_interact_pos().map_or(f32::MAX, |p| p.y);
         let gap = rows.iter().position(|(_, r)| y < r.center().y).unwrap_or(rows.len());
         let line_y = rows.get(gap).map_or_else(|| rows.last().map_or(0.0, |(_, r)| r.bottom()), |(_, r)| r.top());
         if let Some((_, first)) = rows.first() {
-            ui.painter().hline(first.x_range(), line_y, Stroke::new(2.0, pal.accent));
+            ui.painter().hline(first.x_range(), line_y, Stroke::new(2.0, pal.tk.focus));
         }
         if !ui.input(|i| i.pointer.any_down()) {
             s.drag = None;
@@ -686,25 +716,25 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         }
     }
     if list.is_empty() {
-        empty(ui, &pal, "No roles yet");
+        empty(ui, &pal, "No roles yet. Create one to group members and their permissions.");
     }
     if let Some((role_id, name, resp)) = menu_for {
         egui::Popup::menu(&resp).show(|ui| {
             menu_setup(ui);
-            if menu_item(ui, "Edit Role", MenuIcon::Glyph("✏"), pal.text) {
+            if menu_item(ui, "Edit role", MenuIcon::Icon(Icon::Edit), pal.text) {
                 acts.push(Act::Go(Page::Role(role_id)));
             }
             let delete = AccountCommand::DeleteRole { guild_id, role_id };
-            if state.account_check(&delete).is_ok() && menu_item(ui, "Delete Role", MenuIcon::Glyph("🗑"), pal.danger) {
-                let body = format!("Are you sure you want to delete the role {name}? This cannot be undone.");
-                acts.push(Act::Ask { title: "Delete Role".into(), body, button: "Delete", then: delete, danger: true, watch: false });
+            if state.account_check(&delete).is_ok() && menu_item(ui, "Delete role", MenuIcon::Icon(Icon::Trash), pal.danger) {
+                let body = "Members lose it and its permissions. You can't undo this.".to_owned();
+                acts.push(Act::Ask { title: format!("Delete {name}?"), body, button: "Delete role", then: delete, danger: true, watch: false });
             }
             // Settings > Advanced > Developer Mode.
             let dev = cx.state.account.settings.developer_mode();
             if dev {
                 ui.separator();
             }
-            if dev && menu_item(ui, "Copy Role ID", MenuIcon::Glyph("🆔"), pal.text) {
+            if dev && menu_item(ui, "Copy role ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
                 ui.ctx().copy_text(role_id.0.to_string());
             }
         });
@@ -746,7 +776,7 @@ const V: u8 = 4;
 type PermRow = (u8, &'static str, &'static str, u8);
 const PERMS: &[(&str, &[PermRow])] = &[
     (
-        "General Server Permissions",
+        "General server permissions",
         &[
             (10, "View Channels", "See channels (and read them, with Read Message History)", G | T | V),
             (4, "Manage Channels", "Create, edit or delete channels", G | T | V),
@@ -759,7 +789,7 @@ const PERMS: &[(&str, &[PermRow])] = &[
         ],
     ),
     (
-        "Membership Permissions",
+        "Membership permissions",
         &[
             (0, "Create Invite", "Invite new people to this server", G | T | V),
             (26, "Change Nickname", "Change their own nickname", G),
@@ -770,7 +800,7 @@ const PERMS: &[(&str, &[PermRow])] = &[
         ],
     ),
     (
-        "Text Channel Permissions",
+        "Text channel permissions",
         &[
             (11, "Send Messages", "Send messages in text channels", G | T | V),
             (38, "Send Messages in Threads", "Send messages in threads", G | T),
@@ -793,7 +823,7 @@ const PERMS: &[(&str, &[PermRow])] = &[
         ],
     ),
     (
-        "Voice Channel Permissions",
+        "Voice channel permissions",
         &[
             (20, "Connect", "Join voice channels", G | V),
             (21, "Speak", "Talk in voice channels", G | V),
@@ -808,15 +838,15 @@ const PERMS: &[(&str, &[PermRow])] = &[
         ],
     ),
     (
-        "Apps Permissions",
+        "App permissions",
         &[
             (31, "Use Application Commands", "Use commands from apps", G | T | V),
             (39, "Use Activities", "Use activities in voice channels", G | V),
             (50, "Use External Apps", "Use apps that are not added to the server", G | T | V),
         ],
     ),
-    ("Events Permissions", &[(44, "Create Events", "Create server events", G | V), (33, "Manage Events", "Edit and cancel events", G | V)]),
-    ("Advanced Permissions", &[(3, "Administrator", "Every permission, and bypasses channel permissions. Grant with care!", G)]),
+    ("Event permissions", &[(44, "Create Events", "Create server events", G | V), (33, "Manage Events", "Edit and cancel events", G | V)]),
+    ("Advanced permissions", &[(3, "Administrator", "Every permission, and it overrides channel permissions. Give it with care.", G)]),
 ];
 
 fn role_editor(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, role_id: Id) {
@@ -841,24 +871,13 @@ fn role_editor(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, role_id: Id) 
     if back.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         acts.push(Act::Go(Page::Roles));
     }
-    page_title(ui, theme, &format!("Edit Role — {}", if everyone { "@everyone" } else { &role.name }));
+    page_title(ui, theme, &format!("Edit {}", if everyone { "@everyone" } else { &role.name }));
     if let Err(why) = check {
         hint(ui, theme, why);
     }
     if !everyone {
-        ui.horizontal(|ui| {
-            for (perms, label) in [(false, "Display"), (true, "Permissions")] {
-                let on = s.perms_tab == perms;
-                let r = ui.add(Button::new(RichText::new(label).color(if on { pal.text } else { pal.muted })).frame(false));
-                if on {
-                    ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 2.0, Stroke::new(2.0, pal.accent));
-                }
-                if r.clicked() {
-                    s.perms_tab = perms;
-                }
-            }
-        });
-        hairline(ui, &pal);
+        // Display | Permissions: the shared segmented control (§9), never an accent underline.
+        ui.allocate_ui(vec2(ui.available_width().min(320.0), 36.0), |ui| crate::ui::login::segmented(ui, theme, &mut s.perms_tab, &[(false, "Display"), (true, "Permissions")]));
     }
     if everyone || s.perms_tab {
         let bits = s.role.permissions.unwrap_or(role.permissions.0);
@@ -873,9 +892,9 @@ fn role_editor(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, role_id: Id) 
             }
         }
     } else {
-        field_label(ui, theme, "Role Name");
+        field_label(ui, theme, "Role name");
         text_field(ui, &mut s.role.name, &role.name, 100, 1, can);
-        field_label(ui, theme, "Role Color");
+        field_label(ui, theme, "Role colour");
         let color = s.role.color.unwrap_or(role.color);
         ui.add_enabled_ui(can, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -901,14 +920,14 @@ fn role_editor(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, role_id: Id) 
             set(&mut s.role.hoist, role.hoist, v);
         }
         let mention = s.role.mentionable.unwrap_or(role.mentionable);
-        if let Some(v) = switch_row(ui, &pal, "Allow anyone to @mention this role", "Members without Mention @everyone can ping it too", mention, can) {
+        if let Some(v) = switch_row(ui, &pal, "Allow anyone to @mention this role", "Members without the Mention @everyone permission can ping it too.", mention, can) {
             set(&mut s.role.mentionable, role.mentionable, v);
         }
         ui.add_space(16.0);
         let delete = AccountCommand::DeleteRole { guild_id, role_id };
-        if state.account_check(&delete).is_ok() && danger_button(ui, &pal, "Delete Role", true).clicked() {
-            let body = format!("Are you sure you want to delete the role {}? This cannot be undone.", role.name);
-            acts.push(Act::Ask { title: "Delete Role".into(), body, button: "Delete", then: delete, danger: true, watch: false });
+        if state.account_check(&delete).is_ok() && danger_button(ui, &pal, "Delete role", true).clicked() {
+            let body = "Members lose it and its permissions. You can't undo this.".to_owned();
+            acts.push(Act::Ask { title: format!("Delete {}?", role.name), body, button: "Delete role", then: delete, danger: true, watch: false });
         }
     }
     let dirty = s.role != RolePatch::default();
@@ -972,9 +991,9 @@ fn emoji(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let s = &mut cx.view.server_settings_ui;
     let mut acts = Vec::new();
     page_title(ui, theme, "Emoji");
-    hint(ui, theme, "PNG, JPG, GIF or WebP · resized to 128×128 · names: 2-32 letters, numbers or _");
+    hint(ui, theme, "PNG, JPG, GIF or WebP, resized to 128×128. Names have 2-32 letters, numbers or _.");
     ui.add_space(8.0);
-    let mut b = accent_button(ui, theme, "Upload Emoji", upload_check.is_ok() && s.emoji.is_none());
+    let mut b = accent_button(ui, theme, "Upload emoji", upload_check.is_ok() && s.emoji.is_none());
     if let Err(why) = upload_check {
         b = b.on_disabled_hover_text(why);
     }
@@ -991,9 +1010,9 @@ fn emoji(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
                 let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 ui.add(egui::Label::new(RichText::new(file).color(pal.muted)).truncate());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    cancel = icon_button(ui, &pal, "×", "Cancel", 24.0, false, pal.text).clicked() && !busy;
+                    cancel = vector_button(ui, &pal, Icon::Close, "Cancel", 24.0, false, pal.text).clicked() && !busy;
                     let ok = valid_emoji_name(name) && !busy;
-                    if accent_button(ui, theme, if busy { "Uploading…" } else { "Upload" }, ok).clicked() {
+                    if button(ui, &pal, Btn::Secondary, if busy { "Uploading…" } else { "Upload" }, ok).clicked() {
                         acts.push(Act::Save(AccountCommand::UploadEmoji { guild_id, name: name.clone(), path: path.clone() }));
                     }
                     ui.add_enabled(!busy, TextEdit::singleline(name).char_limit(32).prefix(":").suffix(":").desired_width(180.0));
@@ -1010,34 +1029,33 @@ fn emoji(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let slots = [50, 100, 150, 250][usize::from(g.premium_tier.min(3))];
     for animated in [false, true] {
         let list: Vec<_> = g.emojis.iter().filter(|e| e.animated == animated).collect();
-        section(ui, theme, &format!("{} — {} slots available", if animated { "Animated Emoji" } else { "Emoji" }, slots - list.len().min(slots)));
-        if list.is_empty() {
-            hint(ui, theme, "None yet");
-        }
+        section(ui, theme, if animated { "Animated emoji" } else { "Emoji" });
+        hint(ui, theme, &format!("{} of {slots} slots free", slots - list.len().min(slots)));
+        ui.add_space(4.0);
         for e in list {
             let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
             if !ui.is_rect_visible(row) {
                 continue;
             }
             if resp.hovered() {
-                ui.painter().rect_filled(row, pal.radius, pal.tint());
+                ui.painter().rect_filled(row, pal.radius, pal.tk.hover);
             }
             let icon = Rect::from_center_size(pos2(row.left() + 24.0, row.center().y), Vec2::splat(32.0));
             match images.get(ui.ctx(), &cdn::emoji_url(e.id, false, EMOJI_PX), EMOJI_PX, false) {
                 Some(t) => egui::Image::from_texture(t).maintain_aspect_ratio(true).fit_to_exact_size(icon.size()).paint_at(ui, icon),
                 None => {
-                    ui.painter().rect_filled(icon, 6, pal.tint());
+                    ui.painter().rect_filled(icon, (pal.radius / 2).max(2), pal.tk.hover);
                 }
             }
             let name = one_line(ui, format!(":{}:", e.name), FontId::proportional(pal.size), pal.text, row.width() - 120.0);
             ui.painter().galley(pos2(row.left() + 56.0, row.center().y - name.size().y / 2.0), name, pal.text);
             if can_delete && resp.hovered() {
                 let x = Rect::from_center_size(pos2(row.right() - 20.0, row.center().y), Vec2::splat(24.0));
-                let clicked = ui.scope_builder(UiBuilder::new().max_rect(x), |ui| icon_button(ui, &pal, "×", "Delete", 24.0, false, pal.danger)).inner.clicked();
+                let clicked = ui.scope_builder(UiBuilder::new().max_rect(x), |ui| vector_button(ui, &pal, Icon::Trash, "Delete emoji", 24.0, false, pal.danger)).inner.clicked();
                 if clicked {
                     let then = AccountCommand::DeleteEmoji { guild_id, emoji_id: e.id };
-                    let body = format!("Delete :{}:? It disappears from every message that uses it. This cannot be undone.", e.name);
-                    acts.push(Act::Ask { title: "Delete Emoji".into(), body, button: "Delete", then, danger: true, watch: false });
+                    let body = "It disappears from every message that uses it. You can't undo this.".to_owned();
+                    acts.push(Act::Ask { title: format!("Delete :{}:?", e.name), body, button: "Delete emoji", then, danger: true, watch: false });
                 }
             }
             hairline(ui, &pal);
@@ -1059,7 +1077,7 @@ fn member_of(state: &AppState, guild_id: Id, user_id: Id) -> Option<&Member> {
 
 fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let pal = Pal::new(cx.theme);
-    page_title(ui, cx.theme, "Server Members");
+    page_title(ui, cx.theme, "Server members");
     let s = &mut cx.view.server_settings_ui;
     let changed = search_field(ui, &mut s.filter, "Search by name or ID");
     let q = s.filter.trim().to_lowercase();
@@ -1087,7 +1105,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let total = state.member_lists.get(&guild_id).map_or(0, |l| l.member_count as usize);
     match if q.is_empty() { total.max(ids.len()) } else { ids.len() } {
         0 if q.is_empty() => section(ui, cx.theme, "Members"),
-        n => section(ui, cx.theme, &format!("{n} Members")),
+        n => section_count(ui, cx.theme, "Members", n),
     }
     if ids.is_empty() {
         empty(ui, &pal, if q.is_empty() { "Search to find members." } else { "No members found." });
@@ -1108,7 +1126,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         // My own member object carries no user.
         let Some(u) = m.user.as_ref().or_else(|| state.users.get(&uid)).or(state.me.as_ref().filter(|me| me.id == uid)) else { continue };
         if resp.hovered() {
-            ui.painter().rect_filled(row, pal.radius, pal.tint());
+            ui.painter().rect_filled(row, pal.radius, pal.tk.hover);
         }
         let name = state.member_display_name(Some(guild_id), u, Some(m));
         let avatar = Rect::from_center_size(pos2(row.left() + 24.0, row.center().y), Vec2::splat(32.0));
@@ -1116,7 +1134,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         super::sidebar::user_avatar_at(ui, images, &url, avatar, false, 1.0, (uid, &name));
         let color = state.role_color(guild_id, &m.roles).map_or(pal.text, rgb);
         let name_w = (row.width() * 0.4).max(120.0);
-        let n = one_line(ui, name.clone(), bold(pal.size), color, name_w);
+        let n = one_line(ui, name.clone(), FontId::new(pal.body(), crate::theme::medium_family()), color, name_w);
         ui.painter().galley(pos2(row.left() + 52.0, row.center().y - n.size().y), n, color);
         let un = one_line(ui, format!("@{}", u.username), FontId::proportional(pal.meta()), pal.muted, name_w);
         ui.painter().galley(pos2(row.left() + 52.0, row.center().y + 1.0), un, pal.muted);
@@ -1133,7 +1151,8 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
                 break;
             }
             let pill = Rect::from_min_size(pos2(x, row.center().y - 11.0), vec2(w, 22.0));
-            ui.painter().rect_filled(pill, 11.0, pal.text.gamma_multiply(0.08));
+            // A role chip (§9): chip radius, neutral fill, the role's colour dot.
+            ui.painter().rect_filled(pill, (pal.radius / 2).max(2), pal.tk.hover);
             ui.painter().circle_filled(pos2(pill.left() + 11.0, pill.center().y), 4.5, role_color(r, &pal));
             ui.painter().galley(pos2(pill.left() + 20.0, pill.center().y - label.size().y / 2.0), label, pal.text);
             x += w + 4.0;
@@ -1142,7 +1161,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         ui.scope_builder(UiBuilder::new().max_rect(buttons).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             // The full list (`assignable_roles`) is built only while its popup is open.
             let can_roles = manage_roles && (me == Some(uid) || state.outranks(guild_id, uid, &m.roles));
-            let plus = ui.add_enabled_ui(can_roles, |ui| icon_button(ui, &pal, "+", "Roles", 28.0, false, pal.text)).inner;
+            let plus = ui.add_enabled_ui(can_roles, |ui| vector_button(ui, &pal, Icon::Plus, "Roles", 28.0, false, pal.text)).inner;
             if plus.clicked() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&plus)) {
                 roles_for = Some((uid, plus));
             }
@@ -1168,7 +1187,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     if let Some((uid, resp)) = menu_for {
         egui::Popup::menu(&resp).show(|ui| {
             menu_setup(ui);
-            if menu_item(ui, "Profile", MenuIcon::Glyph("👤"), pal.text) {
+            if menu_item(ui, "Profile", MenuIcon::Icon(Icon::Person), pal.text) {
                 cx.view.open_profile(uid, Some(guild_id), resp.rect.left_bottom());
             }
             server_menu::member_menu_items(ui, cx, guild_id, uid);
@@ -1177,7 +1196,7 @@ fn members(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
             if dev {
                 ui.separator();
             }
-            if dev && menu_item(ui, "Copy User ID", MenuIcon::Glyph("🆔"), pal.text) {
+            if dev && menu_item(ui, "Copy user ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
                 ui.ctx().copy_text(uid.0.to_string());
             }
         });
@@ -1240,8 +1259,8 @@ fn invites(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     let w = ui.available_width();
     let cols = [0.0, w * 0.42, w * 0.66, w * 0.8];
     let (head, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-    for (x, label) in cols.iter().zip(["Inviter", "Invite Code", "Uses", "Expires"]) {
-        ui.painter().text(pos2(head.left() + x, head.center().y), Align2::LEFT_CENTER, label.to_uppercase(), bold(pal.meta() - 1.0), pal.muted);
+    for (x, label) in cols.iter().zip(["Inviter", "Invite code", "Uses", "Expires"]) {
+        ui.painter().text(pos2(head.left() + x, head.center().y), Align2::LEFT_CENTER, label, super::semibold(pal.label()), pal.muted);
     }
     hairline(ui, &pal);
     if v.loading && v.invites.is_empty() {
@@ -1251,7 +1270,7 @@ fn invites(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         error_text(ui, theme, e);
     }
     if !v.loading && v.error.is_none() && v.invites.is_empty() {
-        empty(ui, &pal, "No invites yet.");
+        empty(ui, &pal, "No invites yet. Invite people from the server menu.");
     }
     let now = chrono::Utc::now().timestamp();
     for inv in &v.invites {
@@ -1260,7 +1279,7 @@ fn invites(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
             continue;
         }
         if resp.hovered() {
-            ui.painter().rect_filled(row, pal.radius, pal.tint());
+            ui.painter().rect_filled(row, pal.radius, pal.tk.hover);
         }
         if let Some(u) = &inv.inviter {
             let r = Rect::from_center_size(pos2(row.left() + 16.0, row.center().y), Vec2::splat(24.0));
@@ -1281,10 +1300,10 @@ fn invites(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         }
         if resp.hovered() {
             let x = Rect::from_center_size(pos2(row.right() - 16.0, row.center().y), Vec2::splat(24.0));
-            if ui.scope_builder(UiBuilder::new().max_rect(x), |ui| icon_button(ui, &pal, "×", "Revoke Invite", 24.0, false, pal.danger)).inner.clicked() {
+            if ui.scope_builder(UiBuilder::new().max_rect(x), |ui| vector_button(ui, &pal, Icon::Close, "Revoke invite", 24.0, false, pal.danger)).inner.clicked() {
                 let then = AccountCommand::DeleteInvite { code: inv.code.clone() };
-                let body = format!("Are you sure you want to revoke {shown}? Nobody can join with it afterwards.");
-                acts.push(Act::Ask { title: "Revoke Invite".into(), body, button: "Revoke", then, danger: true, watch: true });
+                let body = "Nobody can join with it afterwards.".to_owned();
+                acts.push(Act::Ask { title: format!("Revoke {shown}?"), body, button: "Revoke invite", then, danger: true, watch: true });
             }
         }
         hairline(ui, &pal);
@@ -1330,25 +1349,25 @@ fn bans(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
         let hot = resp.hovered() || resp.has_focus();
         if hot {
-            ui.painter().rect_filled(row, pal.radius, pal.tint());
+            ui.painter().rect_filled(row, pal.radius, pal.tk.hover);
         }
         let u = &b.user;
         let r = Rect::from_center_size(pos2(row.left() + 24.0, row.center().y), Vec2::splat(32.0));
         let url = super::images::user_avatar_url(None, u, None, 64, false);
         super::sidebar::user_avatar_at(ui, images, &url, r, false, 1.0, (u.id, u.display_name()));
-        let n = one_line(ui, u.display_name(), bold(pal.size), pal.text, row.width() - 200.0);
+        let n = one_line(ui, u.display_name(), FontId::new(pal.body(), crate::theme::medium_family()), pal.text, row.width() - 200.0);
         ui.painter().galley(pos2(row.left() + 52.0, row.center().y - n.size().y), n, pal.text);
         let un = one_line(ui, format!("@{}", u.username), FontId::proportional(pal.meta()), pal.muted, row.width() - 200.0);
         ui.painter().galley(pos2(row.left() + 52.0, row.center().y + 1.0), un, pal.muted);
         if hot && can_unban {
-            ui.painter().text(pos2(row.right() - 12.0, row.center().y), Align2::RIGHT_CENTER, "Revoke Ban", FontId::proportional(pal.meta()), pal.danger);
+            ui.painter().text(pos2(row.right() - 12.0, row.center().y), Align2::RIGHT_CENTER, "Revoke ban", FontId::new(pal.ui(), crate::theme::medium_family()), pal.danger);
         }
         let resp = resp.on_hover_text(b.reason.as_deref().unwrap_or("No reason given"));
         if can_unban && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             let reason = b.reason.as_deref().unwrap_or("No reason given.");
-            let body = format!("Reason: {reason}\n\nRevoke the ban of @{}? They can rejoin with an invite.", u.username);
+            let body = format!("They can rejoin with an invite. Ban reason: {reason}");
             let then = AccountCommand::Unban { guild_id, user_id: u.id };
-            acts.push(Act::Ask { title: format!("'{}'", u.display_name()), body, button: "Revoke Ban", then, danger: false, watch: false });
+            acts.push(Act::Ask { title: format!("Revoke the ban of @{}?", u.username), body, button: "Revoke ban", then, danger: false, watch: false });
         }
         hairline(ui, &pal);
     }
@@ -1356,11 +1375,11 @@ fn bans(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     if v.loading {
         ui.add(egui::Spinner::new().size(20.0).color(pal.muted));
     } else if hits.is_empty() && v.error.is_none() {
-        empty(ui, &pal, if q.is_empty() { "No bans. Peaceful." } else { "No bans match." });
+        empty(ui, &pal, if q.is_empty() { "Nobody is banned from this server." } else { "No bans match. Try another name or ID." });
     }
     if let Some(after) = v.next_after() {
         ui.add_space(8.0);
-        if small_button(ui, &pal, "Load More", pal.text).clicked() {
+        if button(ui, &pal, Btn::Secondary, "Load more", true).clicked() {
             acts.push(Act::MoreBans(after));
         }
     }
@@ -1414,14 +1433,14 @@ fn channel_overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel_
         hint(ui, theme, why);
     }
     let saved_name = ch.name.clone().unwrap_or_default();
-    field_label(ui, theme, if category { "Category Name" } else { "Channel Name" });
+    field_label(ui, theme, if category { "Category name" } else { "Channel name" });
     text_field(ui, &mut s.channel.name, &saved_name, 100, 1, can);
     if text_like && let Some(n) = s.channel.name.take() {
         // Shown as Discord stores them: lowercase, dashes.
         set(&mut s.channel.name, saved_name.clone(), n.to_lowercase().replace(' ', "-"));
     }
     if text_like {
-        field_label(ui, theme, "Channel Topic");
+        field_label(ui, theme, "Channel topic");
         let limit = if matches!(ch.kind, ct::GUILD_FORUM | ct::GUILD_MEDIA) { 4096 } else { 1024 };
         text_field(ui, &mut s.channel.topic, ch.topic.as_deref().unwrap_or(""), limit, 3, can);
     }
@@ -1437,14 +1456,14 @@ fn channel_overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel_
         ui.add_space(12.0);
         hairline(ui, &pal);
         let nsfw = s.channel.nsfw.unwrap_or(ch.nsfw);
-        if let Some(v) = switch_row(ui, &pal, "Age-Restricted Channel", "Members must confirm they are of age to view it", nsfw, can) {
+        if let Some(v) = switch_row(ui, &pal, "Age-restricted channel", "Members confirm they are of age before they can view it.", nsfw, can) {
             set(&mut s.channel.nsfw, ch.nsfw, v);
         }
         field_label(ui, theme, "Category");
         let mut cats: Vec<_> = state.channels.values().filter(|c| c.guild_id == Some(guild_id) && c.kind == ct::GUILD_CATEGORY).collect();
         cats.sort_by_key(|c| (c.position, c.id));
         let parent = s.channel.parent_id.unwrap_or(ch.parent_id);
-        let name_of = |p: Option<Id>| p.map_or_else(|| "No Category".to_owned(), |p| state.channel_name(p));
+        let name_of = |p: Option<Id>| p.map_or_else(|| "No category".to_owned(), |p| state.channel_name(p));
         ui.add_enabled_ui(can, |ui| {
             egui::ComboBox::from_id_salt("rc_channel_parent").selected_text(name_of(parent)).width(ui.available_width().min(400.0)).show_ui(ui, |ui| {
                 for p in std::iter::once(None).chain(cats.iter().map(|c| Some(c.id))) {
@@ -1467,24 +1486,28 @@ fn channel_overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, channel_
     apply(cx, guild_id, acts);
 }
 
-/// Deny / inherit / allow as three joined 28×24 buttons. Some(new) when clicked.
+/// Deny / inherit / allow as three joined 28×24 buttons (a 1 px `edge` around them; the picked
+/// one filled: `danger_fill` deny, `selected` inherit, `positive_fill` allow; the tooltip says
+/// which). Some(new) when clicked.
 fn tristate(ui: &mut egui::Ui, pal: &Pal, value: i8) -> Option<i8> {
-    let green = Color32::from_rgb(0x2d, 0x9b, 0x52);
     let (rect, resp) = ui.allocate_exact_size(vec2(84.0, 24.0), Sense::hover());
-    ui.painter().rect_stroke(rect, 4, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
+    let r = (pal.radius / 2).max(2);
+    ui.painter().rect_stroke(rect, r, Stroke::new(1.0, pal.tk.edge), egui::StrokeKind::Inside);
     let mut out = None;
-    for (i, (v, color, tip)) in [(-1i8, pal.danger, "Deny"), (0, pal.muted, "Inherit"), (1, green, "Allow")].into_iter().enumerate() {
+    for (i, (v, color, tip)) in [(-1i8, pal.danger, "Deny"), (0, pal.muted, "Inherit"), (1, pal.tk.positive_text, "Allow")].into_iter().enumerate() {
         let r = Rect::from_min_size(rect.min + vec2(28.0 * i as f32, 0.0), vec2(28.0, 24.0));
         let b = ui.interact(r, resp.id.with(i), Sense::click());
         let on = value == v;
         let fill = match (on, v) {
-            (true, 0) => pal.text.gamma_multiply(0.18),
-            (true, _) => color,
-            (false, _) if b.hovered() && ui.is_enabled() => pal.tint(),
+            (true, 0) => pal.tk.selected,
+            (true, -1) => pal.tk.danger_fill,
+            (true, _) => pal.tk.positive_fill,
+            (false, _) if b.hovered() && ui.is_enabled() => pal.tk.hover,
             _ => Color32::TRANSPARENT,
         };
         ui.painter().rect_filled(r.shrink(1.0), 3, fill);
-        let fg = if on && v != 0 { Color32::WHITE } else if ui.is_enabled() { color } else { color.gamma_multiply(0.4) };
+        let on_label = if v == -1 { pal.tk.danger_label } else { pal.tk.positive_label };
+        let fg = if on && v != 0 { on_label } else if ui.is_enabled() { color } else { color.gamma_multiply(0.4) };
         // Painted: the fonts lack a matching ✕.
         let (c, st) = (r.center(), Stroke::new(1.6, fg));
         match v {
@@ -1522,7 +1545,7 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
     let manage = state.account_check(&AccountCommand::DeletePermissionOverwrite { channel_id, target_id: guild_id });
     let s = &mut cx.view.server_settings_ui;
     let mut acts = Vec::new();
-    page_title(ui, theme, "Channel Permissions");
+    page_title(ui, theme, "Channel permissions");
     if let Err(why) = manage {
         hint(ui, theme, why);
     }
@@ -1545,9 +1568,9 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
         sorted_roles(&g.roles).into_iter().filter(|r| r.id != guild_id && !targets.iter().any(|t| t.0 == r.id)).map(|r| (r.id, r.name.clone(), role_color(r, &pal))).collect();
     let list = |ui: &mut egui::Ui, s: &mut ServerSettingsUi| {
         ui.horizontal(|ui| {
-            field_label(ui, theme, "Roles / Members");
+            field_label(ui, theme, "Roles and members");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let plus = ui.add_enabled_ui(manage.is_ok() && !addable.is_empty(), |ui| icon_button(ui, &pal, "+", "Add a role", 24.0, false, pal.text)).inner;
+                let plus = ui.add_enabled_ui(manage.is_ok() && !addable.is_empty(), |ui| vector_button(ui, &pal, Icon::Plus, "Add a role", 24.0, false, pal.text)).inner;
                 egui::Popup::menu(&plus).show(|ui| {
                     menu_setup(ui);
                     for (id, name, color) in &addable {
@@ -1561,10 +1584,10 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
         for (id, k, name, color) in &targets {
             let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             let selected = *id == target;
-            let fill = if selected { pal.text.gamma_multiply(0.14) } else if resp.hovered() { pal.tint() } else { Color32::TRANSPARENT };
+            let fill = if selected { pal.tk.selected } else if resp.hovered() { pal.tk.hover } else { Color32::TRANSPARENT };
             ui.painter().rect_filled(row, pal.radius, fill);
             ui.painter().circle_filled(pos2(row.left() + 14.0, row.center().y), 5.0, *color);
-            let label = one_line(ui, name.clone(), FontId::proportional(pal.size), pal.text, row.width() - 34.0);
+            let label = one_line(ui, name.clone(), FontId::new(pal.ui(), crate::theme::medium_family()), pal.text, row.width() - 34.0);
             ui.painter().galley(pos2(row.left() + 26.0, row.center().y - label.size().y / 2.0), label, pal.text);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !selected {
                 (s.target, s.overwrite) = (Some((*id, *k)), None);
@@ -1573,7 +1596,7 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
     };
     let mut rows = |ui: &mut egui::Ui, s: &mut ServerSettingsUi| {
         if target != guild_id && existing.is_some() {
-            let remove = ui.add_enabled(manage.is_ok(), Button::new(RichText::new("Remove").color(pal.danger)).frame(false));
+            let remove = button(ui, &pal, Btn::Ghost, "Remove overrides", manage.is_ok());
             if remove.on_hover_text("Remove this role's or member's overrides").clicked() {
                 acts.push(Act::Save(AccountCommand::DeletePermissionOverwrite { channel_id, target_id: target }));
             }
@@ -1583,7 +1606,7 @@ fn channel_permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, chann
             if shown.is_empty() {
                 continue;
             }
-            section(ui, theme, &title.replace("Server", "Channel"));
+            section(ui, theme, &title.replace("server", "channel"));
             for &&(bit, name, tip, _) in &shown {
                 let b = 1u64 << bit;
                 let label = match bit {
