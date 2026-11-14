@@ -16,7 +16,7 @@
 use super::account::{ImageKind, image_data_uri};
 use super::{ApiClient, ApiError, net_err};
 use crate::backend::{ChannelPatch, ChannelPosition, GuildPatch, NotificationPatch, RolePatch};
-use crate::model::{Ban, Id, Invite, Overwrite};
+use crate::model::{Ban, GuildProfile, Id, Invite, MemberVerification, Overwrite};
 use base64::Engine as _;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Method, StatusCode, Url};
@@ -333,6 +333,44 @@ impl ApiClient {
         json_of(self.send_admin(Method::GET, url, None, &[]).await?).await
     }
 
+    // ----- server tag card (docs/GUILD_CARD_NOTES.md). Each call follows a click on the card.
+
+    /// `GET /guilds/{g}/profile`; 403 / 404 (a private or unknown server) -> `Ok(None)`.
+    pub async fn guild_profile(&self, guild_id: Id) -> Result<Option<GuildProfile>, ApiError> {
+        let url = Self::url(&["guilds", &guild_id.to_string(), "profile"]);
+        match self.send_coded(Method::GET, url, None, &[]).await {
+            Ok(resp) => json_of(resp).await.map(Some),
+            Err(e) => private_profile(e),
+        }
+    }
+
+    /// `PUT /guilds/{g}/members/@me?lurker=false {}` (discoverable servers): 200 with the guild,
+    /// or 204 when I am in it already. A captcha answer -> "join it in the official app".
+    // shortcut: no `X-Context-Properties` / discovery ids (like `accept_invite`); add them if
+    // Discord asks for captchas more often without them.
+    pub async fn join_guild(&self, guild_id: Id) -> Result<(), ApiError> {
+        let mut url = Self::url(&["guilds", &guild_id.to_string(), "members", "@me"]);
+        url.query_pairs_mut().append_pair("lurker", "false");
+        self.send_coded(Method::PUT, url, Some(json!({})), &[]).await.map(drop).map_err(join_readable)
+    }
+
+    /// `GET /guilds/{g}/member-verification` (rules and application questions, `with_guild`
+    /// left out = false).
+    pub async fn member_verification(&self, guild_id: Id) -> Result<MemberVerification, ApiError> {
+        let url = Self::url(&["guilds", &guild_id.to_string(), "member-verification"]);
+        json_of(self.send_coded(Method::GET, url, None, &[]).await.map_err(join_readable)?).await
+    }
+
+    /// `PUT /guilds/{g}/requests/@me {"version","form_fields"}` (every field as received plus its
+    /// `response`) -> the join request's `application_status` (`APPROVED` at once for a
+    /// rules-only form, else `SUBMITTED`).
+    pub async fn submit_join_request(&self, guild_id: Id, version: Option<String>, form_fields: Vec<Value>) -> Result<String, ApiError> {
+        let url = Self::url(&["guilds", &guild_id.to_string(), "requests", "@me"]);
+        let body = json!({ "version": version, "form_fields": form_fields });
+        let w: JoinRequestWire = json_of(self.send_coded(Method::PUT, url, Some(body), &[]).await.map_err(join_readable)?).await?;
+        Ok(w.application_status)
+    }
+
     // ----- notification settings (§3.10). USER_GUILD_SETTINGS_UPDATE carries the result.
 
     /// `PATCH /users/@me/guilds/{g|@me}/settings` with only the set fields: `muted`,
@@ -375,6 +413,35 @@ fn readable((err, code): (ApiError, Option<u64>)) -> ApiError {
         _ => return err,
     };
     local(text)
+}
+
+/// A guild profile Discord won't show (403: not discoverable, not public; 404 / 10004: gone) is
+/// the card's private state, not an error.
+fn private_profile(e: (ApiError, Option<u64>)) -> Result<Option<GuildProfile>, ApiError> {
+    match e {
+        (ApiError::Forbidden(_) | ApiError::NotFound, _) | (_, Some(10004)) => Ok(None),
+        e => Err(readable(e)),
+    }
+}
+
+/// Joins and join requests in plain words: a 400 without a code is a captcha (never solved),
+/// 403 an invite-only server, 404 / 10004 a server that is gone; the rest as `readable`.
+// UNCONFIRMED: the codes for a full server, an age gate and the join-request cooldown; they keep
+// Discord's own message.
+fn join_readable(e: (ApiError, Option<u64>)) -> ApiError {
+    match e {
+        (ApiError::Http { status: 400, .. }, None) => local("Discord wants a captcha before you join. Join this server in the official app."),
+        (ApiError::Forbidden(_), _) => local("This server only takes new members by invite."),
+        (ApiError::NotFound, _) | (_, Some(10004)) => local("This server isn't available."),
+        e => readable(e),
+    }
+}
+
+/// `PUT /guilds/{g}/requests/@me` answer (a partial join request).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct JoinRequestWire {
+    application_status: String,
 }
 
 /// `readable`, and 404 means the invite is gone.
@@ -676,6 +743,33 @@ mod tests {
         assert_eq!(e(50035), "raw", "field errors keep Discord's text");
         assert_eq!(invite_readable((ApiError::NotFound, None)).to_string(), INVALID_INVITE);
         assert!(matches!(readable((ApiError::NotFound, None)), ApiError::NotFound));
+    }
+
+    #[test]
+    fn guild_profiles_and_join_answers() {
+        // An invented profile with every key of the documented shape.
+        let p: GuildProfile = serde_json::from_str(
+            r##"{"id":"55","name":"Crab Club","icon_hash":"b47f","member_count":1284,"online_count":312,
+            "description":"Small, fast tools.","brand_color_primary":"#3d6f8e","banner_hash":"x",
+            "game_application_ids":["1"],"game_activity":{"1":{"activity_level":1,"activity_score":45}},
+            "tag":"CRAB","badge":6,"badge_color_primary":"#32a070","badge_color_secondary":"#57b59e","badge_hash":"6082",
+            "traits":[{"emoji_id":null,"emoji_name":"🦀","emoji_animated":false,"label":"Rust","position":0}],
+            "features":["COMMUNITY","DISCOVERABLE"],"visibility":3,"custom_banner_hash":null,
+            "premium_subscription_count":13,"premium_tier":2}"##,
+        )
+        .unwrap();
+        assert_eq!((p.id, p.name.as_str(), p.member_count, p.online_count, p.visibility, p.premium_tier), (Id(55), "Crab Club", 1284, 312, 3, 2));
+        assert_eq!((p.tag.as_deref(), p.badge_hash.as_deref(), p.traits[0].label.as_str(), p.features.len()), (Some("CRAB"), Some("6082"), "Rust", 2));
+        let p: GuildProfile = serde_json::from_str(r#"{"id":"55","name":null,"traits":null,"features":null,"member_count":null}"#).unwrap();
+        assert!(p.name.is_empty() && p.traits.is_empty() && p.member_count == 0);
+        assert!(matches!(private_profile((ApiError::Forbidden("Missing Access".into()), Some(50001))), Ok(None)));
+        assert!(matches!(private_profile((ApiError::NotFound, None)), Ok(None)));
+        assert!(matches!(private_profile((ApiError::Network("x".into()), None)), Err(ApiError::Network(_))));
+        let j = |e| join_readable(e).to_string();
+        assert!(j((ApiError::Http { status: 400, message: "captcha".into() }, None)).contains("official app"));
+        assert!(j((ApiError::Forbidden(String::new()), Some(50001))).contains("invite"));
+        assert_eq!(j((ApiError::NotFound, None)), "This server isn't available.");
+        assert!(j((ApiError::Http { status: 400, message: "raw".into() }, Some(30001))).contains("server limit"));
     }
 
     #[test]

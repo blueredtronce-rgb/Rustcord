@@ -179,9 +179,8 @@ pub fn show(ctx: &egui::Context, cx: &mut UiCx<'_>, user_id: Id, guild_id: Optio
                             ui.label(RichText::new(p).color(pal.muted));
                         }
                         if let Some(pg) = cosmetics::guild_tag(&user, member.as_ref()) {
-                            let (r, resp) = ui.allocate_exact_size(vec2(cosmetics::tag_chip_width(ui, pg, pal.size), ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
-                            cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
-                            resp.on_hover_text(cosmetics::tag_tooltip(cx.state, pg));
+                            let h = ui.text_style_height(&egui::TextStyle::Body);
+                            cosmetics::tag_button(ui, cx, pg, pal.size, h, pal.text);
                         }
                     });
                     cosmetics::badge_row(ui, cx.images, &pal, &badges);
@@ -454,7 +453,11 @@ fn send_note(cx: &mut UiCx<'_>, user_id: Id, text: &str) {
 /// game collection (`DEMO_GAMES`). Their images come from the image cache offline (seed it with
 /// the URLs `api::cdn` builds for them).
 fn demo_profile(cx: &mut UiCx<'_>, user_id: Id, guild_id: Option<Id>) {
-    if !sidebar::nav_demo("profile") || cx.state.profile(user_id, guild_id).is_some() {
+    if !sidebar::nav_demo("profile") {
+        return;
+    }
+    super::guild_card::demo(cx, user_id);
+    if cx.state.profile(user_id, guild_id).is_some() {
         return;
     }
     let Some(user) = cx.state.users.get(&user_id).cloned() else { return };

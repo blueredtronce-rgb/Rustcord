@@ -14,6 +14,7 @@ pub mod cosmetics;
 pub mod dm_call;
 pub mod forum;
 pub mod friends;
+pub mod guild_card;
 pub mod icons;
 pub mod images;
 pub mod inbox;
@@ -1419,7 +1420,8 @@ pub fn hint(ui: &mut egui::Ui, theme: &Theme, text: &str) {
 /// Test hook `RUSTCORD_OPEN=modal:<name>`: create-thread / new-post (the open channel), profile
 /// (the lowest cached user id other than me and the open guild's owner), group-dm, create-channel / create-category / invite (the open
 /// guild / channel), join-server, kick / ban (that user in the open guild), custom-status, privacy
-/// (the open guild's Privacy Settings).
+/// (the open guild's Privacy Settings), apply / apply-rules (the join form for the open guild with
+/// sample questions / only its rules).
 fn demo_modal(state: &AppState, name: &str) -> Option<Modal> {
     let (ch, g) = (state.selected_channel, state.selected_guild);
     let me = state.me.as_ref().map(|u| u.id);
@@ -1436,6 +1438,8 @@ fn demo_modal(state: &AppState, name: &str) -> Option<Modal> {
         "kick" | "ban" => Modal::Moderate { guild_id: g?, user_id: user()?, ban: name == "ban" },
         "custom-status" => Modal::CustomStatus,
         "privacy" => Modal::PrivacySettings { guild_id: g? },
+        // Sample questions instead of a fetch (`server_menu::demo_verification`).
+        "apply" | "apply-rules" => Modal::JoinApplication { guild_id: g? },
         _ => return None,
     })
 }

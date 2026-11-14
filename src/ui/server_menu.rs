@@ -95,6 +95,8 @@ pub struct ServerMenuUi {
     op: Option<AccountOp>,
     /// Member menu ▸ Change Nickname: (member, draft).
     nick: Option<(Id, String)>,
+    /// Apply to join: one answer per form field (`filled`).
+    apply: Vec<Answer>,
 }
 
 impl Default for ServerMenuUi {
@@ -113,6 +115,7 @@ impl Default for ServerMenuUi {
             delete_secs: 0,
             op: None,
             nick: None,
+            apply: Vec::new(),
         }
     }
 }
@@ -1320,6 +1323,281 @@ fn stat(ui: &mut egui::Ui, pal: &Pal, dot: Color32, text: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
     ui.painter().circle_filled(r.center(), 4.0, dot);
     ui.label(RichText::new(text).size(pal.meta()).color(pal.muted));
+}
+
+// ---------------------------------------------------------------------------
+// Apply to join / accept the rules (docs/GUILD_CARD_NOTES.md)
+// ---------------------------------------------------------------------------
+
+/// One answer of the join form, by field (`ServerMenuUi::apply`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    Terms(bool),
+    Text(String),
+    Choice(Option<usize>),
+}
+
+/// Character limits of the two text field kinds.
+fn text_limit(kind: &str) -> usize {
+    if kind == "PARAGRAPH" { 1000 } else { 150 }
+}
+
+fn field_kind(f: &serde_json::Value) -> &str {
+    f.get("field_type").and_then(serde_json::Value::as_str).unwrap_or_default()
+}
+
+/// The form fields to send: each field object as received plus its `response` (TERMS `true`,
+/// text trimmed and cut to its limit, MULTIPLE_CHOICE the choice's index). None while a
+/// required field is unanswered or a field is of a kind Rustcord can't show.
+// UNCONFIRMED: an unanswered optional field is sent with `"response": null`.
+pub(super) fn filled(fields: &[serde_json::Value], answers: &[Answer]) -> Option<Vec<serde_json::Value>> {
+    use serde_json::{Value, json};
+    fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let required = f.get("required").and_then(Value::as_bool).unwrap_or(false);
+            let choices = f.get("choices").and_then(Value::as_array).map_or(0, Vec::len);
+            let kind = field_kind(f);
+            let response = match (kind, answers.get(i)) {
+                ("TERMS", Some(Answer::Terms(true))) => json!(true),
+                ("TEXT_INPUT" | "PARAGRAPH", Some(Answer::Text(t))) if !t.trim().is_empty() => json!(t.trim().chars().take(text_limit(kind)).collect::<String>()),
+                ("MULTIPLE_CHOICE", Some(Answer::Choice(Some(c)))) if *c < choices => json!(c),
+                ("TERMS" | "TEXT_INPUT" | "PARAGRAPH" | "MULTIPLE_CHOICE", _) if !required => Value::Null,
+                _ => return None,
+            };
+            let mut f = f.clone();
+            f.as_object_mut()?.insert("response".into(), response);
+            Some(f)
+        })
+        .collect()
+}
+
+/// "Apply to join" on a tag card, or the rules after a join: the form, asked for as it opens.
+pub(super) fn open_application(cx: &mut UiCx<'_>, guild_id: Id) {
+    cx.state.account.verification = None;
+    open(cx, Modal::JoinApplication { guild_id });
+}
+
+/// `Modal::JoinApplication`: the server's rules (a checkbox) and questions, then Submit
+/// application (`SubmitJoinRequest`); a rules-only form is "Accept the rules of …". The
+/// questions are fetched once as it opens (`FetchMemberVerification`); closing forgets them.
+pub fn join_application_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id) {
+    let name = (cx.state.guild_profile(guild_id).map(|p| p.name.clone()).filter(|n| !n.is_empty()))
+        .or_else(|| cx.state.guild(guild_id).map(|g| g.name.clone()))
+        .unwrap_or_else(|| "this server".into());
+    if cx.state.account.verification.as_ref().is_none_or(|(g, _)| *g != guild_id) {
+        let demo = demo_verification();
+        cx.state.account.verification = Some((guild_id, demo.clone().map(Ok)));
+        if demo.is_none() {
+            cx.cmd.send(Command::Account(AccountCommand::FetchMemberVerification { guild_id }));
+        }
+    }
+    let status = op_state(cx.state, cx.view.server_menu_ui.op).cloned();
+    let rules_only = |v: &crate::model::MemberVerification| !v.form_fields.is_empty() && v.form_fields.iter().all(|f| field_kind(f) == "TERMS");
+    if let Some(OpState::Done(joined)) = status {
+        let rules = matches!(&cx.state.account.verification, Some((_, Some(Ok(v)))) if rules_only(v));
+        let text = match joined {
+            Some(_) if rules => format!("You can now talk in {name}."),
+            Some(_) => format!("You joined {name}."),
+            None => format!("Application sent to {name}."),
+        };
+        cx.view.toast(text, false);
+        // The tag card keeps showing "Application sent" (its `ops` entry stays).
+        cx.view.server_menu_ui.op = None;
+        cx.state.account.verification = None;
+        return close(cx);
+    }
+    let busy = matches!(status, Some(OpState::Pending));
+    let pal = Pal::new(cx.theme);
+    let theme = &*cx.theme;
+    let loaded = match &cx.state.account.verification {
+        Some((_, Some(r))) => Some(r.clone()),
+        _ => None,
+    };
+    let m = &mut cx.view.server_menu_ui;
+    if let Some(Ok(v)) = &loaded
+        && m.apply.len() != v.form_fields.len()
+    {
+        m.apply = v.form_fields.iter().map(|f| match field_kind(f) {
+            "TERMS" => Answer::Terms(false),
+            "MULTIPLE_CHOICE" => Answer::Choice(None),
+            _ => Answer::Text(String::new()),
+        }).collect();
+    }
+    let rules = matches!(&loaded, Some(Ok(v)) if rules_only(v));
+    let title = if rules { format!("Accept the rules of {name}") } else { format!("Apply to join {name}") };
+    let mut retry = false;
+    let resp = dialog(ctx, theme, "rc_join_application", 520.0, &title, |ui| {
+        match &loaded {
+            None => {
+                ui.label(RichText::new("Loading the questions…").size(pal.meta()).color(pal.muted));
+                None
+            }
+            Some(Err(_)) => {
+                error_text(ui, theme, "Couldn't load the questions. Check your connection, then try again.");
+                retry = button(ui, &pal, Btn::Secondary, "Try again", true).clicked();
+                dialog_buttons(ui, theme, "Submit application", false, false)
+            }
+            Some(Ok(v)) => {
+                let about = v.description.as_deref().map(str::trim).filter(|d| !d.is_empty());
+                match about {
+                    Some(d) => dialog_text(ui, theme, d),
+                    None if !rules => dialog_text(ui, theme, "The server's moderators read every application."),
+                    None => {}
+                }
+                let mut unknown = false;
+                for (i, f) in v.form_fields.iter().enumerate() {
+                    unknown |= !form_field(ui, &pal, theme, f, &mut m.apply[i], !busy, i);
+                }
+                if unknown {
+                    error_text(ui, theme, "This server asks something Rustcord can't show yet. Apply in the official app.");
+                }
+                if let Some(OpState::Failed(e)) = &status {
+                    error_text(ui, theme, e);
+                }
+                let ready = filled(&v.form_fields, &m.apply).is_some();
+                let action = if busy { "Sending…" } else if rules { "Accept rules" } else { "Submit application" };
+                dialog_buttons(ui, theme, action, false, ready && !busy)
+            }
+        }
+    });
+    if retry {
+        cx.state.account.verification = None;
+    }
+    match resp.inner {
+        Some(true) => {
+            if let Some(Ok(v)) = loaded
+                && let Some(form_fields) = filled(&v.form_fields, &cx.view.server_menu_ui.apply)
+            {
+                send_tracked(cx, AccountCommand::SubmitJoinRequest { guild_id, version: v.version, form_fields });
+            }
+        }
+        Some(false) if !busy => {
+            cx.state.account.verification = None;
+            close(cx);
+        }
+        None if resp.should_close() && !busy => {
+            cx.state.account.verification = None;
+            close(cx);
+        }
+        _ => {}
+    }
+}
+
+/// One field of the join form; false = a kind Rustcord can't show.
+fn form_field(ui: &mut egui::Ui, pal: &Pal, theme: &crate::theme::Theme, f: &serde_json::Value, answer: &mut Answer, enabled: bool, i: usize) -> bool {
+    use serde_json::Value;
+    let text = |key: &str| f.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let required = f.get("required").and_then(Value::as_bool).unwrap_or(false);
+    let kind = field_kind(f);
+    let label = text("label");
+    let heading = |ui: &mut egui::Ui, label: &str| {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(label).font(super::semibold(pal.label())).color(pal.text));
+            if !required {
+                ui.label(RichText::new("Optional").size(pal.meta()).color(pal.muted));
+            }
+        });
+    };
+    match (kind, answer) {
+        ("TERMS", Answer::Terms(on)) => {
+            heading(ui, "Server rules");
+            let rules: Vec<&str> = f.get("values").and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            for (n, rule) in rules.iter().enumerate() {
+                ui.add(egui::Label::new(RichText::new(format!("{}. {rule}", n + 1)).size(pal.ui()).color(pal.text)).wrap());
+            }
+            check_row(ui, pal, "I've read and agree to the rules", on, enabled);
+        }
+        ("TEXT_INPUT" | "PARAGRAPH", Answer::Text(t)) => {
+            heading(ui, &label);
+            let limit = text_limit(kind);
+            let edit = if kind == "PARAGRAPH" { TextEdit::multiline(t).desired_rows(4) } else { TextEdit::singleline(t) };
+            let hint = text("placeholder");
+            ui.add_enabled(enabled, edit.char_limit(limit).hint_text(hint).desired_width(f32::INFINITY));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.label(RichText::new(format!("{}/{limit}", t.chars().count())).size(pal.meta()).color(pal.muted));
+            });
+        }
+        ("MULTIPLE_CHOICE", Answer::Choice(pick)) => {
+            heading(ui, &label);
+            let choices: Vec<&str> = f.get("choices").and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            for (c, choice) in choices.iter().enumerate() {
+                if radio_row(ui, pal, choice, *pick == Some(c), enabled, (i, c)) {
+                    *pick = Some(c);
+                }
+            }
+        }
+        _ => {
+            if !label.is_empty() {
+                field_label(ui, theme, &label);
+            }
+            return false;
+        }
+    }
+    true
+}
+
+/// A §9 checkbox row (20 px box, label ui 14).
+fn check_row(ui: &mut egui::Ui, pal: &Pal, label: &str, on: &mut bool, enabled: bool) {
+    let font = egui::FontId::proportional(pal.ui());
+    let w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), pal.text).size().x;
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0 + w, 32.0), if enabled { Sense::click() } else { Sense::hover() });
+    if enabled && resp.clicked() {
+        *on = !*on;
+    }
+    let radius = f32::from((pal.radius / 2).max(2));
+    let check = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), Vec2::splat(20.0));
+    super::messages::paint_checkbox(ui.painter(), &pal.tk, check, *on, radius);
+    ui.painter().text(pos2(check.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, label, font, if enabled { pal.text } else { pal.muted });
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, pal, rect, radius);
+    }
+    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, *on, label));
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+}
+
+/// A 32 px radio row (§9: the radio left of its label). True when picked.
+fn radio_row(ui: &mut egui::Ui, pal: &Pal, label: &str, on: bool, enabled: bool, salt: (usize, usize)) -> bool {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+    let resp = ui.interact(rect, ui.make_persistent_id(("rc_apply_choice", salt)), if enabled { Sense::click() } else { Sense::hover() });
+    if resp.hovered() && enabled {
+        ui.painter().rect_filled(rect, pal.radius, pal.tk.hover);
+    }
+    paint_radio(ui.painter(), pal, Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(20.0)), on);
+    let g = one_line(ui, label, egui::FontId::proportional(pal.ui()), pal.text, rect.width() - 44.0);
+    ui.painter().galley(pos2(rect.left() + 36.0, rect.center().y - g.size().y / 2.0), g, pal.text);
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, pal, rect.shrink(2.0), f32::from(pal.radius));
+    }
+    resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, enabled, on, label));
+    enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Test hook `RUSTCORD_OPEN=modal:apply` / `modal:apply-rules`: sample questions (rules, a
+/// line, a paragraph, a choice) / only the rules, instead of a fetch.
+fn demo_verification() -> Option<crate::model::MemberVerification> {
+    let open = std::env::var("RUSTCORD_OPEN").unwrap_or_default();
+    let has = |n: &str| open.split(',').any(|s| s.trim() == n);
+    let rules_only = has("modal:apply-rules");
+    if !rules_only && !has("modal:apply") {
+        return None;
+    }
+    let terms = serde_json::json!({"field_type":"TERMS","label":"Read and agree to the server rules","values":["Be kind to each other.","No spam or self-promotion.","Keep it about building things."],"required":true,"description":null,"automations":null});
+    let mut form_fields = vec![terms];
+    if !rules_only {
+        form_fields.extend([
+            serde_json::json!({"field_type":"TEXT_INPUT","label":"What do you build with Rust?","placeholder":"A game, a CLI, a chat client…","required":true,"description":null,"automations":null}),
+            serde_json::json!({"field_type":"PARAGRAPH","label":"Anything else we should know?","required":false,"description":null,"automations":null}),
+            serde_json::json!({"field_type":"MULTIPLE_CHOICE","label":"How did you find us?","choices":["A friend","Server discovery","Somewhere else"],"required":true,"description":null,"automations":null}),
+        ]);
+    }
+    let description = (!rules_only).then(|| "Tell us a bit about you. A moderator reads every application.".to_owned());
+    Some(crate::model::MemberVerification { version: Some("2026-11-01T12:00:00+00:00".into()), description, form_fields })
 }
 
 /// `Modal::Moderate`: kick or ban with a reason (ban: delete-messages preset). The dialog is

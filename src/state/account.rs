@@ -25,6 +25,12 @@ const MAX_OPS: usize = 32;
 pub const INVITE_CACHE: usize = 64;
 /// A resolved invite (or its error) is shown without refetching for this long.
 pub const INVITE_TTL: Duration = Duration::from_secs(600);
+/// Server tag cards' profiles kept (the oldest goes).
+pub const GUILD_PROFILE_CACHE: usize = 16;
+/// A loaded server profile (or "private") is shown without refetching for this long…
+pub const GUILD_PROFILE_TTL: Duration = Duration::from_secs(600);
+/// …a failed one is asked again after this.
+const GUILD_PROFILE_RETRY: Duration = Duration::from_secs(30);
 /// `GET /guilds/{g}/bans` page size (the API maximum).
 pub const BAN_PAGE: usize = 1000;
 /// Bans one view holds; paging stops there.
@@ -77,6 +83,28 @@ pub struct AccountState {
     pub backup_codes: Option<Vec<crate::api::account::BackupCode>>,
     /// View Backup Codes step 1's nonces, until the UI takes them.
     pub codes_nonce: Option<crate::api::account::CodesNonce>,
+    /// Server tag cards (`request_guild_profile`), least recently asked first (≤
+    /// `GUILD_PROFILE_CACHE`).
+    pub guild_profiles: VecDeque<GuildProfileEntry>,
+    /// The apply / rules form's questions: (guild, None while loading). Set it and send
+    /// `FetchMemberVerification` when the form opens; clear it when it closes.
+    pub verification: Option<(Id, Option<Result<MemberVerification, String>>)>,
+    /// A server just joined from its tag card that wants new members to accept its rules (its
+    /// cached profile has MEMBER_VERIFICATION_GATE_ENABLED): the UI opens the rules form.
+    // shortcut: read from the profile, not the join answer's `show_verification_form`; pass that
+    // flag through `Done` if a server without the feature ever asks.
+    pub verify_after_join: Option<Id>,
+}
+
+/// A server profile for the tag card (like `InvitePreview`).
+#[derive(Debug)]
+pub struct GuildProfileEntry {
+    pub guild_id: Id,
+    /// When the last request went out.
+    pub fetched: Instant,
+    pub loading: bool,
+    /// The last answer (`Ok(None)`: the server keeps it private); None = never answered.
+    pub result: Option<Result<Option<Box<GuildProfile>>, String>>,
 }
 
 /// What the settings proto says; defaults until READY's arrives.
@@ -308,10 +336,16 @@ impl AppState {
             }
             E::Done { op, result } => {
                 if let Ok(Some(id)) = result
-                    && matches!(op.kind, OpKind::CreateGuild | OpKind::AcceptInvite | OpKind::CreateChannel)
+                    && matches!(op.kind, OpKind::CreateGuild | OpKind::AcceptInvite | OpKind::CreateChannel | OpKind::JoinGuild | OpKind::SubmitJoinRequest)
                 {
                     self.account.select_on_create = Some(id);
                     self.on_account_created(id);
+                }
+                if let Ok(Some(id)) = result
+                    && op.kind == OpKind::JoinGuild
+                    && self.guild_profile(id).is_some_and(|p| p.features.iter().any(|f| f == "MEMBER_VERIFICATION_GATE_ENABLED"))
+                {
+                    self.account.verify_after_join = Some(id);
                 }
                 // My profile's effect / frame / theme changed: reload it when next shown.
                 if op.kind == OpKind::UpdateCosmetics && result.is_ok() {
@@ -330,6 +364,18 @@ impl AppState {
             E::InviteResolved { code, result } => {
                 if let Some(p) = self.account.invite_previews.iter_mut().find(|p| p.code == code) {
                     (p.loading, p.result) = (false, Some(result));
+                }
+            }
+            E::GuildProfileLoaded { guild_id, result } => {
+                if let Some(p) = self.account.guild_profiles.iter_mut().find(|p| p.guild_id == guild_id) {
+                    (p.loading, p.result) = (false, Some(result.map(|o| o.map(Box::new))));
+                }
+            }
+            E::VerificationLoaded { guild_id, result } => {
+                if let Some((g, v)) = self.account.verification.as_mut()
+                    && *g == guild_id
+                {
+                    *v = Some(result);
                 }
             }
             E::BansLoaded { guild_id, after, result } => {
@@ -383,6 +429,37 @@ impl AppState {
 
     pub fn invite_preview(&self, code: &str) -> Option<&InvitePreview> {
         self.account.invite_previews.iter().find(|p| p.code == code)
+    }
+
+    /// Call when a server tag card opens (a click). Returns whether to send `FetchGuildProfile`
+    /// now: not cached within `GUILD_PROFILE_TTL` (an error: 30 s), not loading. Marks it most
+    /// recently used.
+    pub fn request_guild_profile(&mut self, guild_id: Id, now: Instant) -> bool {
+        let p = &mut self.account.guild_profiles;
+        let mut e = match p.iter().position(|e| e.guild_id == guild_id) {
+            Some(i) => p.remove(i).expect("index from position"),
+            None => GuildProfileEntry { guild_id, fetched: now, loading: false, result: None },
+        };
+        let ttl = if matches!(e.result, Some(Err(_))) { GUILD_PROFILE_RETRY } else { GUILD_PROFILE_TTL };
+        let fetch = !e.loading && (e.result.is_none() || now.saturating_duration_since(e.fetched) >= ttl);
+        if fetch {
+            (e.loading, e.fetched) = (true, now);
+        }
+        if p.len() >= GUILD_PROFILE_CACHE {
+            p.pop_front();
+        }
+        p.push_back(e);
+        fetch
+    }
+
+    /// The tag card's entry for `guild_id`, if it was ever asked for.
+    pub fn guild_profile_entry(&self, guild_id: Id) -> Option<&GuildProfileEntry> {
+        self.account.guild_profiles.iter().find(|p| p.guild_id == guild_id)
+    }
+
+    /// The loaded (public) profile of `guild_id`.
+    pub fn guild_profile(&self, guild_id: Id) -> Option<&GuildProfile> {
+        self.guild_profile_entry(guild_id)?.result.as_ref()?.as_ref().ok()?.as_deref()
     }
 
     /// The server bar: guilds outside the saved list first (just joined; newest first), then the
@@ -789,6 +866,42 @@ mod tests {
             s.request_invite(&format!("c{i}"), t0);
         }
         assert_eq!(s.account.invite_previews.len(), INVITE_CACHE);
+    }
+
+    #[test]
+    fn guild_profiles_are_cached_bounded_and_open_after_a_join() {
+        let mut s = state(&[]);
+        let t0 = Instant::now();
+        assert!(s.request_guild_profile(G1, t0));
+        assert!(!s.request_guild_profile(G1, t0), "already loading");
+        s.apply_account(AccountEvent::GuildProfileLoaded { guild_id: G1, result: Err("Not connected".into()) });
+        assert!(!s.request_guild_profile(G1, t0 + Duration::from_secs(10)));
+        assert!(s.request_guild_profile(G1, t0 + GUILD_PROFILE_RETRY), "an error is asked again soon");
+        let p = GuildProfile { id: G1, features: vec!["MEMBER_VERIFICATION_GATE_ENABLED".into()], ..Default::default() };
+        s.apply_account(AccountEvent::GuildProfileLoaded { guild_id: G1, result: Ok(Some(p)) });
+        assert!(!s.request_guild_profile(G1, t0 + Duration::from_secs(300)), "cached");
+        assert!(s.guild_profile(G1).is_some());
+        // Joining it: opened once GUILD_CREATE comes, and its rules form asked for.
+        let join = AccountCommand::JoinGuild { guild_id: G1 }.op();
+        assert!(s.account.begin(join));
+        s.apply_account(AccountEvent::Done { op: join, result: Ok(Some(G1)) });
+        assert_eq!((s.account.ops[&join].clone(), s.account.verify_after_join), (OpState::Done(Some(G1)), Some(G1)));
+        s.apply_gateway(GatewayEvent::GuildCreate(Box::new(Guild { id: G1, ..Default::default() })), None);
+        assert_eq!(s.selected_guild, Some(G1));
+        // A private one; the cache keeps the newest 16.
+        s.request_guild_profile(G2, t0);
+        s.apply_account(AccountEvent::GuildProfileLoaded { guild_id: G2, result: Ok(None) });
+        assert!(s.guild_profile(G2).is_none() && matches!(s.guild_profile_entry(G2).unwrap().result, Some(Ok(None))));
+        for i in 0..GUILD_PROFILE_CACHE as u64 * 2 {
+            s.request_guild_profile(Id(1000 + i), t0);
+        }
+        assert_eq!(s.account.guild_profiles.len(), GUILD_PROFILE_CACHE);
+        // The form's answer only lands while it waits for that server.
+        s.account.verification = Some((G2, None));
+        s.apply_account(AccountEvent::VerificationLoaded { guild_id: G3, result: Err("x".into()) });
+        assert!(matches!(s.account.verification, Some((G2, None))));
+        s.apply_account(AccountEvent::VerificationLoaded { guild_id: G2, result: Ok(MemberVerification::default()) });
+        assert!(matches!(s.account.verification, Some((G2, Some(Ok(_))))));
     }
 
     #[test]

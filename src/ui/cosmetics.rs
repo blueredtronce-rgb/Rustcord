@@ -55,12 +55,40 @@ pub fn guild_tag<'a>(user: &'a User, member: Option<&Member>) -> Option<&'a Prim
     (shown && member.is_none_or(|m| m.flags & QUARANTINED == 0)).then_some(pg)
 }
 
-/// "Server tag", with the guild's name when I am in it (chip tooltip).
-pub fn tag_tooltip(state: &crate::state::AppState, pg: &PrimaryGuild) -> String {
+/// The chip's tooltip and accessible name: "View {server}" when I am in it, else "View server".
+fn tag_tooltip(state: &crate::state::AppState, pg: &PrimaryGuild) -> String {
     match pg.identity_guild_id.and_then(|g| state.guild(g)) {
-        Some(g) => format!("Server Tag · {}", g.name),
-        None => "Server tag".into(),
+        Some(g) => format!("View {}", g.name),
+        None => "View server".into(),
     }
+}
+
+/// The guild tag chip as a button (author line, profile card, full profile): `tag_chip` in a
+/// `row_h` tall slot with its tooltip, pointing hand and focus ring. A click (Enter, Space)
+/// toggles the server tag card (`guild_card`), asking for the server's profile as it opens.
+pub fn tag_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pg: &PrimaryGuild, size: f32, row_h: f32, text: Color32) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(tag_chip_width(ui, pg, size), row_h), Sense::click());
+    let chip = tag_chip(ui, cx.images, pg, r.left_center(), size, text);
+    if resp.has_focus() {
+        super::messages::focus_ring(ui, &Pal::new(cx.theme), chip, 4.0);
+    }
+    let tip = tag_tooltip(cx.state, pg);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &tip));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let resp = if open { resp } else { resp.on_hover_text(&tip) }.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // The demo hook opens the chip on a profile surface (card or modal: Foreground), not the chat's.
+    let toggle = resp.clicked() || (ui.layer_id().order == egui::Order::Foreground && super::guild_card::demo_open());
+    if let Some(g) = pg.identity_guild_id.filter(|_| toggle && !open) {
+        super::guild_card::fetch(cx, g);
+    }
+    egui::Popup::from_response(&resp)
+        .open_memory(toggle.then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(super::guild_card::WIDTH)
+        .gap(8.0)
+        .frame(egui::Frame::popup(ui.style()).inner_margin(0))
+        .show(|ui| super::guild_card::show(ui, cx, pg));
+    resp
 }
 
 fn chip_parts(ui: &egui::Ui, pg: &PrimaryGuild, size: f32, color: Color32) -> (Arc<Galley>, Option<String>, f32) {

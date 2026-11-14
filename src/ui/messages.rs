@@ -1770,9 +1770,7 @@ fn author_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, user: &User, memb
             cx.view.open_profile(user.id, lc.guild_id, r.right_top() + vec2(8.0, 0.0));
         }
         if let Some(pg) = &tag {
-            let (r, resp) = ui.allocate_exact_size(vec2(super::cosmetics::tag_chip_width(ui, pg, pal.size), h), Sense::hover());
-            super::cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
-            resp.on_hover_text(super::cosmetics::tag_tooltip(cx.state, pg));
+            super::cosmetics::tag_button(ui, cx, pg, pal.size, h, pal.text);
         }
         if let Some(g) = bot_g {
             let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 8.0, h), Sense::hover());

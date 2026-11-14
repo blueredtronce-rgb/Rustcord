@@ -248,9 +248,8 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
                 ui.label(RichText::new(handle).color(pal.muted));
             }
             if let Some(pg) = cosmetics::guild_tag(user, member) {
-                let (r, resp) = ui.allocate_exact_size(vec2(cosmetics::tag_chip_width(ui, pg, pal.size), ui.text_style_height(&egui::TextStyle::Body)), Sense::hover());
-                cosmetics::tag_chip(ui, cx.images, pg, r.left_center(), pal.size, pal.text);
-                resp.on_hover_text(cosmetics::tag_tooltip(cx.state, pg));
+                let h = ui.text_style_height(&egui::TextStyle::Body);
+                cosmetics::tag_button(ui, cx, pg, pal.size, h, pal.text);
             }
             if let Some(p) = pronouns {
                 ui.label(RichText::new(p).color(pal.muted));

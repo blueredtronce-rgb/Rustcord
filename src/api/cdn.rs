@@ -48,6 +48,16 @@ pub fn guild_icon_url(guild: &Guild, size: u32, animated: bool) -> Option<String
     Some(hashed_asset(&format!("icons/{}", guild.id), hash, size, animated))
 }
 
+/// `guild_icon_url` from a bare hash (a guild profile's `icon_hash`).
+pub fn guild_icon_hash_url(guild_id: Id, hash: &str, size: u32, animated: bool) -> Option<String> {
+    plain(hash).then(|| hashed_asset(&format!("icons/{guild_id}"), hash, size, animated))
+}
+
+/// A guild profile's banner (`custom_banner_hash`), the tag card's band.
+pub fn discovery_splash_url(guild_id: Id, hash: &str, size: u32) -> Option<String> {
+    plain(hash).then(|| format!("{CDN}/discovery-splashes/{guild_id}/{hash}.png?size={}", cdn_size(size)))
+}
+
 pub fn group_dm_icon_url(channel_id: Id, hash: &str, size: u32) -> String {
     hashed_asset(&format!("channel-icons/{channel_id}"), hash, size, false)
 }

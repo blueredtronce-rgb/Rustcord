@@ -658,6 +658,18 @@ pub enum AccountCommand {
     /// Same route with `{"channel_overrides":{"<c>":{…}}}`; `guild_id` = the channel's guild
     /// (None for a DM). `suppress_*` are ignored here.
     UpdateChannelOverride { guild_id: Option<Id>, channel_id: Id, patch: NotificationPatch },
+    // ----- server tag card (docs/GUILD_CARD_NOTES.md), each on the user's click.
+    /// `GET /guilds/{g}/profile` -> `GuildProfileLoaded`. Gated by
+    /// `AppState::request_guild_profile`.
+    FetchGuildProfile { guild_id: Id },
+    /// `PUT /guilds/{g}/members/@me?lurker=false` (discoverable servers) -> `Done(Some(guild))`
+    /// (opened once GUILD_CREATE arrives). Captcha -> "join in the official app" text.
+    JoinGuild { guild_id: Id },
+    /// `GET /guilds/{g}/member-verification` -> `VerificationLoaded`.
+    FetchMemberVerification { guild_id: Id },
+    /// `PUT /guilds/{g}/requests/@me` with every form field and its `response` -> `Done(Some(g))`
+    /// when approved at once (rules only: I am in), `Done(None)` when it waits for review.
+    SubmitJoinRequest { guild_id: Id, version: Option<String>, form_fields: Vec<serde_json::Value> },
 }
 
 /// Fields of `AccountCommand::UpdateGuild`; None = unchanged.
@@ -808,6 +820,10 @@ pub enum OpKind {
     FetchGuildInvites,
     UpdateGuildNotifications,
     UpdateChannelOverride,
+    FetchGuildProfile,
+    JoinGuild,
+    FetchMemberVerification,
+    SubmitJoinRequest,
 }
 
 impl AccountCommand {
@@ -877,6 +893,10 @@ impl AccountCommand {
             C::FetchGuildInvites { guild_id } => (OpKind::FetchGuildInvites, Some(*guild_id)),
             C::UpdateGuildNotifications { guild_id, .. } => (OpKind::UpdateGuildNotifications, *guild_id),
             C::UpdateChannelOverride { channel_id, .. } => (OpKind::UpdateChannelOverride, Some(*channel_id)),
+            C::FetchGuildProfile { guild_id } => (OpKind::FetchGuildProfile, Some(*guild_id)),
+            C::JoinGuild { guild_id } => (OpKind::JoinGuild, Some(*guild_id)),
+            C::FetchMemberVerification { guild_id } => (OpKind::FetchMemberVerification, Some(*guild_id)),
+            C::SubmitJoinRequest { guild_id, .. } => (OpKind::SubmitJoinRequest, Some(*guild_id)),
         };
         AccountOp { kind, target }
     }
@@ -943,6 +963,10 @@ pub enum AccountEvent {
     CodesNonce { op: AccountOp, result: Result<crate::api::account::CodesNonce, String> },
     /// Some: an action waits for the 2FA re-check (show / update the prompt); None: close it.
     Mfa(Option<MfaPrompt>),
+    /// `FetchGuildProfile`; `Ok(None)` = the server keeps its profile private (403 / 404).
+    GuildProfileLoaded { guild_id: Id, result: Result<Option<crate::model::GuildProfile>, String> },
+    /// `FetchMemberVerification`.
+    VerificationLoaded { guild_id: Id, result: Result<crate::model::MemberVerification, String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2004,6 +2028,27 @@ fn handle_account_cmd(cmd: AccountCommand, op: AccountOp, session: &mut Option<S
             sink,
             move |api| async move { api.update_notifications(guild_id, Some(channel_id), &patch).await },
             done(op, "Could not save the notification settings"),
+        ),
+        C::FetchGuildProfile { guild_id } => rest(session, sink, move |api| async move { api.guild_profile(guild_id).await }, move |result| {
+            Some(ev(AccountEvent::GuildProfileLoaded { guild_id, result }))
+        }),
+        C::JoinGuild { guild_id } => rest(
+            session,
+            sink,
+            move |api| async move { api.join_guild(guild_id).await.map(|()| guild_id) },
+            created(op, "Could not join the server"),
+        ),
+        C::FetchMemberVerification { guild_id } => rest(session, sink, move |api| async move { api.member_verification(guild_id).await }, move |result| {
+            Some(ev(AccountEvent::VerificationLoaded { guild_id, result }))
+        }),
+        C::SubmitJoinRequest { guild_id, version, form_fields } => rest(
+            session,
+            sink,
+            move |api| async move { api.submit_join_request(guild_id, version, form_fields).await },
+            move |r| {
+                let result = r.map(|status| (status == "APPROVED").then_some(guild_id)).map_err(|e| format!("Could not send the application: {e}"));
+                Some(ev(AccountEvent::Done { op, result }))
+            },
         ),
     }
 }
