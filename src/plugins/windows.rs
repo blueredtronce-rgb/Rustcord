@@ -144,7 +144,9 @@ fn permissions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, user_id: Id, 
     let (green, red) = (crate::ui::presence_color(crate::model::Presence::Online, &cx.theme.colors), cx.theme.colors.danger.to_color32());
     egui::Grid::new("rc_permissions").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
         for (perm_name, on, from) in permission_rows(g, user_id, &roles) {
-            ui.label(RichText::new(if on { "✔" } else { "✖" }).family(crate::theme::icon_family()).color(if on { green } else { red }));
+            let (mark, _) = ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
+            let icon = if on { crate::ui::icons::Icon::Check } else { crate::ui::icons::Icon::Close };
+            crate::ui::icons::paint(ui.painter(), icon, mark, if on { green } else { red }, egui::Color32::TRANSPARENT);
             ui.label(RichText::new(perm_name).color(text));
             ui.add(egui::Label::new(RichText::new(if on { from } else { String::new() }).color(muted)).truncate());
             ui.end_row();

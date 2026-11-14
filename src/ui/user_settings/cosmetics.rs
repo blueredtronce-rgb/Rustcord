@@ -505,7 +505,7 @@ fn tile_ui(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, k: u8, size: Vec2, i
     if owned {
         let c = pos2(rect.right() - 10.0, rect.top() + 10.0);
         p.circle_filled(c, 7.0, pal.accent);
-        p.text(c, egui::Align2::CENTER_CENTER, "✔", FontId::new(9.0, crate::theme::icon_family()), egui::Color32::WHITE);
+        super::super::icons::paint(&p, super::super::icons::Icon::Check, Rect::from_center_size(c, Vec2::splat(10.0)), egui::Color32::WHITE, pal.accent);
     }
     if selected {
         p.rect_stroke(rect, pal.radius, Stroke::new(2.0, pal.accent), egui::StrokeKind::Inside);

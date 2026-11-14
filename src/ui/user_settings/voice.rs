@@ -200,7 +200,8 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     let live = me.as_ref().filter(|_| ui.is_rect_visible(rect)).is_some_and(|k| crate::ui::call::paint_video(ui.painter(), &mut cx.view.call_ui, k, rect, true));
     if !live {
         ui.painter().rect_filled(rect, pal.card_radius(), cx.theme.colors.sidebar.to_color32());
-        paint_camera(ui.painter(), rect.center() - vec2(0.0, 10.0), 28.0, pal.muted);
+        let camera = egui::Rect::from_center_size(rect.center() - vec2(0.0, 10.0), egui::Vec2::splat(32.0));
+        crate::ui::icons::paint(ui.painter(), crate::ui::icons::Icon::Camera, camera, pal.muted, cx.theme.colors.sidebar.to_color32());
         let text = if me.is_some() { "Starting camera…" } else { "Turn your camera on in a call" };
         ui.painter().text(rect.center() + vec2(0.0, 24.0), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(pal.meta()), pal.muted);
     }
@@ -310,15 +311,6 @@ fn key_name(vk: u16) -> String {
         0x12 => "Alt".into(),
         _ => Key::ALL.iter().find(|k| vk_code(**k) == Some(vk)).map_or_else(|| format!("Key {vk:#04x}"), |k| k.symbol_or_name().to_owned()),
     }
-}
-
-/// A video camera outline: body and lens wedge, `w` wide.
-fn paint_camera(p: &egui::Painter, c: egui::Pos2, w: f32, color: egui::Color32) {
-    let stroke = Stroke::new(2.0, color);
-    let body = Rect::from_center_size(c - vec2(w * 0.12, 0.0), vec2(w * 0.7, w * 0.5));
-    p.rect_stroke(body, 3.0, stroke, egui::StrokeKind::Middle);
-    let x = body.right() + 2.0;
-    p.add(egui::Shape::closed_line(vec![egui::pos2(x, c.y - w * 0.06), egui::pos2(x + w * 0.24, c.y - w * 0.2), egui::pos2(x + w * 0.24, c.y + w * 0.2), egui::pos2(x, c.y + w * 0.06)], stroke));
 }
 
 #[cfg(test)]

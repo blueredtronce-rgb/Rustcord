@@ -7,7 +7,7 @@ use crate::backend::{Command, SocialCommand};
 use crate::model::{Id, channel_type as ct, perm};
 use crate::state::AppState;
 use crate::ui::UiCx;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, pos2, vec2};
+use egui::{Align2, FontId, Pos2, Rect, Sense, pos2, vec2};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -39,7 +39,9 @@ pub fn hidden_row(ui: &mut egui::Ui, cx: &UiCx<'_>, id: Id, row_h: f32) -> bool 
     let size = cx.theme.font.size;
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
     let color = c.text_muted.to_color32().gamma_multiply(0.55);
-    lock(ui.painter(), Rect::from_center_size(pos2(row.left() + 26.0, row.center().y), egui::Vec2::splat(14.0)), color);
+    // Its kind's icon with a lock (docs/DESIGN.md §8.4).
+    let icon = (crate::ui::icons::of(ch, cx.state).0, Some(crate::ui::icons::Badge::Lock));
+    crate::ui::icons::paint_channel(ui.painter(), icon, Rect::from_center_size(pos2(row.left() + 26.0, row.center().y), egui::Vec2::splat(20.0)), color, c.sidebar.to_color32());
     let name = ch.name.clone().unwrap_or_default();
     let g = crate::ui::one_line(ui, name.as_str(), FontId::proportional(size), color, row.right() - row.left() - 52.0);
     ui.painter().galley(pos2(row.left() + 42.0, row.center().y - g.size().y / 2.0), g, color);
@@ -79,19 +81,6 @@ fn hidden_details(ui: &mut egui::Ui, s: &AppState, id: Id) {
     if !allowed.is_empty() {
         ui.label(format!("Visible to: {}", allowed.join(", ")));
     }
-}
-
-/// A padlock in `r`.
-pub fn lock(p: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width();
-    let body = Rect::from_min_max(pos2(r.left() + s * 0.15, r.top() + s * 0.45), pos2(r.right() - s * 0.15, r.bottom()));
-    p.rect_filled(body, s * 0.12, color);
-    let pts: Vec<Pos2> = (0..=10).map(|i| pos2(r.center().x, body.top()) + s * 0.24 * egui::Vec2::angled(std::f32::consts::PI * (1.0 + i as f32 / 10.0))).collect();
-    let (l, rr) = (pts[0], pts[pts.len() - 1]);
-    let mut shackle = vec![pos2(l.x, body.top())];
-    shackle.extend(pts);
-    shackle.push(pos2(rr.x, body.top()));
-    p.add(egui::Shape::line(shackle, egui::Stroke::new(s * 0.13, color)));
 }
 
 // ---------------------------------------------------------------------------

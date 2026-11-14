@@ -17,7 +17,8 @@ use crate::auth::Secret;
 use crate::backend::{AccountCommand, Command, MfaPrompt, OpKind};
 use crate::model::{Id, Presence, User};
 use crate::state::account::OpState;
-use crate::ui::messages::{Pal, icon_button};
+use crate::ui::icons::Icon;
+use crate::ui::messages::{Pal, icon_button, vector_icon};
 use crate::ui::{UiCx, bold, dialog, dialog_buttons, dialog_closable, dialog_footer, dialog_text};
 use egui::emath::GuiRounding as _;
 use egui::{Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, TextEdit, Vec2, vec2};
@@ -90,7 +91,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, me: &User) {
     crate::ui::section(ui, cx.theme, "Password and Authentication");
     let totp = me.mfa_enabled;
     if totp {
-        chip(ui, pal, Some("✔"), "Multi-factor authentication enabled", ok);
+        chip(ui, pal, Some(Icon::Check), "Multi-factor authentication enabled", ok);
         ui.add_space(8.0);
     }
     if ui.add(primary(cx.theme, "Change Password")).clicked() {
@@ -176,13 +177,13 @@ fn row(ui: &mut egui::Ui, pal: &Pal, title: &str, text: &str, button: &str, dang
     .inner
 }
 
-/// A rounded status chip: `color` text (after a monochrome `icon`) on a tint of it.
-fn chip(ui: &mut egui::Ui, pal: &Pal, icon: Option<&str>, text: &str, color: Color32) {
+/// A rounded status chip: `color` text (after an `icon`) on a tint of it.
+fn chip(ui: &mut egui::Ui, pal: &Pal, icon: Option<Icon>, text: &str, color: Color32) {
     Frame::new().fill(color.gamma_multiply(0.15)).corner_radius(pal.radius).inner_margin(Margin::symmetric(10, 5)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             if let Some(icon) = icon {
-                ui.label(RichText::new(icon).family(crate::theme::icon_family()).color(color));
+                vector_icon(ui, icon, 16.0, color, Color32::TRANSPARENT);
             }
             ui.label(RichText::new(text).color(color));
         });
@@ -211,7 +212,7 @@ fn security_keys(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) -> Option<Dial
                 Frame::new().fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("🔑").family(crate::theme::icon_family()).color(pal.muted));
+                        vector_icon(ui, Icon::Key, 16.0, pal.muted, pal.surface);
                         ui.add(egui::Label::new(RichText::new(&k.name).color(pal.text)).truncate());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if icon_button(ui, pal, "🗑", "Remove", 28.0, false, pal.danger).clicked() {
@@ -251,7 +252,7 @@ fn standing(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ok: Color32, warn: 
                 301..=400 => ("At risk: further violations may suspend it", pal.danger),
                 _ => ("Suspended", pal.danger),
             };
-            chip(ui, pal, (*state <= 100).then_some("✔"), text, color);
+            chip(ui, pal, (*state <= 100).then_some(Icon::Check), text, color);
         }
     }
 }
@@ -524,7 +525,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut UiCx<'_>, me: &User, d: &mut Dialog) -> bool
                 let what = if *delete { "Deleting your account can't be undone." } else { "A disabled account can be recovered by logging in again." };
                 dialog_text(ui, &theme, what);
                 dialog_text(ui, &theme, "This is done on discord.com – we'll open it in your browser.");
-                dialog_buttons(ui, &theme, "Open discord.com ↗", *delete, true)
+                dialog_buttons(ui, &theme, "Open discord.com", *delete, true)
             });
             if resp.inner == Some(true) {
                 open_account_page(ui);

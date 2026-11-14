@@ -49,22 +49,12 @@ pub fn silent_button(ui: &mut egui::Ui, row_h: f32, (text, muted, tint): (Color3
         ui.painter().rect_filled(rect, 4, tint);
     }
     let color = if on { text } else { muted };
-    paint_bell(ui.painter(), rect.shrink(4.0), color, on);
+    let bell = if on { crate::ui::icons::Icon::BellOff } else { crate::ui::icons::Icon::Bell };
+    crate::ui::icons::paint(ui.painter(), bell, rect.shrink(4.0), color, Color32::TRANSPARENT);
     let tip = if on { "Silent: on (no notifications)" } else { "Silent: off" };
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, tip));
     if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         SILENT.store(!on, Ordering::Relaxed);
-    }
-}
-
-/// A bell in `r`; `slashed`: crossed out (notifications off).
-fn paint_bell(p: &egui::Painter, r: Rect, color: Color32, slashed: bool) {
-    let (c, s) = (r.center(), r.width());
-    let body = [c + vec2(-s * 0.32, s * 0.22), c + vec2(-s * 0.26, -s * 0.1), c + vec2(-s * 0.14, -s * 0.32), c + vec2(0.0, -s * 0.38), c + vec2(s * 0.14, -s * 0.32), c + vec2(s * 0.26, -s * 0.1), c + vec2(s * 0.32, s * 0.22)];
-    p.add(egui::Shape::convex_polygon(body.to_vec(), color, egui::Stroke::NONE));
-    p.circle_filled(c + vec2(0.0, s * 0.33), s * 0.09, color);
-    if slashed {
-        p.line_segment([r.left_top() + vec2(s * 0.1, s * 0.1), r.right_bottom() - vec2(s * 0.1, s * 0.1)], egui::Stroke::new(s * 0.1, color));
     }
 }
 

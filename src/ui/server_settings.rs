@@ -19,7 +19,8 @@
 //! bans / invites views, ops entries and emoji textures.
 //! OWNERSHIP: server engineer (docs/SOCIAL_UI_DESIGN.md).
 
-use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, small_button};
+use super::icons::{self, Icon};
+use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, small_button, vector_icon};
 use super::server_menu::{self, choice, error_text, field_label, op_state, switch};
 use super::{UiCx, bold, hint, nav_heading, nav_item, one_line, page_title, rgb, section, settings_layer};
 use crate::api::cdn;
@@ -425,11 +426,15 @@ fn save_bar(ui: &mut egui::Ui, cx: &UiCx<'_>, dirty: bool, why_not: Option<&str>
         .inner
 }
 
-/// Search field with a magnifier hint. True when the text changed.
+/// Search field with a magnifier inside. True when the text changed.
 fn search_field(ui: &mut egui::Ui, text: &mut String, hint_text: &str) -> bool {
     // Leaves ~120 px for a button beside it (Create Role) in narrow windows.
     let w = (ui.available_width() - 120.0).clamp(120.0, 360.0);
-    ui.add(TextEdit::singleline(text).hint_text(RichText::new(format!("🔍 {hint_text}")).family(crate::theme::icon_family())).desired_width(w)).changed()
+    let field = TextEdit::singleline(text).hint_text(hint_text).margin(egui::Margin { left: 26, right: 4, top: 2, bottom: 2 }).desired_width(w);
+    let resp = ui.add(field);
+    let glass = Rect::from_center_size(pos2(resp.rect.left() + 14.0, resp.rect.center().y), Vec2::splat(14.0));
+    icons::paint(ui.painter(), Icon::Search, glass, ui.visuals().weak_text_color(), Color32::TRANSPARENT);
+    resp.changed()
 }
 
 /// A muted line in the middle of an empty list.
@@ -483,7 +488,7 @@ fn overview(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
         match (&s.guild.icon, icon_url) {
             (Some(Some(_)), _) => {
                 ui.painter().circle_filled(rect.center(), 40.0, pal.accent.gamma_multiply(0.3));
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "✔", FontId::new(28.0, crate::theme::icon_family()), pal.text);
+                icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(rect.center(), Vec2::splat(28.0)), pal.text, Color32::TRANSPARENT);
             }
             (None, Some(url)) => {
                 let tex = cx.images.get(ui.ctx(), &url, 160, false);
@@ -594,7 +599,7 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
     ui.painter().rect(card, pal.card_radius(), if hot { pal.tint() } else { pal.text.gamma_multiply(0.04) }, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
     ui.painter().text(pos2(card.left() + 16.0, card.center().y - 9.0), Align2::LEFT_CENTER, "Default Permissions", bold(pal.size), pal.text);
     ui.painter().text(pos2(card.left() + 16.0, card.center().y + 10.0), Align2::LEFT_CENTER, "@everyone · applies to all server members", FontId::proportional(pal.meta()), pal.muted);
-    ui.painter().text(pos2(card.right() - 18.0, card.center().y), Align2::CENTER_CENTER, "›", FontId::proportional(22.0), pal.muted);
+    icons::paint(ui.painter(), Icon::ChevronRight, Rect::from_center_size(pos2(card.right() - 18.0, card.center().y), Vec2::splat(20.0)), pal.muted, Color32::TRANSPARENT);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         acts.push(Act::Go(Page::Role(guild_id)));
     }
@@ -632,14 +637,15 @@ fn roles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id) {
             ui.painter().rect_filled(row, pal.radius, pal.tint());
         }
         if movable && hot {
-            ui.painter().text(pos2(row.left() + 10.0, row.center().y), Align2::CENTER_CENTER, "⠿", FontId::proportional(16.0), pal.muted);
+            icons::paint(ui.painter(), Icon::Grip, Rect::from_center_size(pos2(row.left() + 10.0, row.center().y), Vec2::splat(16.0)), pal.muted, Color32::TRANSPARENT);
         }
         // Shield-ish dot in the role colour.
         ui.painter().circle_filled(pos2(row.left() + 30.0, row.center().y), 6.0, role_color(r, &pal));
         let name = one_line(ui, r.name.clone(), FontId::proportional(pal.size), pal.text, row.width() - 160.0);
         ui.painter().galley(pos2(row.left() + 46.0, row.center().y - name.size().y / 2.0), name, pal.text);
         if let Some(n) = counts.as_ref().map(|c| c.get(&r.id).copied().unwrap_or(0)) {
-            ui.painter().text(pos2(row.right() - 48.0, row.center().y), Align2::RIGHT_CENTER, format!("👤 {n}"), FontId::new(pal.meta(), crate::theme::icon_family()), pal.muted);
+            let count = ui.painter().text(pos2(row.right() - 48.0, row.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::proportional(pal.meta()), pal.muted);
+            icons::paint(ui.painter(), Icon::Person, Rect::from_center_size(pos2(count.left() - 10.0, row.center().y), Vec2::splat(14.0)), pal.muted, Color32::TRANSPARENT);
         }
         // "…": Edit / Delete Role, Copy Role ID (its popup is drawn after the rows).
         let dots = Rect::from_center_size(pos2(row.right() - 22.0, row.center().y), Vec2::splat(28.0));
@@ -825,7 +831,14 @@ fn role_editor(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, role_id: Id) 
     let mine = state.guild_permissions(guild_id);
     let s = &mut cx.view.server_settings_ui;
     let mut acts = Vec::new();
-    if ui.add(Button::new(RichText::new("‹  Back").color(pal.muted)).frame(false)).clicked() {
+    let back = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        vector_icon(ui, Icon::ChevronLeft, 16.0, pal.muted, Color32::TRANSPARENT);
+        ui.label(RichText::new("Back").color(pal.muted));
+    });
+    let back = ui.interact(back.response.rect, ui.make_persistent_id("rc_role_back"), Sense::click());
+    back.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Back"));
+    if back.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         acts.push(Act::Go(Page::Roles));
     }
     page_title(ui, theme, &format!("Edit Role — {}", if everyone { "@everyone" } else { &role.name }));
@@ -919,7 +932,7 @@ fn swatch(ui: &mut egui::Ui, pal: &Pal, color: u32, selected: bool) -> egui::Res
         ui.painter().rect_stroke(rect, 4, Stroke::new(2.0, pal.text), egui::StrokeKind::Outside);
     }
     if selected {
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "✔", FontId::new(14.0, crate::theme::icon_family()), Color32::WHITE);
+        icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(rect.center(), Vec2::splat(16.0)), Color32::WHITE, Color32::TRANSPARENT);
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, ui.is_enabled(), selected, format!("#{color:06X}")));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)

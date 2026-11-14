@@ -6,7 +6,7 @@
 //! OWNERSHIP: video-ui engineer.
 
 use super::messages::{Pal, icon_button};
-use super::sidebar::{Icon, paint_icon};
+use super::icons::{self, Icon};
 use super::{Modal, UiCx, dialog, dialog_buttons, one_line};
 use crate::backend::Command;
 use crate::voice::video::{ScreenSource, VideoCommand};
@@ -123,7 +123,7 @@ fn source_row(ui: &mut egui::Ui, pal: &Pal, title: &str, detail: &str, selected:
         p.rect_stroke(rect, pal.radius, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
     }
     let icon = Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), Vec2::splat(20.0));
-    paint_icon(p, Icon::Screen, icon, if selected { pal.text } else { pal.muted }, false, fill);
+    icons::paint(p, Icon::Screen, icon, if selected { pal.text } else { pal.muted }, fill);
     let max_w = rect.width() - 52.0;
     let t = one_line(ui, title, FontId::proportional(pal.size), pal.text, max_w);
     let d = one_line(ui, detail, FontId::proportional(pal.meta()), pal.muted, max_w);

@@ -24,7 +24,8 @@
 //! write with `begin(op)` and drop the `ops` entry when they close.
 //! OWNERSHIP: server engineer (docs/SOCIAL_UI_DESIGN.md).
 
-use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, paint_megaphone};
+use super::icons::{self, Icon};
+use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup, vector_button, vector_icon};
 use super::server_settings::{self, Page};
 use super::sidebar::{mark_read, row_fills};
 use super::{Modal, UiCx, ViewState, bold, dialog, dialog_buttons, dialog_text, one_line};
@@ -33,7 +34,7 @@ use crate::model::{Id, MuteConfig, Overwrite, Perms, channel_type as ct, perm};
 use crate::state::account::{CreatedInvite, OpState};
 use crate::state::{AppState, SidebarItem};
 use egui::containers::menu::{MenuConfig, SubMenuButton};
-use egui::{Align2, Button, Color32, FontId, PopupCloseBehavior, Rect, RichText, Role, Sense, Shape, Stroke, TextEdit, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
+use egui::{Align2, Button, Color32, PopupCloseBehavior, Rect, RichText, Role, Sense, Shape, Stroke, TextEdit, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
 use std::path::PathBuf;
 
 /// Mute presets (FEATURES_NOTES §4.11); None = until I unmute.
@@ -205,28 +206,14 @@ fn demo_menu() -> bool {
         && std::env::var("RUSTCORD_OPEN").is_ok_and(|v| v.split(',').any(|s| s.trim() == "server-menu"))
 }
 
-/// 32 px "Invite People" button: a person with a plus, painted (no emoji glyph has both).
+/// 32 px "Invite People" button: a person with a plus.
 fn invite_icon_button(ui: &mut egui::Ui, pal: &Pal) -> egui::Response {
-    let resp = icon_button(ui, pal, "", "Invite People", 32.0, false, pal.text);
-    let color = if resp.hovered() || resp.has_focus() { pal.text } else { pal.muted };
-    let (p, c) = (ui.painter(), resp.rect.center() + vec2(-2.0, 0.0));
-    p.circle_stroke(c + vec2(0.0, -4.0), 3.5, Stroke::new(1.6, color));
-    let shoulders: Vec<_> = (0..=10).map(|i| c + vec2(0.0, 7.0) + 6.0 * Vec2::angled(std::f32::consts::PI * (1.0 + i as f32 / 10.0))).collect();
-    p.add(Shape::line(shoulders, Stroke::new(1.6, color)));
-    let plus = c + vec2(8.0, -1.0);
-    p.line_segment([plus + vec2(-3.0, 0.0), plus + vec2(3.0, 0.0)], Stroke::new(1.6, color));
-    p.line_segment([plus + vec2(0.0, -3.0), plus + vec2(0.0, 3.0)], Stroke::new(1.6, color));
-    resp
+    vector_button(ui, pal, Icon::PersonAdd, "Invite People", 32.0, false, pal.text)
 }
 
-/// 28 px "More" button: three painted dots (the fonts lack ⋯).
+/// 28 px "More" button.
 pub(super) fn more_button(ui: &mut egui::Ui, pal: &Pal) -> egui::Response {
-    let resp = icon_button(ui, pal, "", "More", 28.0, false, pal.text);
-    let color = if resp.hovered() || resp.has_focus() { pal.text } else { pal.muted };
-    for dx in [-6.0, 0.0, 6.0] {
-        ui.painter().circle_filled(resp.rect.center() + vec2(dx, 0.0), 2.0, color);
-    }
-    resp
+    vector_button(ui, pal, Icon::More, "More", 28.0, false, pal.text)
 }
 
 /// The header dropdown (§4.2 order): Invite People, Server Settings, Create Channel / Category |
@@ -303,7 +290,7 @@ fn mark_read_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, text: Colo
 /// Invite People, when I may invite to the open (or first) channel. True when shown.
 fn invite_item(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, color: Color32) -> bool {
     let Some(ch) = invite_channel(cx.state, guild_id).filter(|&ch| can_invite(cx.state, ch)) else { return false };
-    if menu_item(ui, "Invite People", MenuIcon::Glyph("👤"), color) {
+    if menu_item(ui, "Invite People", MenuIcon::Icon(Icon::PersonAdd), color) {
         open(cx, Modal::Invite { guild_id, channel_id: ch });
     }
     true
@@ -481,7 +468,7 @@ pub fn channel_menu_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, channel_id: Id) 
     let category = kind == ct::GUILD_CATEGORY;
     let noun = if category { "Category" } else { "Channel" };
     ui.separator();
-    if !category && can_invite(cx.state, channel_id) && menu_item(ui, "Invite People", MenuIcon::Glyph("👤"), text) {
+    if !category && can_invite(cx.state, channel_id) && menu_item(ui, "Invite People", MenuIcon::Icon(Icon::PersonAdd), text) {
         open(cx, Modal::Invite { guild_id, channel_id });
     }
     mute_items(ui, cx, guild_id, Some(channel_id), noun);
@@ -839,10 +826,15 @@ pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id
             }
         }
         field_label(ui, theme, &format!("{noun} Name"));
-        let prefix = if category { "" } else { channel_glyph(m.kind) };
         let hint = if category { "New Category" } else { "new-channel" };
-        let edit = TextEdit::singleline(&mut m.text).char_limit(100).hint_text(hint).prefix(RichText::new(prefix).family(crate::theme::icon_family())).desired_width(f32::INFINITY);
+        // The kind's icon sits inside the field, before the name.
+        let left = if category { 4 } else { 30 };
+        let edit = TextEdit::singleline(&mut m.text).char_limit(100).hint_text(hint).margin(egui::Margin { left, right: 4, top: 2, bottom: 2 }).desired_width(f32::INFINITY);
         let field = ui.add_enabled(!busy, edit);
+        if !category {
+            let r = Rect::from_center_size(pos2(field.rect.left() + 16.0, field.rect.center().y), Vec2::splat(16.0));
+            icons::paint_channel(ui.painter(), icons::channel(m.kind, m.private, false, false), r, pal.muted, ui.visuals().text_edit_bg_color());
+        }
         if text_like && field.changed() {
             // Text-like names are lowercase with dashes, as Discord shows them while typing.
             m.text = m.text.to_lowercase().replace(' ', "-");
@@ -850,7 +842,8 @@ pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id
         if admin {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔒").family(crate::theme::icon_family()).color(pal.muted));
+                let fill = ui.visuals().window_fill;
+                vector_icon(ui, Icon::Lock, 16.0, pal.muted, fill);
                 ui.label(RichText::new(format!("Private {noun}")).color(pal.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled(!busy, |ui: &mut egui::Ui| switch(ui, &pal, &mut m.private)).on_hover_text("Only selected members and roles can view it");
@@ -877,29 +870,15 @@ pub fn create_channel_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, guild_id: Id
     }
 }
 
-/// Channel-type glyph of the name field and the kind rows.
-fn channel_glyph(kind: u8) -> &'static str {
-    match kind {
-        ct::GUILD_VOICE => "🔊 ",
-        ct::GUILD_FORUM => "💬 ",
-        ct::GUILD_ANNOUNCEMENT => "📢 ",
-        _ => "# ",
-    }
-}
-
-/// A kind choice (48 px, 32 in short windows): glyph, name, radio circle; selected = tinted.
+/// A kind choice (48 px, 32 in short windows): icon, name, radio circle; selected = tinted.
 fn kind_row(ui: &mut egui::Ui, pal: &Pal, kind: u8, label: &str, selected: bool, height: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     let hot = resp.hovered() || resp.has_focus();
     let fill = if selected { pal.text.gamma_multiply(0.14) } else if hot { pal.tint() } else { pal.text.gamma_multiply(0.04) };
     ui.painter().rect_filled(rect, pal.radius, fill);
-    let icon = pos2(rect.left() + 26.0, rect.center().y);
+    let icon = Rect::from_center_size(pos2(rect.left() + 26.0, rect.center().y), Vec2::splat(20.0));
     let color = if selected || hot { pal.text } else { pal.muted };
-    if kind == ct::GUILD_ANNOUNCEMENT {
-        paint_megaphone(ui.painter(), icon, 20.0, color);
-    } else {
-        ui.painter().text(icon, Align2::CENTER_CENTER, channel_glyph(kind).trim(), FontId::new(20.0, crate::theme::icon_family()), color);
-    }
+    icons::paint_channel(ui.painter(), icons::channel(kind, false, false, false), icon, color, ui.visuals().window_fill.blend(fill));
     ui.painter().text(pos2(rect.left() + 50.0, rect.center().y), Align2::LEFT_CENTER, label, bold(pal.size), pal.text);
     let dot = pos2(rect.right() - 20.0, rect.center().y);
     ui.painter().circle_stroke(dot, 8.0, Stroke::new(1.5, if selected { pal.text } else { pal.muted }));
@@ -1063,7 +1042,7 @@ fn start_screen(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let resp = dialog(ctx, theme, "rc_add_server", 442.0, "Create Your Server", |ui| {
         dialog_text(ui, theme, "Your server is where you and your friends hang out.");
         ui.add_space(8.0);
-        if big_choice(ui, &pal, "🏠", "Create My Own").clicked() {
+        if big_choice(ui, &pal, Icon::Plus, "Create My Own").clicked() {
             next = Some(Step::Create);
         }
         ui.add_space(12.0);
@@ -1085,14 +1064,15 @@ fn start_screen(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     }
 }
 
-/// 56 px full-width choice row: glyph, bold label, chevron.
-fn big_choice(ui: &mut egui::Ui, pal: &Pal, glyph: &str, label: &str) -> egui::Response {
+/// 56 px full-width choice row: icon, bold label, chevron.
+fn big_choice(ui: &mut egui::Ui, pal: &Pal, icon: Icon, label: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
     let hot = resp.hovered() || resp.has_focus();
     ui.painter().rect(rect, pal.card_radius(), if hot { pal.tint() } else { Color32::TRANSPARENT }, Stroke::new(1.0, pal.line()), egui::StrokeKind::Inside);
-    ui.painter().text(pos2(rect.left() + 28.0, rect.center().y), Align2::CENTER_CENTER, glyph, FontId::new(24.0, crate::theme::icon_family()), pal.text);
+    let bg = ui.visuals().window_fill;
+    icons::paint(ui.painter(), icon, Rect::from_center_size(pos2(rect.left() + 28.0, rect.center().y), Vec2::splat(24.0)), pal.text, bg);
     ui.painter().text(pos2(rect.left() + 56.0, rect.center().y), Align2::LEFT_CENTER, label, bold(pal.size + 1.0), pal.text);
-    ui.painter().text(pos2(rect.right() - 18.0, rect.center().y), Align2::CENTER_CENTER, "›", FontId::proportional(24.0), pal.muted);
+    icons::paint(ui.painter(), Icon::ChevronRight, Rect::from_center_size(pos2(rect.right() - 18.0, rect.center().y), Vec2::splat(20.0)), pal.muted, bg);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1130,7 +1110,7 @@ fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>
             match &m.icon {
                 Some(_) => {
                     ui.painter().circle_filled(rect.center(), 40.0, pal.accent.gamma_multiply(0.25));
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "✔", FontId::new(28.0, crate::theme::icon_family()), pal.text);
+                    icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(rect.center(), Vec2::splat(28.0)), pal.text, Color32::TRANSPARENT);
                 }
                 None => {
                     // Dashed ring with a camera and UPLOAD, like the official dialog.
@@ -1138,7 +1118,7 @@ fn create_screen(ctx: &egui::Context, cx: &mut UiCx<'_>, status: Option<OpState>
                         let a = std::f32::consts::TAU * i as f32 / 24.0;
                         ui.painter().line_segment([rect.center() + 39.0 * Vec2::angled(a), rect.center() + 39.0 * Vec2::angled(a + 0.15)], stroke);
                     }
-                    ui.painter().text(rect.center() - vec2(0.0, 8.0), Align2::CENTER_CENTER, "📷", FontId::new(20.0, crate::theme::icon_family()), stroke.color);
+                    icons::paint(ui.painter(), Icon::Camera, Rect::from_center_size(rect.center() - vec2(0.0, 8.0), Vec2::splat(20.0)), stroke.color, Color32::TRANSPARENT);
                     ui.painter().text(rect.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, "UPLOAD", bold(10.0), stroke.color);
                 }
             }

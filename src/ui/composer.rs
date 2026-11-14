@@ -284,7 +284,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
                             egui::Popup::menu(&plus).align(RectAlign::TOP_START).gap(plus.rect.top() - card_top + 8.0).show(|ui| {
                                 menu_setup(ui);
                                 pick_files = menu_item(ui, "Upload a File", MenuIcon::Glyph("📎"), pal.text);
-                                new_thread = thread_ok && menu_item(ui, "Create Thread", MenuIcon::Glyph("💬"), pal.text);
+                                new_thread = thread_ok && menu_item(ui, "Create Thread", MenuIcon::Glyph("🧵"), pal.text);
                             });
                         }
                         let state = &*cx.state;
@@ -655,9 +655,7 @@ fn ac_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guild_id: Option<Id>,
             sidebar::user_avatar_at(ui, cx.images, &url, icon, false, 1.0, (user.id, &row.label));
             sidebar::user_dot(ui.painter(), icon, cx.state, user.id, &cx.theme.colors, fill);
         }
-        autocomplete::Icon::Glyph(g) => {
-            ui.painter().text(icon.center(), Align2::CENTER_CENTER, *g, FontId::new(18.0, crate::theme::icon_family()), pal.muted);
-        }
+        autocomplete::Icon::Vector(v) => super::icons::paint_channel(ui.painter(), *v, Rect::from_center_size(icon.center(), Vec2::splat(20.0)), pal.muted, fill),
         autocomplete::Icon::Emoji(e) => {
             ui.painter().text(icon.center(), Align2::CENTER_CENTER, e, FontId::proportional(20.0), pal.text);
         }
@@ -883,7 +881,7 @@ fn drop_overlay(ctx: &egui::Context, pal: &Pal, title: &str) {
         let card = Rect::from_center_size(screen.center(), vec2(320.0, 168.0));
         p.rect_filled(card, 16, pal.accent);
         p.rect_stroke(card.shrink(8.0), 10, Stroke::new(2.0, Color32::WHITE.gamma_multiply(0.6)), egui::StrokeKind::Inside);
-        p.text(card.center() - vec2(0.0, 22.0), Align2::CENTER_CENTER, "📄", FontId::new(40.0, crate::theme::icon_family()), Color32::WHITE);
+        super::icons::paint(p, super::icons::Icon::File, Rect::from_center_size(card.center() - vec2(0.0, 22.0), Vec2::splat(48.0)), Color32::WHITE, pal.accent);
         p.text(card.center() + vec2(0.0, 30.0), Align2::CENTER_CENTER, title, FontId::new(pal.size + 4.0, bold_family()), Color32::WHITE);
     });
 }
@@ -944,7 +942,7 @@ fn file_card(ui: &mut egui::Ui, pal: &Pal, f: &mut PendingFile, i: usize, size: 
             }
         }
         None => {
-            p.text(preview.center(), Align2::CENTER_CENTER, "📄", FontId::new(preview.height().min(40.0), crate::theme::icon_family()), pal.muted);
+            super::icons::paint(&p, super::icons::Icon::File, Rect::from_center_size(preview.center(), Vec2::splat(preview.height().min(48.0))), pal.muted, Color32::TRANSPARENT);
         }
     }
     if f.file.spoiler {
@@ -981,8 +979,7 @@ fn file_card(ui: &mut egui::Ui, pal: &Pal, f: &mut PendingFile, i: usize, size: 
         f.file.description = (!text.trim().is_empty()).then_some(text);
     });
     // Remove is the danger action: red, not only on hover.
-    let remove = icon_button(&mut child, pal, "", "Remove", 24.0, false, pal.danger);
-    child.painter().text(remove.rect.center(), Align2::CENTER_CENTER, "🗑", FontId::new(16.0, crate::theme::icon_family()), pal.danger);
+    let remove = icon_button(&mut child, pal, "🗑", "Remove", 24.0, false, pal.danger);
     remove.clicked()
 }
 
@@ -1008,7 +1005,7 @@ fn typing_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id, wait_ms:
         let g = ui.painter().layout_no_wrap(format!("{}:{:02}", s / 60, s % 60), FontId::proportional(size), pal.muted);
         let text_pos = pos2(rect.right() - 8.0 - g.size().x, rect.center().y - g.size().y / 2.0);
         let clock = pos2(text_pos.x - 10.0, rect.center().y);
-        pickers::paint_clock(ui.painter(), clock, 5.5, pal.muted);
+        super::icons::paint(ui.painter(), super::icons::Icon::Clock, Rect::from_center_size(clock, Vec2::splat(14.0)), pal.muted, Color32::TRANSPARENT);
         let hit = Rect::from_min_max(pos2(clock.x - 7.0, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
         ui.painter().galley(text_pos, g, pal.muted);
         ui.interact(hit, ui.make_persistent_id("rc_slowmode"), Sense::hover()).on_hover_text(format!("You can send again in {s} s"));

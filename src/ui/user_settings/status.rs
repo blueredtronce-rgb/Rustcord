@@ -9,6 +9,7 @@ use crate::backend::{AccountCommand, ChatCommand, Command, OpKind};
 use crate::model::{CustomStatus, Emoji, UserStatus};
 use crate::state::AppState;
 use crate::state::account::OpState;
+use crate::ui::icons::{self, Icon};
 use crate::ui::messages::{Pal, icon_button};
 use crate::ui::sidebar::{paint_status, presence_label, status_label, user_presence};
 use crate::ui::{Modal, UiCx, dialog, dialog_buttons, pickers};
@@ -103,7 +104,7 @@ fn paint_emoji(ui: &mut egui::Ui, images: &mut crate::ui::images::ImageCache, e:
             ui.painter().text(c, Align2::CENTER_CENTER, n, font, ui.visuals().text_color());
         }
         _ => {
-            ui.painter().text(c, Align2::CENTER_CENTER, "☺", FontId::new(font.size, crate::theme::icon_family()), fallback);
+            icons::paint(ui.painter(), Icon::Smile, Rect::from_center_size(c, Vec2::splat(20.0)), fallback, egui::Color32::TRANSPARENT);
         }
     }
 }
@@ -296,7 +297,7 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
                         let text = ui.visuals().text_color();
                         ui.painter().text(pos2(row.left() + 30.0, row.center().y), Align2::LEFT_CENTER, label, FontId::proportional(pal.size), text);
                         if current_status == Some(s) {
-                            ui.painter().text(pos2(row.right() - 10.0, row.center().y), Align2::RIGHT_CENTER, "✔", FontId::new(pal.size, crate::theme::icon_family()), text);
+                            icons::paint(ui.painter(), Icon::Check, Rect::from_center_size(pos2(row.right() - 18.0, row.center().y), Vec2::splat(16.0)), text, fill);
                         }
                         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, current_status == Some(s), label));
                         let resp = match s {
@@ -324,13 +325,13 @@ pub(in crate::ui) fn account_popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &
                 if resp.hovered() {
                     ui.painter().circle_filled(x.center(), 10.0, fill.blend(pal.tint()));
                 }
-                ui.painter().text(x.center(), Align2::CENTER_CENTER, "×", FontId::proportional(pal.size + 2.0), color);
+                icons::paint(ui.painter(), Icon::Close, Rect::from_center_size(x.center(), Vec2::splat(16.0)), color, egui::Color32::TRANSPARENT);
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Clear Custom Status"));
                 clear_status = resp.on_hover_text("Clear Custom Status").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
             }
 
             let (r, _, resp) = row(ui, "Edit Profile", false, 0.0);
-            ui.painter().text(pos2(r.left() + 16.0, r.center().y), Align2::CENTER_CENTER, "✏", FontId::new(pal.size, crate::theme::icon_family()), pal.muted);
+            icons::paint(ui.painter(), Icon::Edit, Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), Vec2::splat(18.0)), pal.muted, egui::Color32::TRANSPARENT);
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Edit Profile"));
             edit = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         });

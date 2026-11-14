@@ -5,6 +5,7 @@
 //! the wire syntax and `expand`s it on send, outside code. The popup itself is the composer's.
 //! OWNERSHIP: composer engineer.
 
+use super::icons::{self, Badge, Icon as Vector};
 use super::pickers;
 use super::rgb;
 use crate::emoji;
@@ -54,8 +55,8 @@ pub fn title(word: &str) -> String {
 pub enum Icon {
     /// 24 px avatar with the status dot.
     User(Box<(User, Option<Member>)>),
-    /// Channel kind ("#", "🔊", …) or "@" for roles and @everyone.
-    Glyph(&'static str),
+    /// Channel kind (`icons::of`) or `At` for roles and @everyone.
+    Vector((Vector, Option<Badge>)),
     /// A unicode emoji (20 px).
     Emoji(String),
     /// A custom emoji (the composer loads its texture).
@@ -153,7 +154,7 @@ fn members(state: &AppState, ch: Id, guild_id: Option<Id>, q: &str) -> Vec<Row> 
             if ping_all {
                 for (name, what) in [("everyone", "All members"), ("here", "Online members")] {
                     if out.len() < MAX_ROWS && name.starts_with(q) {
-                        out.push(Row::new(format!("@{name} "), None, Icon::Glyph("@"), format!("@{name}")).detail(what));
+                        out.push(Row::new(format!("@{name} "), None, Icon::Vector((Vector::At, None)), format!("@{name}")).detail(what));
                     }
                 }
             }
@@ -162,7 +163,7 @@ fn members(state: &AppState, ch: Id, guild_id: Option<Id>, q: &str) -> Vec<Row> 
                 if out.len() >= MAX_ROWS {
                     break;
                 }
-                let mut row = Row::new(format!("@{} ", r.name), Some(format!("<@&{}>", r.id.0)), Icon::Glyph("@"), format!("@{}", r.name)).detail("Role");
+                let mut row = Row::new(format!("@{} ", r.name), Some(format!("<@&{}>", r.id.0)), Icon::Vector((Vector::At, None)), format!("@{}", r.name)).detail("Role");
                 row.color = (r.color != 0).then(|| rgb(r.color));
                 out.push(row);
             }
@@ -196,15 +197,9 @@ fn channels(state: &AppState, g: Id, q: &str) -> Vec<Row> {
     list.into_iter()
         .take(MAX_ROWS)
         .map(|(c, _)| {
-            let icon = match c.kind {
-                GUILD_VOICE | GUILD_STAGE_VOICE => "🔊",
-                ANNOUNCEMENT_THREAD | PUBLIC_THREAD | PRIVATE_THREAD => "🧵",
-                GUILD_FORUM | GUILD_MEDIA => "💬",
-                _ => "#",
-            };
             let name = c.name.clone().unwrap_or_default();
             let category = c.parent_id.and_then(|p| state.channels.get(&p)).and_then(|p| p.name.clone()).unwrap_or_default();
-            Row::new(format!("#{name} "), Some(format!("<#{}>", c.id.0)), Icon::Glyph(icon), name).detail(category)
+            Row::new(format!("#{name} "), Some(format!("<#{}>", c.id.0)), Icon::Vector(icons::of(c, state)), name).detail(category)
         })
         .collect()
 }

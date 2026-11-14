@@ -132,10 +132,16 @@ fn paint_chip(ui: &egui::Ui, left_center: Pos2, text: &str, color: Color32, size
     // Light themes: the text darkened to 4.5:1 on its chip (the gold OWNER is ~1.9:1 on cream).
     let bgs = surface.map_or([v.panel_fill, v.window_fill], |s| [s, s]).map(|b| b.blend(tint));
     let color = if v.dark_mode { color } else { crate::ui::cosmetics::reach(color, &bgs, Color32::BLACK, 4.5) };
+    // A known glyph before the first space ("⏱ 5m") becomes a painted icon.
+    let (icon, text) = text.split_once(' ').and_then(|(g, rest)| Some((crate::ui::icons::from_glyph(g)?, rest))).map_or((None, text), |(i, t)| (Some(i), t));
     let g = ui.painter().layout_no_wrap(text.to_owned(), FontId::new(size, crate::theme::bold_family()), color);
-    let r = Rect::from_min_size(pos2(left_center.x, left_center.y - g.size().y / 2.0 - 1.0), g.size() + vec2(8.0, 2.0));
+    let icon_w = if icon.is_some() { size + 2.0 } else { 0.0 };
+    let r = Rect::from_min_size(pos2(left_center.x, left_center.y - g.size().y / 2.0 - 1.0), g.size() + vec2(8.0 + icon_w, 2.0));
     ui.painter().rect_filled(r, 4, surface.map_or(tint, |s| s.blend(tint)));
-    ui.painter().galley(r.min + vec2(4.0, 1.0), g, color);
+    if let Some(i) = icon {
+        crate::ui::icons::paint(ui.painter(), i, Rect::from_center_size(pos2(r.left() + 4.0 + size / 2.0, r.center().y), Vec2::splat(size)), color, Color32::TRANSPARENT);
+    }
+    ui.painter().galley(r.min + vec2(4.0 + icon_w, 1.0), g, color);
     r
 }
 
@@ -337,7 +343,14 @@ pub fn profile_sections(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user: &User, guild
             Some(g) => format!("{} / {g}", cx.state.channel_name(ch)),
             None => cx.state.channel_name(ch),
         };
-        let resp = ui.add(egui::Label::new(egui::RichText::new(format!("🔊 {place}")).color(link)).sense(Sense::click()).truncate());
+        let resp = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                crate::ui::icons::paint(ui.painter(), crate::ui::icons::Icon::Voice, r, link, Color32::TRANSPARENT);
+                ui.add(egui::Label::new(egui::RichText::new(place).color(link)).sense(Sense::click()).truncate())
+            })
+            .inner;
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             cx.state.select_channel(ch);
             cx.view.profile_card = None;

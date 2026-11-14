@@ -5,6 +5,7 @@
 //! Every edit changes `cx.theme` directly (live preview); nothing is written until "Save as…".
 //! OWNERSHIP: user-settings engineer (docs/SOCIAL_UI_DESIGN.md).
 
+use crate::ui::icons::Icon;
 use crate::ui::{UiCx, ViewState};
 use crate::theme::{GradientStop, Rgba, Theme, ThemeGradient};
 use egui::{RichText, Sense, SliderClamping, Stroke, vec2};
@@ -53,6 +54,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         edited |= retint;
     });
     // Its own row: the toggle stays with its label, the colours follow it.
+    let pal = crate::ui::messages::Pal::new(cx.theme);
     ui.horizontal_wrapped(|ui| {
         crate::ui::button_row(ui);
         let t = &mut *cx.theme;
@@ -74,11 +76,11 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
                 }
             }
             let colors: Vec<Rgba> = g.stops.iter().map(|s| s.color).collect();
-            if colors.len() < 5 && ui.small_button("+").on_hover_text("Add a colour").clicked() {
+            if colors.len() < 5 && crate::ui::messages::vector_button(ui, &pal, Icon::Plus, "Add a colour", 24.0, false, pal.text).clicked() {
                 g.stops = spaced(&[&colors[..], &colors[colors.len() - 1..]].concat());
                 retint = true;
             }
-            if colors.len() > 1 && ui.small_button("−").on_hover_text("Remove the last colour").clicked() {
+            if colors.len() > 1 && crate::ui::messages::vector_button(ui, &pal, Icon::Minus, "Remove the last colour", 24.0, false, pal.text).clicked() {
                 g.stops = spaced(&colors[..colors.len() - 1]);
                 retint = true;
             }
@@ -261,8 +263,7 @@ pub(super) fn swatches(ui: &mut egui::Ui, themes: &[Theme], current: &Theme, gra
             if selected {
                 let badge = rect.right_top() + vec2(-8.0, 8.0);
                 p.circle_filled(badge, 8.0, c.accent.to_color32());
-                let font = egui::FontId::new(11.0, crate::theme::icon_family());
-                p.text(badge, egui::Align2::CENTER_CENTER, "✔", font, c.accent_text.to_color32());
+                crate::ui::icons::paint(p, Icon::Check, egui::Rect::from_center_size(badge, egui::Vec2::splat(12.0)), c.accent_text.to_color32(), c.accent.to_color32());
             }
         }
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &t.name));

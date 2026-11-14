@@ -11,7 +11,7 @@ use crate::model::{Id, Message, SearchPage};
 use crate::state::chat::SearchView;
 use crate::state::AppState;
 use crate::theme::bold_family;
-use egui::{pos2, vec2, Align, Align2, FontId, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense, Stroke, TextEdit, UiBuilder, Vec2};
+use egui::{pos2, vec2, Align, Align2, Color32, FontId, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense, Stroke, TextEdit, UiBuilder, Vec2};
 
 /// Hits per page (the API's `limit` maximum).
 const PAGE: u32 = 25;
@@ -75,7 +75,7 @@ pub(super) fn search_box(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, width:
             cx.state.chat.search = None;
         }
     } else {
-        ui.painter().text(icon.center(), Align2::CENTER_CENTER, "🔍", FontId::new(13.0, crate::theme::icon_family()), pal.muted);
+        super::icons::paint(ui.painter(), super::icons::Icon::Search, Rect::from_center_size(icon.center(), Vec2::splat(16.0)), pal.muted, Color32::TRANSPARENT);
     }
     let content = text.trim();
     if enter && !content.is_empty() && let Some(scope) = scope(cx.state) {
@@ -141,7 +141,7 @@ pub fn results(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             // while the retry is in flight, as `None`).
             if indexing {
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
-                super::pickers::paint_clock(ui.painter(), r.center(), 12.0, pal.muted);
+                super::icons::paint(ui.painter(), super::icons::Icon::Clock, r, pal.muted, Color32::TRANSPARENT);
             }
             let text = if indexing { "Still indexing, try again soon" } else { e.as_str() };
             ui.add(Label::new(RichText::new(text).color(pal.muted)).selectable(false).wrap());

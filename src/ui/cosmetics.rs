@@ -962,14 +962,12 @@ fn connection_tile(ui: &mut egui::Ui, pal: &Pal, a: &ConnectedAccount, w: f32) {
     let gx = icon.right() + 10.0;
     let gw = g.size().x;
     ui.painter().galley(pos2(gx, rect.center().y - g.size().y / 2.0), g, pal.text);
-    let glyph = |x: f32, s: &str| {
-        ui.painter().text(pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, s, FontId::new(pal.size - 1.0, crate::theme::icon_family()), pal.muted);
-    };
+    let mark = |x: f32, icon| super::icons::paint(ui.painter(), icon, Rect::from_min_size(pos2(x, rect.center().y - 7.0), Vec2::splat(14.0)), pal.muted, Color32::TRANSPARENT);
     if a.verified {
-        glyph(gx + gw + 4.0, "✔");
+        mark(gx + gw + 4.0, super::icons::Icon::Check);
     }
     if url.is_some() {
-        glyph(rect.right() - 24.0, "↗");
+        mark(rect.right() - 24.0, super::icons::Icon::External);
     }
     let (label, _) = platform(&a.kind);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, format!("{label}: {}", a.name)));

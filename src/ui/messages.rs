@@ -3,6 +3,7 @@
 //! edit, delete confirmation, reaction picker) and the composer at the bottom.
 //! OWNERSHIP: ui-messages implementer (messages.rs, composer.rs, profile.rs).
 
+use super::icons::{self, Icon};
 use super::markdown::{self, MdOpts};
 use super::{composer, format_timestamp, images, pickers, pins, rgb, search, UiCx, ViewState};
 use crate::api::cdn;
@@ -15,7 +16,7 @@ use crate::theme::{bold_family, Theme};
 use egui::load::SizedTexture;
 use egui::{
     pos2, vec2, Align, Align2, Button, Color32, CornerRadius, CursorIcon, FontId, Frame, Image, Key, KeyboardShortcut,
-    Label, Layout, Margin, Modifiers, Order, Pos2, Rect, RectAlign, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit,
+    Label, Layout, Margin, Modifiers, Order, Rect, RectAlign, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit,
     UiBuilder, Vec2,
 };
 use std::collections::{HashMap, HashSet};
@@ -126,8 +127,17 @@ impl Pal {
 
 /// Quiet icon-only button for compact chrome: muted glyph, tinted on hover/focus; while `on`
 /// (a switched-on toggle) the glyph is bright, never filled or accent. The tooltip is also the
-/// accessible name.
+/// accessible name. Known glyphs paint as vectors (`icons::from_glyph`); "" paints nothing.
 pub(super) fn icon_button(ui: &mut egui::Ui, pal: &Pal, icon: &str, tip: &str, side: f32, on: bool, hot: Color32) -> egui::Response {
+    button_with(ui, pal, icons::from_glyph(icon).ok_or(icon), tip, side, on, hot)
+}
+
+/// `icon_button` with a vector icon.
+pub(super) fn vector_button(ui: &mut egui::Ui, pal: &Pal, icon: Icon, tip: &str, side: f32, on: bool, hot: Color32) -> egui::Response {
+    button_with(ui, pal, Ok(icon), tip, side, on, hot)
+}
+
+fn button_with(ui: &mut egui::Ui, pal: &Pal, icon: Result<Icon, &str>, tip: &str, side: f32, on: bool, hot: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tip));
     if ui.is_rect_visible(rect) {
@@ -136,25 +146,29 @@ pub(super) fn icon_button(ui: &mut egui::Ui, pal: &Pal, icon: &str, tip: &str, s
             ui.painter().rect_filled(rect, pal.radius, pal.tint());
         }
         let color = if on { pal.text } else if hot_now { hot } else { pal.muted };
-        // "×" is a text glyph, much smaller than the emoji-font icons at the same size; the
-        // others keep 4 px padding in small buttons (24 px -> 16 px glyph).
-        let glyph = if icon == "×" { side * 0.8 } else { (side - 8.0).min(18.0) };
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::new(glyph, crate::theme::icon_family()), color);
+        match icon {
+            // 20 px in 28-32 px buttons, 16 px in smaller ones.
+            Ok(i) => {
+                let bg = if hot_now { pal.bg.blend(pal.tint()) } else { pal.bg };
+                icons::paint(ui.painter(), i, Rect::from_center_size(rect.center(), Vec2::splat((side - 8.0).clamp(16.0, 20.0))), color, bg);
+            }
+            // Words ("Aa") and real emoji.
+            Err(text) => {
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new((side - 8.0).min(18.0), crate::theme::icon_family()), color);
+            }
+        }
     }
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Icon on the right of a context-menu row: a glyph, or a painted copy / link symbol (the emoji
-/// font's 📋 and 🔗 read as a tag and a pen).
+/// Icon on the right of a context-menu row: a vector icon, or a glyph (`icons::from_glyph`
+/// turns known ones into vectors; others, e.g. plugin emoji, stay text).
 #[derive(Clone, Copy)]
 pub(super) enum MenuIcon {
     Glyph(&'static str),
-    Copy,
-    Link,
+    Icon(Icon),
     /// A checkbox (toggle items).
     Check(bool),
-    /// Painted into the 16 px icon square in the icon colour (call handset, camera).
-    Paint(fn(&egui::Painter, Rect, Color32)),
 }
 
 /// Call first inside a context menu: at least 188 px wide, 32 px rows (submenu buttons too).
@@ -168,27 +182,19 @@ pub(super) fn menu_setup(ui: &mut egui::Ui) {
 /// Context-menu row: the label left, its icon right, both in `color` (danger for destructive
 /// items). True when clicked (the menu closes itself).
 pub(super) fn menu_item(ui: &mut egui::Ui, text: &str, icon: MenuIcon, color: Color32) -> bool {
+    let icon = match icon {
+        MenuIcon::Glyph(g) => super::icons::from_glyph(g).map_or(icon, MenuIcon::Icon),
+        i => i,
+    };
     let glyph = if let MenuIcon::Glyph(g) = icon { g } else { "" };
-    let icon_color = color.gamma_multiply(0.8);
+    // Opaque (on the menu fill), so overlapping strokes of an icon don't show darker.
+    let bg = ui.visuals().window_fill;
+    let icon_color = bg.lerp_to_gamma(color, 0.8);
     let resp = ui.add(Button::new(RichText::new(text).color(color)).right_text(RichText::new(glyph).family(crate::theme::icon_family()).color(icon_color)));
     let r = Rect::from_center_size(pos2(resp.rect.right() - ui.spacing().button_padding.x - 8.0, resp.rect.center().y), Vec2::splat(16.0));
     let (p, stroke) = (ui.painter(), Stroke::new(1.5, icon_color));
     match icon {
-        // A filled sheet in front of an outlined one.
-        MenuIcon::Copy => {
-            p.rect_stroke(Rect::from_min_size(r.min + vec2(1.5, 1.5), Vec2::splat(9.0)), 2, stroke, egui::StrokeKind::Middle);
-            p.rect_filled(Rect::from_min_size(r.min + vec2(5.5, 5.5), Vec2::splat(9.0)), 2, icon_color);
-        }
-        // Two chain links on the rising diagonal.
-        MenuIcon::Link => {
-            let d = Vec2::angled(-std::f32::consts::FRAC_PI_4);
-            for side in [-1.0, 1.0] {
-                let c = r.center() + d * 2.8 * side;
-                let half = |end: f32, from: f32| (0..=8).map(move |i| c + d * 1.8 * end + 2.3 * Vec2::angled(from + std::f32::consts::PI * i as f32 / 8.0));
-                let a = d.angle() - std::f32::consts::FRAC_PI_2;
-                p.add(Shape::closed_line(half(1.0, a).chain(half(-1.0, a + std::f32::consts::PI)).collect(), stroke));
-            }
-        }
+        MenuIcon::Icon(i) => super::icons::paint(p, i, r, icon_color, bg),
         MenuIcon::Check(true) => {
             let b = r.shrink(1.0);
             p.rect_filled(b, 3, icon_color);
@@ -198,7 +204,6 @@ pub(super) fn menu_item(ui: &mut egui::Ui, text: &str, icon: MenuIcon, color: Co
         MenuIcon::Check(false) => {
             p.rect_stroke(r.shrink(1.0), 3, stroke, egui::StrokeKind::Inside);
         }
-        MenuIcon::Paint(paint) => paint(p, r, icon_color),
         MenuIcon::Glyph(_) => {}
     }
     if let MenuIcon::Check(on) = icon {
@@ -270,28 +275,51 @@ pub(super) fn status_chip(ui: &mut egui::Ui, pal: &Pal, dot: Option<Color32>, te
     resp
 }
 
-/// Small rounded text button (Retry, Dismiss): a tinted chip that darkens on hover.
+/// Small rounded text button (Retry, Dismiss): a tinted chip that darkens on hover. A known
+/// glyph before the first space ("📎 Upload a file") becomes a painted 14 px icon.
 pub(super) fn small_button(ui: &mut egui::Ui, pal: &Pal, text: &str, color: Color32) -> egui::Response {
+    let (icon, text) = text.split_once(' ').and_then(|(g, rest)| Some((icons::from_glyph(g)?, rest))).map_or((None, text), |(i, t)| (Some(i), t));
     let g = ui.painter().layout_no_wrap(text.to_owned(), FontId::new(pal.meta(), crate::theme::icon_family()), color);
-    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0, g.size().y + 6.0), Sense::click());
+    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0 + icon_w, g.size().y + 6.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text));
     if ui.is_rect_visible(rect) {
         let fill = if resp.hovered() || resp.has_focus() { pal.text.gamma_multiply(0.16) } else { pal.tint() };
         ui.painter().rect_filled(rect, pal.radius, fill);
-        ui.painter().galley(rect.center() - g.size() / 2.0, g, color);
+        if let Some(i) = icon {
+            icons::paint(ui.painter(), i, Rect::from_center_size(pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(14.0)), color, Color32::TRANSPARENT);
+        }
+        ui.painter().galley(pos2(rect.left() + 8.0 + icon_w, rect.center().y - g.size().y / 2.0), g, color);
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Announcement-channel glyph: a megaphone outline in a `side` px box (the emoji smudges at
-/// body size, and "#!" reads as text).
-pub(super) fn paint_megaphone(p: &egui::Painter, c: Pos2, side: f32, color: Color32) {
-    let u = side / 16.0;
-    let at = |x: f32, y: f32| c + vec2(x, y) * u;
-    let stroke = Stroke::new((1.4 * u).max(1.0), color);
-    p.add(Shape::closed_line(vec![at(-3.5, -2.5), at(5.5, -6.5), at(5.5, 6.5), at(-3.5, 2.5)], stroke));
-    p.rect_filled(Rect::from_min_max(at(-7.0, -2.5), at(-3.5, 2.5)), 1.0 * u, color);
-    p.line_segment([at(-2.5, 3.0), at(-1.0, 7.0)], stroke);
+/// A painted `icon` (about the text height) in front of a one-line label: glyphs that used to
+/// sit in text ("📎 file.txt").
+pub(super) fn icon_label(ui: &mut egui::Ui, icon: Icon, text: &str, size: f32, color: Color32, bg: Color32) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        vector_icon(ui, icon, (size * 1.1).round(), color, bg);
+        ui.add(Label::new(RichText::new(text).size(size).color(color)).selectable(false).truncate())
+    })
+    .inner
+}
+
+/// A secondary button with `label` and the External icon after it (opens a page in the browser).
+pub(super) fn external_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    // An em space at 16 px reserves the icon's room.
+    let resp = ui.add(Button::new(label).right_text(RichText::new("\u{2003}").size(16.0)).min_size(vec2(64.0, 32.0)));
+    let color = ui.style().interact(&resp).text_color();
+    let r = Rect::from_center_size(pos2(resp.rect.right() - ui.spacing().button_padding.x - 8.0, resp.rect.center().y), Vec2::splat(16.0));
+    icons::paint(ui.painter(), Icon::External, r, color, Color32::TRANSPARENT);
+    resp
+}
+
+/// A `side` px vector icon laid out like a label; `bg` is the fill under it (cut-outs).
+pub(super) fn vector_icon(ui: &mut egui::Ui, icon: Icon, side: f32, color: Color32, bg: Color32) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    icons::paint(ui.painter(), icon, r, color, bg);
+    resp
 }
 
 /// Message card of the pins popout and the search results: avatar, name, time and content
@@ -326,7 +354,7 @@ pub(super) fn message_card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, guil
                         markdown::render(ui, cx, &msg.content, &MdOpts { guild_id, mentions: &msg.mentions, id_salt: msg.id, color: None, highlight });
                     }
                     for a in &msg.attachments {
-                        ui.add(Label::new(RichText::new(format!("📎 {}", a.filename)).family(crate::theme::icon_family()).size(pal.meta()).color(pal.muted)).selectable(false).truncate());
+                        icon_label(ui, Icon::Attach, &a.filename, pal.meta(), pal.muted, pal.bg);
                     }
                 });
             });
@@ -846,7 +874,7 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let (kind, topic) = (channel.kind, channel.topic.clone().unwrap_or_default());
     // Threads and forum posts: "parent › thread" (threads.rs).
     let parent = channel.parent_id.filter(|_| channel.is_thread());
-    let glyph_kind = parent.and_then(|p| cx.state.channels.get(&p)).map_or(kind, |p| p.kind);
+    let header_icon = parent.and_then(|p| cx.state.channels.get(&p)).map_or_else(|| icons::of(channel, cx.state), |p| icons::of(p, cx.state));
     let name = cx.state.channel_name(ch);
     let (pal, name, topic) = (&Pal::new(cx.theme), name.as_str(), topic.as_str());
     // Results of another server or DM close with the switch.
@@ -871,14 +899,9 @@ pub fn chat_header(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                         super::sidebar::status_dot(ui.painter(), slot, p, &cx.theme.colors, pal.bg);
                     }
                 } else {
-                    // Fixed glyph slot so every channel title starts at one x.
-                    let (slot, _) = ui.allocate_exact_size(vec2(pal.size, pal.size + 4.0), Sense::hover());
-                    if matches!(glyph_kind, channel_type::GUILD_ANNOUNCEMENT | channel_type::ANNOUNCEMENT_THREAD) {
-                        paint_megaphone(ui.painter(), slot.center(), pal.size + 2.0, pal.muted);
-                    } else {
-                        let (glyph, size) = super::threads::header_glyph(glyph_kind, pal.size);
-                        ui.painter().text(slot.center(), Align2::CENTER_CENTER, glyph, FontId::new(size, crate::theme::icon_family()), pal.muted);
-                    }
+                    // Fixed icon slot so every channel title starts at one x.
+                    let (slot, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+                    icons::paint_channel(ui.painter(), header_icon, slot, pal.muted, pal.bg);
                 }
                 if let Some(p) = parent {
                     super::threads::breadcrumb(ui, cx, pal, p);
@@ -1343,10 +1366,11 @@ fn system_row(ui: &mut egui::Ui, cx: &UiCx<'_>, lc: &Lcx, msg: &Message, text: &
         ui.spacing_mut().item_spacing.x = 0.0;
         let (r, _) = ui.allocate_exact_size(vec2(lc.gutter(), 18.0), Sense::hover());
         let c = pos2(if lc.compact { r.left() + 8.0 } else { r.left() + AVATAR / 2.0 }, r.center().y);
-        if msg.kind == 3 {
-            super::dm_call::paint_phone(ui.painter(), Rect::from_center_size(c, Vec2::splat(16.0)), color);
-        } else {
-            ui.painter().text(c, Align2::CENTER_CENTER, system_icon(msg.kind), FontId::new(14.0, crate::theme::icon_family()), color);
+        match system_icon(msg.kind) {
+            Some(icon) => icons::paint(ui.painter(), icon, Rect::from_center_size(c, Vec2::splat(16.0)), color, pal.bg),
+            None => {
+                ui.painter().circle_filled(c, 2.5, color);
+            }
         }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -1693,7 +1717,8 @@ fn file_chip(ui: &mut egui::Ui, pal: &Pal, a: &Attachment) {
             ui.set_max_width(ui.available_width().min(420.0));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
-                ui.add(Label::new(RichText::new("📄").family(crate::theme::icon_family()).size(pal.size + 8.0).color(pal.muted)).selectable(false));
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                icons::paint(ui.painter(), Icon::File, r, pal.muted, pal.surface);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let name = RichText::new(&a.filename).color(pal.link);
@@ -2082,7 +2107,7 @@ fn upload_card(ui: &mut egui::Ui, pal: &Pal, u: &Upload, failed: bool) -> bool {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (icon, _) = ui.allocate_exact_size(vec2(28.0, 36.0), Sense::hover());
-            ui.painter().text(icon.center(), Align2::CENTER_CENTER, "📄", FontId::new(26.0, crate::theme::icon_family()), pal.muted);
+            icons::paint(ui.painter(), Icon::File, Rect::from_center_size(icon.center(), Vec2::splat(28.0)), pal.muted, pal.surface);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 cancel = !failed && icon_button(ui, pal, "×", "Cancel upload", 24.0, false, pal.danger).clicked();
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
@@ -2141,11 +2166,7 @@ fn hover_toolbar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo
             ui.spacing_mut().item_spacing.x = 2.0;
             // Right-to-left: the first button ends up rightmost.
             let open = lc.menu_target == Some(h.id);
-            let more = icon_button(ui, &pal, "", "More", SIDE, open, pal.text);
-            let dots = if open || more.hovered() { pal.text } else { pal.muted };
-            for dx in [-5.0, 0.0, 5.0] {
-                ui.painter().circle_filled(more.rect.center() + vec2(dx, 0.0), 1.6, dots);
-            }
+            let more = vector_button(ui, &pal, Icon::More, "More", SIDE, open, pal.text);
             // Follow the button (window resized, list scrolled) while its menu is open.
             if open && let Some(m) = memo.menu.as_mut().filter(|m| m.from_button) {
                 m.anchor = more.rect;
@@ -2307,11 +2328,11 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
             if !system
                 && super::threads::has_threads(lc.kind)
                 && cx.state.can_create_thread(lc.ch, false)
-                && menu_item(ui, "Create Thread", MenuIcon::Glyph("💬"), pal.text)
+                && menu_item(ui, "Create Thread", MenuIcon::Icon(Icon::Thread), pal.text)
             {
                 super::threads::open_create(cx, lc.ch, Some(mid));
             }
-            if !content.is_empty() && menu_item(ui, "Copy Text", MenuIcon::Copy, pal.text) {
+            if !content.is_empty() && menu_item(ui, "Copy Text", MenuIcon::Icon(Icon::Copy), pal.text) {
                 ctx.copy_text(content.clone());
             }
             ui.separator();
@@ -2324,7 +2345,7 @@ fn message_menu(ui: &egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut Memo) {
                 mark_unread(cx, lc.ch, mid);
                 marked = true;
             }
-            if menu_item(ui, "Copy Message Link", MenuIcon::Link, pal.text) {
+            if menu_item(ui, "Copy Message Link", MenuIcon::Icon(Icon::Link), pal.text) {
                 ctx.copy_text(message_link(lc.guild_id, lc.ch, mid));
             }
             if own && embeds && menu_item(ui, "Remove Embeds", MenuIcon::Glyph("🚫"), pal.text) {
@@ -2626,16 +2647,17 @@ fn system_text(kind: u8, content: &str, s: &Sys<'_>) -> Option<String> {
     })
 }
 
-fn system_icon(kind: u8) -> &'static str {
-    match kind {
-        1 => "+",
-        2 => "←",
-        3 => "📞",
-        6 => "📌",
-        7 => "→",
-        8..=11 => "🚀",
-        _ => "•",
-    }
+/// Icon of a system message (None: a dot).
+fn system_icon(kind: u8) -> Option<Icon> {
+    Some(match kind {
+        1 => Icon::Plus,
+        2 => Icon::ArrowLeft,
+        3 => Icon::Phone,
+        6 => Icon::Pin,
+        7 => Icon::ArrowRight,
+        8..=11 => Icon::Boost,
+        _ => return None,
+    })
 }
 
 fn reply_preview(m: &Message) -> String {

@@ -11,14 +11,14 @@
 //! OWNERSHIP: dm-calls engineer.
 
 use super::messages::Pal;
-use super::sidebar::{Icon, paint_icon, user_avatar_at};
+use super::icons::{self, Icon};
+use super::sidebar::user_avatar_at;
 use super::{UiCx, bold, call, one_line, presence_color};
 use crate::backend::{Command, CommandSender};
 use crate::model::{Channel, Id, Presence, VoiceState};
 use crate::state::AppState;
 use crate::voice::video::VideoCommand;
-use egui::{Align2, Color32, CursorIcon, Rect, Role, Sense, Shape, Stroke, Vec2, WidgetInfo, pos2, vec2};
-use std::f32::consts::PI;
+use egui::{Align2, Color32, CursorIcon, Rect, Role, Sense, Stroke, Vec2, WidgetInfo, pos2, vec2};
 use std::time::{Duration, Instant};
 
 /// The dark stage of the call view (call.rs), in every theme.
@@ -31,7 +31,6 @@ const BANNER_H: f32 = 176.0;
 const AVATAR: f32 = 64.0;
 /// One pulse of the ring around the caller (incoming) or the people being rung (call.rs).
 pub(super) const PULSE_S: f64 = 1.4;
-type Paint = fn(&egui::Painter, Rect, Color32);
 
 /// The open channel is a DM / group DM: my call there stays above its chat (`banner`) instead of
 /// the full call page (`main_layout`).
@@ -81,8 +80,7 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch
         return;
     }
     let verb = if cx.state.call_in(ch) { "Join" } else { "Start" };
-    let camera: Paint = |p, r, c| paint_icon(p, Icon::Camera, r, c, false, Color32::TRANSPARENT);
-    for (video, paint) in [(true, camera), (false, paint_phone as Paint)] {
+    for (video, icon) in [(true, Icon::Camera), (false, Icon::Phone)] {
         let tip = format!("{verb} {} Call", if video { "Video" } else { "Voice" });
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
         resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, &tip));
@@ -90,7 +88,8 @@ pub(super) fn header_buttons(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch
         if hot {
             ui.painter().rect_filled(rect, pal.radius, pal.tint());
         }
-        paint(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(20.0)), if hot { pal.text } else { pal.muted });
+        let (color, bg) = if hot { (pal.text, pal.bg.blend(pal.tint())) } else { (pal.muted, pal.bg) };
+        icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), Vec2::splat(20.0)), color, bg);
         if resp.on_hover_text(tip.as_str()).on_hover_cursor(CursorIcon::PointingHand).clicked() {
             join(cx, ch, video);
         }
@@ -185,8 +184,8 @@ fn waiting(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
             let c = a.right_bottom() - Vec2::splat(10.0);
             painter.circle_filled(c, 14.0, STAGE);
             painter.circle_filled(c, 12.0, BUTTON);
-            let icon = if p.deaf { Icon::Headphones } else { Icon::Mic };
-            paint_icon(painter, icon, Rect::from_center_size(c, Vec2::splat(16.0)), if p.by_server { red } else { FG }, true, BUTTON);
+            let icon = if p.deaf { Icon::Deafened } else { Icon::MicOff };
+            icons::paint(painter, icon, Rect::from_center_size(c, Vec2::splat(16.0)), if p.by_server { red } else { FG }, BUTTON);
         }
         let state = match (p.in_call, p.deaf, p.muted) {
             (false, ..) => " (ringing)",
@@ -230,7 +229,7 @@ pub(super) fn row_mark(ui: &mut egui::Ui, cx: &UiCx<'_>, ch: Id, right: egui::Po
         return 0.0;
     }
     let r = Rect::from_min_size(pos2(right.x - 16.0, right.y - 8.0), Vec2::splat(16.0));
-    paint_phone(ui.painter(), r, presence_color(Presence::Online, &cx.theme.colors));
+    icons::paint(ui.painter(), Icon::Phone, r, presence_color(Presence::Online, &cx.theme.colors), Color32::TRANSPARENT);
     let n = cx.state.voice_states.get(&ch).map_or(0, |m| m.len());
     let tip = if n == 1 { "1 person in a call".to_owned() } else { format!("{n} people in a call") };
     ui.interact(r, ui.make_persistent_id(("dm_call_mark", ch)), Sense::hover()).on_hover_text(tip);
@@ -273,12 +272,10 @@ pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
                     ui.label(egui::RichText::new("Incoming call…").color(FG_MUTED).size(cx.theme.font.size - 1.0));
                     ui.add_space(20.0);
                     let (row, _) = ui.allocate_exact_size(vec2(176.0, 48.0), Sense::hover());
-                    let hangup: Paint = |p, r, c| paint_icon(p, Icon::Hangup, r, c, false, Color32::TRANSPARENT);
-                    let camera: Paint = |p, r, c| paint_icon(p, Icon::Camera, r, c, false, Color32::TRANSPARENT);
-                    let buttons = [(None, red, "Decline", hangup), (Some(true), green, "Accept with Video", camera), (Some(false), green, "Accept", paint_phone as Paint)];
-                    for (i, (what, fill, tip, paint)) in buttons.into_iter().enumerate() {
+                    let buttons = [(None, red, "Decline", Icon::Hangup), (Some(true), green, "Accept with Video", Icon::Camera), (Some(false), green, "Accept", Icon::Phone)];
+                    for (i, (what, fill, tip, icon)) in buttons.into_iter().enumerate() {
                         let r = Rect::from_min_size(pos2(row.left() + i as f32 * 64.0, row.top()), Vec2::splat(48.0));
-                        if round_button(ui, r, fill, tip, paint).clicked() {
+                        if round_button(ui, r, fill, tip, icon).clicked() {
                             action = Some(what);
                         }
                     }
@@ -298,30 +295,14 @@ pub(super) fn incoming(ctx: &egui::Context, cx: &mut UiCx<'_>, accept: bool) {
 }
 
 /// A round button filled with `fill`, the icon in white; the tooltip is the accessible name.
-fn round_button(ui: &mut egui::Ui, rect: Rect, fill: Color32, tip: &str, paint: Paint) -> egui::Response {
+fn round_button(ui: &mut egui::Ui, rect: Rect, fill: Color32, tip: &str, icon: Icon) -> egui::Response {
     let resp = ui.interact(rect, ui.make_persistent_id(("dm_call_button", tip)), Sense::click());
     let hot = resp.hovered() || resp.has_focus();
-    ui.painter().circle_filled(rect.center(), rect.width() / 2.0, if hot { fill.lerp_to_gamma(Color32::WHITE, 0.15) } else { fill });
-    paint(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(rect.width() * 0.5)), Color32::WHITE);
+    let fill = if hot { fill.lerp_to_gamma(Color32::WHITE, 0.15) } else { fill };
+    ui.painter().circle_filled(rect.center(), rect.width() / 2.0, fill);
+    icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), Vec2::splat(rect.width() * 0.5)), Color32::WHITE, fill);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, tip));
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
-}
-
-/// A handset standing like 📞 (start / accept a call, call system messages): the hang-up
-/// icon's shape turned 135°.
-pub(super) fn paint_phone(p: &egui::Painter, rect: Rect, color: Color32) {
-    let (c, s) = (rect.center(), rect.width());
-    let rot = egui::emath::Rot2::from_angle(-0.75 * PI);
-    // Hang-up icon coordinates (sidebar::paint_icon), centred on the shape's middle.
-    let at = |x: f32, y: f32| c + rot * vec2(x * s, (y - 0.03) * s);
-    let band = (0..=12).map(|i| {
-        let a = PI * (1.2 + 0.6 * i as f32 / 12.0);
-        at(0.45 * a.cos(), 0.3 + 0.45 * a.sin())
-    });
-    p.add(Shape::line(band.collect(), Stroke::new(0.18 * s, color)));
-    for x in [-0.36, 0.36] {
-        p.line_segment([at(x, 0.0), at(x, 0.2)], Stroke::new(0.26 * s, color));
-    }
 }
 
 /// Test hook `RUSTCORD_OPEN=call:<dm id>`: a call going on in that DM / group DM with its other

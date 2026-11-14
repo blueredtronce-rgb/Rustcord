@@ -16,14 +16,15 @@
 
 use super::dm_call::PULSE_S;
 use super::screen_share::{self, ShareForm};
-use super::sidebar::{Icon, paint_icon, toggle_voice, user_avatar_at};
+use super::icons::{self, Icon};
+use super::sidebar::{toggle_voice, user_avatar_at};
 use super::{Modal, UiCx, ViewState, bold, messages, one_line, pickers, presence_color};
 use crate::backend::{Command, CommandSender};
 use crate::model::{Id, Presence, VoiceState};
 use crate::state::AppState;
 use crate::voice::video::stream::{CONNECT_TIMEOUT, parse_stream_key, stream_key};
 use crate::voice::video::{MonitorInfo, ScreenSource, VideoCommand, VideoFrames, VideoKey, WindowInfo};
-use egui::{Align2, Color32, CursorIcon, FontId, Rect, Role, Sense, Stroke, StrokeKind, TextureHandle, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
+use egui::{Color32, CursorIcon, FontId, Rect, Role, Sense, Stroke, StrokeKind, TextureHandle, UiBuilder, Vec2, WidgetInfo, pos2, vec2};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -333,11 +334,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, chat_w: f32) {
     });
 }
 
-/// 🔊 channel name, the LIVE note while I share, and the chat toggle.
+/// Channel icon and name, the LIVE note while I share, and the chat toggle.
 fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
     let rect = ui.max_rect();
     let (cy, size) = (rect.center().y, cx.theme.font.size);
-    ui.painter().text(pos2(rect.left() + 26.0, cy), Align2::CENTER_CENTER, "🔊", FontId::new(size + 2.0, crate::theme::icon_family()), FG_MUTED);
+    let icon = cx.state.channels.get(&ch).map_or((Icon::Voice, None), |c| icons::of(c, cx.state));
+    icons::paint_channel(ui.painter(), icon, Rect::from_center_size(pos2(rect.left() + 26.0, cy), Vec2::splat(20.0)), FG_MUTED, STAGE);
     let toggle = Rect::from_center_size(pos2(rect.right() - 32.0, cy), Vec2::splat(32.0));
     let left = rect.left() + 44.0;
     let g = one_line(ui, cx.state.channel_name(ch), bold(size + 1.5), FG, (toggle.left() - 64.0 - left).max(80.0));
@@ -349,7 +351,7 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
         ui.interact(pill, ui.make_persistent_id("call_live"), Sense::hover()).on_hover_text("You are sharing your screen");
     }
     let chat = cx.view.call_ui.chat;
-    if stage_button(ui, toggle, "call_chat_toggle", "💬", if chat { "Hide Chat" } else { "Show Chat" }, chat).clicked() {
+    if stage_button(ui, toggle, "call_chat_toggle", Icon::Message, if chat { "Hide Chat" } else { "Show Chat" }, chat).clicked() {
         cx.view.call_ui.chat = !chat;
     }
 }
@@ -370,14 +372,15 @@ fn on_color(bg: Color32) -> Color32 {
     if 0.2126 * l.r() + 0.7152 * l.g() + 0.0722 * l.b() > 0.179 { Color32::BLACK } else { Color32::WHITE }
 }
 
-/// 32 px glyph button on the stage (lit while `on`); the tooltip is the accessible name.
-fn stage_button(ui: &mut egui::Ui, rect: Rect, salt: &str, glyph: &str, tip: &str, on: bool) -> egui::Response {
+/// 32 px icon button on the stage (lit while `on`); the tooltip is the accessible name.
+fn stage_button(ui: &mut egui::Ui, rect: Rect, salt: &str, icon: Icon, tip: &str, on: bool) -> egui::Response {
     let resp = ui.interact(rect, ui.make_persistent_id(salt), Sense::click());
     let hot = resp.hovered() || resp.has_focus();
     if hot || on {
         ui.painter().rect_filled(rect, 8, BUTTON);
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::new(18.0, crate::theme::icon_family()), if hot || on { FG } else { FG_MUTED });
+    let (color, bg) = if hot || on { (FG, BUTTON) } else { (FG_MUTED, STAGE) };
+    icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), Vec2::splat(20.0)), color, bg);
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, on, tip));
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -513,8 +516,8 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         // No room for the pill: its most severe mark alone, in the corner.
         let c = rect.right_bottom() - Vec2::splat(14.0);
         p.circle_filled(c, 11.0, Color32::from_black_alpha(170));
-        let icon = if t.deaf { Icon::Headphones } else { Icon::Mic };
-        paint_icon(&p, icon, Rect::from_center_size(c, Vec2::splat(14.0)), if t.by_server { red } else { FG }, true, Color32::from_gray(30));
+        let icon = if t.deaf { Icon::Deafened } else { Icon::MicOff };
+        icons::paint(&p, icon, Rect::from_center_size(c, Vec2::splat(14.0)), if t.by_server { red } else { FG }, Color32::from_gray(30));
     }
 
     // Registered after the avatar so the whole tile takes the click; the buttons below win.
@@ -561,7 +564,7 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         let resp = ui.interact(x, ui.make_persistent_id("call_stop_watching"), Sense::click());
         let alpha = if resp.hovered() || resp.has_focus() { 230 } else { 170 };
         ui.painter().circle_filled(x.center(), 16.0, Color32::from_black_alpha(alpha));
-        ui.painter().text(x.center(), Align2::CENTER_CENTER, "×", FontId::proportional(18.0), FG);
+        icons::paint(ui.painter(), Icon::Close, Rect::from_center_size(x.center(), Vec2::splat(16.0)), FG, Color32::TRANSPARENT);
         resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stop Watching"));
         if resp.on_hover_text("Stop Watching").on_hover_cursor(CursorIcon::PointingHand).clicked() {
             cx.view.call_ui.watching.remove(key);
@@ -576,7 +579,7 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
 /// stream tile / the pulse say it), then all marks but the most severe one (deafened), before
 /// the name is elided.
 fn name_pill(ui: &egui::Ui, p: &egui::Painter, t: &Tile, rect: Rect, red: Color32) {
-    let mut marks: Vec<Icon> = [(t.muted, Icon::Mic), (t.deaf, Icon::Headphones)].into_iter().filter(|m| m.0).map(|m| m.1).collect();
+    let mut marks: Vec<Icon> = [(t.muted, Icon::MicOff), (t.deaf, Icon::Deafened)].into_iter().filter(|m| m.0).map(|m| m.1).collect();
     let mut live = t.live && t.stream.is_none();
     let font = FontId::proportional(13.0);
     let want = p.layout_no_wrap(t.name.clone(), font.clone(), FG).size().x.min(40.0);
@@ -597,7 +600,7 @@ fn name_pill(ui: &egui::Ui, p: &egui::Painter, t: &Tile, rect: Rect, red: Color3
     let mut x = pill.left() + 8.0;
     for icon in marks {
         let color = if t.by_server { red } else { FG };
-        paint_icon(p, icon, Rect::from_min_size(pos2(x, pill.center().y - 8.0), Vec2::splat(16.0)), color, true, Color32::from_gray(30));
+        icons::paint(p, icon, Rect::from_min_size(pos2(x, pill.center().y - 8.0), Vec2::splat(16.0)), color, Color32::from_gray(30));
         x += 20.0;
     }
     p.galley(pos2(x, pill.center().y - g.size().y / 2.0), g.clone(), FG);
@@ -638,7 +641,8 @@ impl MediaButton<'_> {
         p.rect_filled(rect, radius, bg.gamma_multiply(alpha));
         let icon = if self.red { Color32::WHITE } else if self.on { base } else if self.slashed { danger } else { fg };
         let side = (rect.height() * 0.5).max(20.0);
-        paint_icon(p, self.icon, Rect::from_center_size(rect.center(), Vec2::splat(side)), icon.gamma_multiply(alpha), self.slashed, bg);
+        let shape = if self.slashed { self.icon.off() } else { self.icon };
+        icons::paint(p, shape, Rect::from_center_size(rect.center(), Vec2::splat(side)), icon.gamma_multiply(alpha), bg.gamma_multiply(alpha));
         resp.widget_info(|| WidgetInfo::selected(Role::Button, self.enabled, self.on || self.slashed, self.tip));
         let resp = resp.on_hover_text(self.tip);
         if self.enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }

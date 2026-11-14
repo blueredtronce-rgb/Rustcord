@@ -9,6 +9,7 @@
 //! Reactions use the Emoji tab alone (`reaction_contents`, shown by messages.rs).
 //! OWNERSHIP: composer engineer.
 
+use super::icons::{self, Icon as Vector};
 use super::messages::Pal;
 use super::{images, UiCx};
 use crate::api::cdn;
@@ -46,8 +47,8 @@ const TONES: [Color32; 6] = [
     Color32::from_rgb(0xaf, 0x7e, 0x57),
     Color32::from_rgb(0x7c, 0x53, 0x3e),
 ];
-/// Rail glyphs of `emoji::CATEGORIES`.
-const CATEGORY_ICONS: [&str; 8] = ["🙂", "🌿", "🍔", "⚽", "🚗", "💡", "❤", "🏁"];
+/// Rail icons of `emoji::CATEGORIES`.
+const CATEGORY_ICONS: [Vector; 8] = [Vector::Smile, Vector::Leaf, Vector::Food, Vector::Ball, Vector::Car, Vector::Bulb, Vector::Heart, Vector::Flag];
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Tab {
@@ -72,9 +73,8 @@ enum Item {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Icon {
-    Clock,
+    Vector(Vector),
     Guild(Id),
-    Glyph(&'static str),
 }
 
 struct Section {
@@ -492,7 +492,7 @@ fn sections(ctx: &egui::Context, state: &AppState, ch: Id, search: &str, frequen
             .flat_map(|(gid, _, list)| list.iter().filter(|(e, _)| e.name.to_lowercase().contains(&q)).map(move |x| custom_item(x, *gid)))
             .collect();
         items.extend(emoji::search(&q, 400).into_iter().filter(|(_, e)| drawable(ctx, e.as_str())).map(|(_, e)| Item::Uni(e)));
-        return vec![Section { icon: Icon::Clock, title: String::new(), items }];
+        return vec![Section { icon: Icon::Vector(Vector::Clock), title: String::new(), items }];
     }
     let mut out = Vec::new();
     let frequent: Vec<Item> = frequent
@@ -504,16 +504,13 @@ fn sections(ctx: &egui::Context, state: &AppState, ch: Id, search: &str, frequen
         })
         .collect();
     if !frequent.is_empty() {
-        out.push(Section { icon: Icon::Clock, title: "Frequently used".into(), items: frequent });
+        out.push(Section { icon: Icon::Vector(Vector::Clock), title: "Frequently used".into(), items: frequent });
     }
     for (gid, name, list) in &custom {
         out.push(Section { icon: Icon::Guild(*gid), title: (*name).to_owned(), items: list.iter().map(|x| custom_item(x, *gid)).collect() });
     }
     for (i, ((title, _), list)) in emoji::CATEGORIES.iter().zip(unicode_categories(ctx)).enumerate() {
-        // The rail draws monochrome icons (`icon_family`), which lack some emoji (🙂).
-        let has = |s: &str| ctx.fonts_mut(|f| f.has_glyphs(&FontId::new(20.0, crate::theme::icon_family()), s));
-        let icon = if has(CATEGORY_ICONS[i]) { CATEGORY_ICONS[i] } else { list.first().map_or("?", |e| e.as_str()) };
-        out.push(Section { icon: Icon::Glyph(icon), title: (*title).to_owned(), items: list.iter().map(|e| Item::Uni(e)).collect() });
+        out.push(Section { icon: Icon::Vector(CATEGORY_ICONS[i]), title: (*title).to_owned(), items: list.iter().map(|e| Item::Uni(e)).collect() });
     }
     out
 }
@@ -620,10 +617,7 @@ fn rail(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, all: &[S
             }
             let color = if on || resp.hovered() { pal.text } else { pal.muted };
             match s.icon {
-                Icon::Clock => paint_clock(ui.painter(), r.center(), 8.0, color),
-                Icon::Glyph(g) => {
-                    ui.painter().text(r.center(), Align2::CENTER_CENTER, g, FontId::new(20.0, crate::theme::icon_family()), color);
-                }
+                Icon::Vector(v) => icons::paint(ui.painter(), v, Rect::from_center_size(r.center(), Vec2::splat(20.0)), color, Color32::TRANSPARENT),
                 Icon::Guild(gid) => guild_icon(ui, cx, gid, &s.title, Rect::from_center_size(r.center(), Vec2::splat(28.0))),
             }
             if resp.clicked() {
@@ -631,15 +625,6 @@ fn rail(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, all: &[S
             }
         }
     });
-}
-
-/// "Frequently used" and the slowmode countdown: a clock outline (the emoji font's clocks read
-/// as decoration).
-pub(super) fn paint_clock(p: &egui::Painter, c: egui::Pos2, r: f32, color: Color32) {
-    let stroke = Stroke::new(1.6, color);
-    p.circle_stroke(c, r, stroke);
-    p.line_segment([c, c + vec2(0.0, -r * 0.6)], stroke);
-    p.line_segment([c, c + vec2(r * 0.45, r * 0.2)], stroke);
 }
 
 fn guild_icon(ui: &mut egui::Ui, cx: &mut UiCx<'_>, gid: Id, name: &str, rect: Rect) {
@@ -751,14 +736,18 @@ fn footer(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, item: 
     let Some(item) = item else { return };
     let icon = Rect::from_center_size(pos2(rect.left() + 32.0, rect.center().y), Vec2::splat(28.0));
     paint_item(ui, cx, mem, &item, icon, false);
-    let (lock, name, sub) = match &item {
-        Item::Uni(e) => ("", format!(":{}:", emoji::shortcode(e).unwrap_or(e.name())), String::new()),
-        Item::Custom { e, guild, usable } => (if *usable { "" } else { "🔒" }, format!(":{}:", e.name), cx.state.guild(*guild).map(|g| g.name.clone()).unwrap_or_default()),
+    let (locked, name, sub) = match &item {
+        Item::Uni(e) => (false, format!(":{}:", emoji::shortcode(e).unwrap_or(e.name())), String::new()),
+        Item::Custom { e, guild, usable } => (!*usable, format!(":{}:", e.name), cx.state.guild(*guild).map(|g| g.name.clone()).unwrap_or_default()),
     };
     let x = icon.right() + 12.0;
-    let g = super::icon_line(ui, lock, &name, pal.size, pal.text, rect.right() - x - 12.0);
+    let name_x = if locked { x + 20.0 } else { x };
+    let g = super::one_line(ui, name.as_str(), super::bold(pal.size), pal.text, rect.right() - name_x - 12.0);
     let y = if sub.is_empty() { rect.center().y - g.size().y / 2.0 } else { rect.center().y - g.size().y };
-    ui.painter().galley(pos2(x, y), g, pal.text);
+    if locked {
+        icons::paint(ui.painter(), Vector::Lock, Rect::from_min_size(pos2(x, y + g.size().y / 2.0 - 8.0), Vec2::splat(16.0)), pal.text, Color32::TRANSPARENT);
+    }
+    ui.painter().galley(pos2(name_x, y), g, pal.text);
     if !sub.is_empty() {
         ui.painter().text(pos2(x, rect.center().y + 1.0), Align2::LEFT_TOP, sub, FontId::proportional(pal.meta()), pal.muted);
     }
@@ -898,7 +887,7 @@ fn tiles(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, items: 
                 let star_w = if matches!(kind, TileKind::Section(GifSection::Favorites)) { 22.0 } else { 0.0 };
                 let x = r.center().x - (g.size().x + star_w) / 2.0;
                 if star_w > 0.0 {
-                    paint_star(p, pos2(x + 8.0, r.center().y), 7.0, Color32::WHITE, true);
+                    icons::paint(p, Vector::Star, Rect::from_center_size(pos2(x + 8.0, r.center().y), Vec2::splat(16.0)), Color32::WHITE, Color32::TRANSPARENT);
                 }
                 p.galley(pos2(x + star_w, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
                 if resp.clicked() {
@@ -961,7 +950,7 @@ fn gif_grid(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, mem: &mut Mem, item
                 let fav = cx.settings.favorite_gifs.iter().any(|f| f.url == g.url);
                 let on_star = ui.ctx().pointer_hover_pos().is_some_and(|p| star.contains(p));
                 ui.painter().circle_filled(star.center(), 14.0, Color32::from_black_alpha(if on_star { 200 } else { 150 }));
-                paint_star(ui.painter(), star.center(), 8.0, if fav { TONES[0] } else { Color32::WHITE }, fav);
+                icons::paint(ui.painter(), Vector::Star, Rect::from_center_size(star.center(), Vec2::splat(18.0)), if fav { TONES[0] } else { Color32::WHITE }, Color32::TRANSPARENT);
                 let resp = if on_star { resp.on_hover_text(if fav { "Remove from Favorites" } else { "Add to Favorites" }) } else { resp };
                 if resp.clicked() && on_star {
                     toggle = Some(g.clone());
@@ -990,21 +979,6 @@ fn toggle_favorite(list: &mut Vec<GifItem>, g: GifItem) {
             list.insert(0, GifItem { category: None, ..g });
             list.truncate(MAX_FAVORITE_GIFS);
         }
-    }
-}
-
-/// A five-pointed star of radius `r`: filled (a pentagon plus five tips, all convex) or outlined.
-fn paint_star(p: &egui::Painter, c: egui::Pos2, r: f32, color: Color32, filled: bool) {
-    let pt = |i: usize, rad: f32| c + rad * Vec2::angled(-std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0);
-    let outline: Vec<_> = (0..10).map(|i| pt(i, if i % 2 == 0 { r } else { r * 0.45 })).collect();
-    if !filled {
-        p.add(egui::Shape::closed_line(outline, Stroke::new(1.5, color)));
-        return;
-    }
-    let inner: Vec<_> = (0..5).map(|i| outline[2 * i + 1]).collect();
-    p.add(egui::Shape::convex_polygon(inner, color, Stroke::NONE));
-    for i in 0..5 {
-        p.add(egui::Shape::convex_polygon(vec![outline[(2 * i + 9) % 10], outline[2 * i], outline[2 * i + 1]], color, Stroke::NONE));
     }
 }
 

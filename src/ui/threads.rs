@@ -25,7 +25,8 @@
 //! `can_set_archived`, `can_list_archived`.
 //! OWNERSHIP: threads/forum engineer (docs/SOCIAL_UI_DESIGN.md).
 
-use super::messages::{self, MenuIcon, Pal, icon_button, menu_item, menu_setup, small_button};
+use super::icons::Icon;
+use super::messages::{MenuIcon, Pal, icon_button, icon_label, menu_item, menu_setup, small_button, vector_button, vector_icon};
 use super::{Modal, UiCx, bold, dialog, dialog_buttons, one_line};
 use crate::backend::{ArchivedThreads, Command, SocialCommand, ThreadList};
 use crate::model::{Channel, Id, channel_type};
@@ -71,16 +72,6 @@ pub fn has_threads(kind: u8) -> bool {
     matches!(kind, channel_type::GUILD_TEXT | channel_type::GUILD_ANNOUNCEMENT)
 }
 
-/// Chat header glyph and its font size for a channel kind (the chat header passes a thread's
-/// parent kind; the inbox the thread's own).
-pub(super) fn header_glyph(kind: u8, size: f32) -> (&'static str, f32) {
-    match kind {
-        channel_type::GUILD_FORUM | channel_type::ANNOUNCEMENT_THREAD | channel_type::PUBLIC_THREAD | channel_type::PRIVATE_THREAD => ("💬", size + 1.0),
-        channel_type::GUILD_MEDIA => ("🖼", size + 1.0),
-        k => (messages::channel_prefix(k), size + 4.0),
-    }
-}
-
 /// Chat header of a thread / forum post opened as the channel: "parent ›" before its name; the
 /// parent's name opens the parent.
 pub(super) fn breadcrumb(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, parent: Id) {
@@ -90,7 +81,7 @@ pub(super) fn breadcrumb(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, parent
     if resp.clicked() {
         cx.state.select_channel(parent);
     }
-    ui.add(Label::new(RichText::new("›").size(pal.size + 2.0).color(pal.muted)).selectable(false));
+    vector_icon(ui, Icon::ChevronRight, 16.0, pal.muted, pal.bg);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,11 +178,11 @@ pub(super) fn thread_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: Id) {
         cx.cmd.send(Command::Social(SocialCommand::SetThreadArchived { thread_id: t, archived: !archived }));
     }
     ui.separator();
-    if menu_item(ui, "Copy Link", MenuIcon::Link, pal.text) {
+    if menu_item(ui, "Copy Link", MenuIcon::Icon(Icon::Link), pal.text) {
         let place = guild.map_or_else(|| "@me".to_owned(), |g| g.0.to_string());
         ui.ctx().copy_text(format!("https://discord.com/channels/{place}/{}", t.0));
     }
-    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy Thread ID", MenuIcon::Copy, pal.text) {
+    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy Thread ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
         ui.ctx().copy_text(t.0.to_string());
     }
 }
@@ -247,7 +238,7 @@ pub(super) fn header_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch:
     let ctx = ui.ctx().clone();
     let id = popup_id();
     let open = egui::Popup::is_id_open(&ctx, id);
-    let resp = icon_button(ui, pal, "💬", "Threads", 32.0, open, pal.text);
+    let resp = icon_button(ui, pal, "🧵", "Threads", 32.0, open, pal.text);
     if !open && !resp.clicked() && cx.state.social.threads.as_ref().is_some_and(|v| !matches!(v.list, ThreadList::Forum(_))) {
         // Closed: its list goes (memory).
         cx.state.social.threads = None;
@@ -302,7 +293,7 @@ fn popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id) {
     Frame::new().inner_margin(Margin { left: 16, right: 12, top: 12, bottom: 8 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.add(Label::new(RichText::new("💬").family(crate::theme::icon_family()).size(pal.size + 2.0).color(pal.muted)).selectable(false));
+            vector_icon(ui, Icon::Thread, 20.0, pal.muted, pal.surface);
             ui.add(Label::new(RichText::new("Threads").family(bold_family()).size(pal.size + 1.0).color(pal.text)).selectable(false));
             ui.add_space(12.0);
             let private = if cx.state.can_manage_threads(ch) { ArchivedThreads::Private } else { ArchivedThreads::Joined };
@@ -494,10 +485,8 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
                     let more = super::server_menu::more_button(ui, &pal);
                     egui::Popup::menu(&more).show(|ui| thread_menu(ui, cx, thread));
                     if joined {
-                        let resp = icon_button(ui, &pal, "", "Notification Settings", 32.0, false, pal.text);
-                        let hot = resp.hovered() || resp.has_focus();
-                        let (color, bg) = if hot { (pal.text, pal.bg.blend(pal.tint())) } else { (pal.muted, pal.bg) };
-                        super::user_settings::paint_bell(ui.painter(), resp.rect.center(), color, bg, cx.state.is_channel_muted(thread));
+                        let bell = if cx.state.is_channel_muted(thread) { Icon::BellOff } else { Icon::Bell };
+                        let resp = vector_button(ui, &pal, bell, "Notification Settings", 32.0, false, pal.text);
                         egui::Popup::menu(&resp).show(|ui| {
                             menu_setup(ui);
                             notify_items(ui, cx, thread);
@@ -510,7 +499,7 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
                         }
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(Label::new(RichText::new("💬").family(crate::theme::icon_family()).size(pal.size + 1.0).color(pal.muted)).selectable(false));
+                        vector_icon(ui, Icon::Thread, 20.0, pal.muted, pal.bg);
                         let title = RichText::new(name.as_str()).family(bold_family()).size(pal.size + 1.0).color(pal.text);
                         ui.add(Label::new(title).selectable(false).truncate());
                     });
@@ -523,7 +512,7 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
         let bar = Frame::new().fill(pal.surface).inner_margin(Margin::symmetric(16, 8)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_width(ui.available_width());
-                ui.add(Label::new(RichText::new("🗄 This thread is archived").family(crate::theme::icon_family()).size(pal.meta()).color(pal.muted)).selectable(false));
+                icon_label(ui, Icon::Archive, "This thread is archived", pal.meta(), pal.muted, pal.surface);
                 if can_archive {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if small_button(ui, &pal, "Unarchive", pal.text).clicked() {
@@ -535,7 +524,7 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
         });
         ui.painter().hline(bar.response.rect.x_range(), bar.response.rect.bottom() - 0.5, Stroke::new(1.0, pal.line()));
     }
-    messages::thread_chat(ui, cx, thread);
+    super::messages::thread_chat(ui, cx, thread);
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +575,8 @@ pub fn create_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Id, from
         if private_ok {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔒").family(crate::theme::icon_family()).color(pal.muted));
+                let fill = ui.visuals().window_fill;
+                vector_icon(ui, Icon::Lock, 16.0, pal.muted, fill);
                 ui.label(RichText::new("Private Thread").color(pal.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     super::server_menu::switch(ui, &pal, &mut st.private).on_hover_text("Only people you invite and moderators can see it.");

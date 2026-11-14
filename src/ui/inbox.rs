@@ -8,7 +8,8 @@
 
 use super::messages::{Pal, icon_button, jump_to, message_card, small_button};
 use super::sidebar::{self, badge, dm_avatar_at, empty_state};
-use super::{UiCx, bold, icon_line};
+use super::icons::{self, Icon};
+use super::{UiCx, bold, one_line};
 use crate::backend::{Command, MentionFilter, SocialCommand};
 use crate::model::{Id, channel_type};
 use crate::state::social::MentionsView;
@@ -157,16 +158,21 @@ fn mentions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         }
         // Where it was said, once per run of cards from one channel: "#channel · Server".
         if head {
-            let (glyph, place) = match guild_id.and_then(|g| cx.state.guild(g)) {
+            let (icon, place) = match guild_id.and_then(|g| cx.state.guild(g)) {
                 Some(g) => {
-                    let (glyph, name) = place_name(cx, msg.channel_id);
-                    (glyph, format!("{name} · {}", g.name))
+                    let (icon, name) = place_name(cx, msg.channel_id);
+                    (icon, format!("{name} · {}", g.name))
                 }
-                None => ("", cx.state.channel_name(msg.channel_id)),
+                None => (None, cx.state.channel_name(msg.channel_id)),
             };
             let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-            let g = icon_line(ui, glyph, &place, pal.meta(), pal.muted, head.width());
-            ui.painter().galley(pos2(head.left() + 4.0, head.center().y - g.size().y / 2.0), g, pal.muted);
+            let mut x = head.left() + 4.0;
+            if let Some(icon) = icon {
+                icons::paint(ui.painter(), icon, Rect::from_min_size(pos2(x, head.center().y - 7.0), Vec2::splat(14.0)), pal.muted, pal.surface);
+                x += 18.0;
+            }
+            let g = one_line(ui, place.as_str(), bold(pal.meta()), pal.muted, head.right() - x);
+            ui.painter().galley(pos2(x, head.center().y - g.size().y / 2.0), g, pal.muted);
         }
         let card = message_card(ui, cx, pal, guild_id, msg, &[]);
         cx.view.inbox_ui.heights.insert(msg.id, card.rect.height());
@@ -224,15 +230,14 @@ fn channel_kind(cx: &UiCx<'_>, ch: Id) -> u8 {
     cx.state.channels.get(&ch).map_or(channel_type::GUILD_TEXT, |c| c.kind)
 }
 
-/// ("", "#general"), ("", "@user"), or ("💬", "post") for threads and forum posts: the glyph
-/// for `icon_line`.
-fn place_name(cx: &UiCx<'_>, ch: Id) -> (&'static str, String) {
+/// "#general", "@user", or a thread / forum post with the thread icon to paint in front.
+fn place_name(cx: &UiCx<'_>, ch: Id) -> (Option<Icon>, String) {
     let kind = channel_kind(cx, ch);
     let name = cx.state.channel_name(ch);
     if cx.state.channels.get(&ch).is_some_and(|c| c.is_thread()) {
-        (super::threads::header_glyph(kind, 0.0).0, name)
+        (Some(Icon::Thread), name)
     } else {
-        ("", format!("{}{name}", super::messages::channel_prefix(kind)))
+        (None, format!("{}{name}", super::messages::channel_prefix(kind)))
     }
 }
 
@@ -277,8 +282,8 @@ fn unread_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
         dm_avatar_at(ui, cx, id, icon);
     } else {
         ui.painter().rect_filled(icon, pal.radius, pal.tint());
-        let (glyph, size) = super::threads::header_glyph(kind, pal.size - 2.0);
-        ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(size, crate::theme::icon_family()), pal.muted);
+        let kind_icon = cx.state.channels.get(&id).map_or((Icon::Text, None), |c| icons::of(c, cx.state));
+        icons::paint_channel(ui.painter(), kind_icon, Rect::from_center_size(icon.center(), Vec2::splat(20.0)), pal.muted, pal.surface.blend(pal.tint()));
     }
     let resp = ui.interact(row, ui.make_persistent_id(("rc_inbox_unread", id)), Sense::click());
     let hot = ui.rect_contains_pointer(row);
@@ -295,12 +300,16 @@ fn unread_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id) {
     } else if cx.state.mention_count(id) > 0 {
         right -= badge(ui, &cx.theme.colors, pos2(right, row.center().y), cx.state.mention_count(id), None) + 8.0;
     }
-    let left = icon.right() + 10.0;
-    let (glyph, name) = place_name(cx, id);
+    let (thread, name) = place_name(cx, id);
+    // A thread's icon goes in front of its name (and the server line under it).
+    let left = icon.right() + if thread.is_some() { 30.0 } else { 10.0 };
     let guild = cx.state.channels.get(&id).and_then(|c| c.guild_id).and_then(|g| cx.state.guild(g)).map(|g| g.name.clone());
-    let title = icon_line(ui, glyph, &name, pal.size, pal.text, right - left);
+    let title = one_line(ui, name.as_str(), bold(pal.size), pal.text, right - left);
     let sub = guild.map(|g| (None, g));
-    sidebar::name_and_status(ui, cx, title, pal.text, sub.as_ref(), pos2(left, row.center().y), right - left);
+    let (at, _) = sidebar::name_and_status(ui, cx, title, pal.text, sub.as_ref(), pos2(left, row.center().y), right - left);
+    if let Some(i) = thread {
+        icons::paint(ui.painter(), i, Rect::from_center_size(pos2(at.left() - 12.0, at.center().y), Vec2::splat(16.0)), pal.text, pal.surface);
+    }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
     if mark {
         sidebar::mark_read(cx, [id]);

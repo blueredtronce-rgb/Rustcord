@@ -15,6 +15,7 @@
 //! The list view and its thumbnails are dropped once the forum closes (`threads::track`).
 //! OWNERSHIP: threads/forum engineer (docs/SOCIAL_UI_DESIGN.md).
 
+use super::icons::{self, Icon};
 use super::messages::{Pal, icon_button, menu_setup, small_button};
 use super::server_menu::radio_item;
 use super::threads::{self, ago, archive_combo, field_label};
@@ -123,7 +124,10 @@ fn top_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, defaults:
             if !fu.query.is_empty() && icon_button(ui, pal, "×", "Clear search", 32.0, false, pal.text).clicked() {
                 (fu.query, fu.search) = (String::new(), String::new());
             }
-            let edit = ui.add(TextEdit::singleline(&mut fu.search).char_limit(100).hint_text(RichText::new("🔍 Search posts").family(crate::theme::icon_family())).desired_width(f32::INFINITY).min_size(vec2(0.0, 32.0)));
+            let field = TextEdit::singleline(&mut fu.search).char_limit(100).hint_text("Search posts").margin(Margin { left: 30, right: 4, top: 2, bottom: 2 });
+            let edit = ui.add(field.desired_width(f32::INFINITY).min_size(vec2(0.0, 32.0)));
+            let glass = Rect::from_center_size(pos2(edit.rect.left() + 16.0, edit.rect.center().y), Vec2::splat(16.0));
+            icons::paint(ui.painter(), Icon::Search, glass, pal.muted, Color32::TRANSPARENT);
             if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 fu.query = fu.search.trim().to_owned();
             }
@@ -133,7 +137,7 @@ fn top_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, defaults:
     // Sort & View, then the tag pills on the same row (`tag_filter`).
     ui.horizontal(|ui| {
         let fu = &mut cx.view.forum_ui;
-        let menu = small_button(ui, pal, "↕ Sort & View", pal.text);
+        let menu = small_button(ui, pal, "↕ Sort and view", pal.text);
         egui::Popup::menu(&menu).show(|ui| {
             menu_setup(ui);
             let sort = fu.sort.unwrap_or(default_sort);
@@ -367,7 +371,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id, available: &[Fo
         x += 14.0;
     }
     if p.pinned {
-        ui.painter().text(pos2(x, title_y), Align2::LEFT_CENTER, "📌", FontId::new(pal.meta(), crate::theme::icon_family()), pal.muted);
+        icons::paint(ui.painter(), Icon::Pin, Rect::from_min_size(pos2(x, title_y - 8.0), Vec2::splat(16.0)), pal.muted, Color32::TRANSPARENT);
         x += 20.0;
     }
     let title_color = if p.unread || resp.hovered() { pal.text } else { pal.text.gamma_multiply(0.92) };
@@ -444,13 +448,14 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id, available: &[Fo
     resp
 }
 
-/// "💬 12 · 3h ago" and the post's tags, left-centred on `at`.
+/// Thread icon, "12 · 3h ago" and the post's tags, left-centred on `at`.
 fn footer(ui: &egui::Ui, pal: &Pal, p: &PostInfo, available: &[ForumTag], at: egui::Pos2, max_w: f32) {
-    let font = FontId::new(pal.meta(), crate::theme::icon_family());
-    let meta = format!("💬 {}  ·  {}", p.replies, ago(p.last.timestamp_ms()));
-    let g = one_line(ui, meta, font.clone(), pal.muted, max_w);
-    let mut x = at.x + g.size().x + 12.0;
-    ui.painter().galley(pos2(at.x, at.y - g.size().y / 2.0), g, pal.muted);
+    let font = FontId::proportional(pal.meta());
+    let meta = format!("{}  ·  {}", p.replies, ago(p.last.timestamp_ms()));
+    icons::paint(ui.painter(), Icon::Thread, Rect::from_center_size(pos2(at.x + 7.0, at.y), Vec2::splat(14.0)), pal.muted, Color32::TRANSPARENT);
+    let g = one_line(ui, meta, font.clone(), pal.muted, max_w - 18.0);
+    let mut x = at.x + 18.0 + g.size().x + 12.0;
+    ui.painter().galley(pos2(at.x + 18.0, at.y - g.size().y / 2.0), g, pal.muted);
     for t in p.tags.iter().filter_map(|id| available.iter().find(|t| t.id == *id)) {
         let g = ui.painter().layout_no_wrap(tag_label(t), FontId::proportional(pal.meta() - 1.0), pal.text);
         let r = Rect::from_min_size(pos2(x, at.y - 9.0), g.size() + vec2(12.0, 0.0)).with_max_y(at.y + 9.0);
