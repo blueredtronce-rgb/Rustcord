@@ -1,6 +1,7 @@
 //! The activity thread: loads the saved games list, app icons and my added games, then every
-//! `SCAN_EVERY` lists the running processes (Windows: one Toolhelp snapshot; the full path only
-//! of processes whose file name is a known game) and reports my game when it changes. It never
+//! `SCAN_EVERY` lists the running processes (Windows: one Toolhelp snapshot; Linux: `/proc`;
+//! macOS: libproc; the full path only of processes whose file name is a known game) and
+//! reports my game when it changes. It never
 //! touches the network or the UI thread; it only sends `ActivityEvent`s.
 
 use super::detect::{Table, file_name};
@@ -96,8 +97,6 @@ fn run(rx: &mpsc::Receiver<Msg>, sink: &EventSink) {
     send(ActivityEvent::Added(added.clone()));
     // Test hook: that game, started 47 minutes ago.
     let fake = std::env::var("RUSTCORD_FAKE_GAME").ok().filter(|n| !n.is_empty()).map(|n| (n, super::now_ms().saturating_sub(47 * 60_000)));
-    // Nothing to look for elsewhere: wake only for messages.
-    let every = if cfg!(windows) || fake.is_some() { SCAN_EVERY } else { Duration::from_secs(86_400) };
     let mut current: Option<GameActivity> = None;
     let mut scan = true;
     loop {
@@ -114,7 +113,7 @@ fn run(rx: &mpsc::Receiver<Msg>, sink: &EventSink) {
                 current = found;
             }
         }
-        scan = match rx.recv_timeout(every) {
+        scan = match rx.recv_timeout(SCAN_EVERY) {
             Ok(Msg::Table(t)) => {
                 table = Some(t);
                 true
@@ -282,18 +281,15 @@ mod os {
     }
 }
 
-#[cfg(not(windows))]
-mod os {
-    pub fn processes() -> Vec<(u32, String)> {
-        Vec::new()
-    }
-    pub fn image(_: u32) -> Option<(String, u64)> {
-        None
-    }
-    pub fn windows() -> Vec<super::Window> {
-        Vec::new()
-    }
-}
+/// `/proc` (Wine / Proton games by their Windows path).
+#[cfg(target_os = "linux")]
+#[path = "scan/linux.rs"]
+mod os;
+
+/// libproc (games by their `.app` bundle).
+#[cfg(target_os = "macos")]
+#[path = "scan/macos.rs"]
+mod os;
 
 #[cfg(test)]
 mod tests {
@@ -330,7 +326,6 @@ mod tests {
         assert_eq!(pick(&procs[2..3], Some(&t), &[], None, hidden), None);
     }
 
-    #[cfg(windows)]
     #[test]
     fn lists_this_process_with_its_path_and_start() {
         let me = std::process::id();

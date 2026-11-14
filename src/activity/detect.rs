@@ -1,6 +1,6 @@
 //! The detectable-games list (`GET /games/detectable`) as a compact table: every application
-//! with a Windows executable or an icon (id, name, icon hash), and its Windows executables
-//! sorted by file name. Parsed straight from the JSON body (one pass, no intermediate list),
+//! with an executable for this OS or an icon (id, name, icon hash), and those executables
+//! sorted by file name (Linux keeps the Windows ones too: games under Wine / Proton). Parsed straight from the JSON body (one pass, no intermediate list),
 //! kept on disk as a small TSV whose modification time says when it was fetched.
 
 use crate::model::Id;
@@ -13,6 +13,14 @@ use std::time::{Duration, SystemTime};
 /// The list is fetched again after this long (at most once a day).
 pub const MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 const HEADER: &str = "#rustcord detectable 1";
+/// The list's `os` values whose executables this OS runs.
+const OS_KEYS: &[&str] = if cfg!(windows) {
+    &["win32"]
+} else if cfg!(target_os = "macos") {
+    &["darwin"]
+} else {
+    &["linux", "win32"]
+};
 
 pub struct App {
     pub id: Id,
@@ -21,8 +29,8 @@ pub struct App {
     icon: u128,
 }
 
-/// A Windows executable of an app: a lowercase path suffix like `factorio.exe` or
-/// `_retail_/wow.exe`.
+/// An executable of an app: a lowercase path suffix like `factorio.exe`, `_retail_/wow.exe` or
+/// `_retail_/world of warcraft.app`.
 struct Exe {
     suffix: Box<str>,
     app: u32,
@@ -86,10 +94,15 @@ impl Table {
         self.apps.len()
     }
 
-    /// Parses the API's JSON array. Windows executables only; launchers and `>` entries (those
+    /// Parses the API's JSON array. This OS's executables only; launchers and `>` entries (those
     /// need the command line, which Rustcord doesn't read) are left out.
     pub fn from_json(bytes: &[u8]) -> Result<Table, String> {
-        struct Build;
+        Self::from_json_for(bytes, OS_KEYS)
+    }
+
+    /// `from_json` keeping the executables of the `os` values `keep`.
+    fn from_json_for(bytes: &[u8], keep: &'static [&'static str]) -> Result<Table, String> {
+        struct Build(&'static [&'static str]);
         impl<'de> Visitor<'de> for Build {
             type Value = Table;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -98,7 +111,7 @@ impl Table {
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Table, A::Error> {
                 let mut t = Table::default();
                 while let Some(w) = seq.next_element::<WireApp<'de>>()? {
-                    let win = |e: &WireExe| e.os.as_deref() == Some("win32") && e.is_launcher != Some(true);
+                    let win = |e: &WireExe| e.os.as_deref().is_some_and(|os| self.0.contains(&os)) && e.is_launcher != Some(true);
                     let exes: Vec<Cow<str>> = w.executables.into_iter().flatten().filter(win).filter_map(|e| e.name).collect();
                     if !w.id.is_zero() {
                         t.push(w.id, w.name.as_deref().unwrap_or_default(), w.icon_hash.as_deref(), exes.iter().map(|e| e.as_ref()));
@@ -108,7 +121,7 @@ impl Table {
             }
         }
         use serde::Deserializer as _;
-        serde_json::Deserializer::from_slice(bytes).deserialize_seq(Build).map_err(|e| format!("detectable list: {e}"))
+        serde_json::Deserializer::from_slice(bytes).deserialize_seq(Build(keep)).map_err(|e| format!("detectable list: {e}"))
     }
 
     /// One line per app: id, icon hash, name, executables (tab-separated).
@@ -249,8 +262,25 @@ mod tests {
     ]"#;
 
     #[test]
+    fn table_keeps_this_os() {
+        let json = r#"[{"id":"1","name":"Native","executables":[{"name":"native/game","os":"linux"}]},
+                        {"id":"2","name":"Wine","executables":[{"name":"celeste/celeste.exe","os":"win32"}]},
+                        {"id":"3","name":"Mac","executables":[{"name":"mac game.app","os":"darwin"}]}]"#;
+        let names = |t: &Table| t.apps.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
+        assert_eq!(names(&Table::from_json_for(json.as_bytes(), &["linux", "win32"]).unwrap()), ["Native", "Wine"]);
+        assert_eq!(names(&Table::from_json_for(json.as_bytes(), &["darwin"]).unwrap()), ["Mac"]);
+        assert_eq!(names(&Table::from_json_for(json.as_bytes(), &["win32"]).unwrap()), ["Wine"]);
+        let t = Table::from_json(json.as_bytes()).unwrap();
+        let linux = cfg!(not(any(windows, target_os = "macos")));
+        assert_eq!(t.find("/opt/native/game").is_some(), linux);
+        assert_eq!(t.find("/applications/mac game.app").is_some(), cfg!(target_os = "macos"));
+        // Wine / Proton: a Windows path, normalized.
+        assert_eq!(t.find(&normalize(r"Z:\home\ann\.steam\steamapps\common\Celeste\Celeste.exe")).is_some(), !cfg!(target_os = "macos"));
+    }
+
+    #[test]
     fn parses_and_matches_like_the_official_list() {
-        let t = Table::from_json(JSON.as_bytes()).unwrap();
+        let t = Table::from_json_for(JSON.as_bytes(), &["win32"]).unwrap();
         // Mac-only without an icon is dropped; the web game stays for its icon.
         assert_eq!(t.len(), 4);
         assert_eq!(t.icon(Id(356875221078245376)).as_deref(), Some("a60bb76ba4d4acafbd4cb9aad6e61739"));
@@ -272,7 +302,7 @@ mod tests {
 
     #[test]
     fn disk_format_round_trips() {
-        let t = Table::from_json(JSON.as_bytes()).unwrap();
+        let t = Table::from_json_for(JSON.as_bytes(), &["win32"]).unwrap();
         let again = Table::from_tsv(&t.to_tsv()).unwrap();
         assert_eq!(again.to_tsv(), t.to_tsv());
         assert_eq!(again.find("c:/games/star conflict/game.exe").map(|a| a.id), Some(Id(8)));
