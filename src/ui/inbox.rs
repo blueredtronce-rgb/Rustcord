@@ -94,7 +94,7 @@ fn contents(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
         });
     });
     let r = ui.min_rect();
-    ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, pal.tk.rule));
     ScrollArea::vertical()
         .id_salt(("rc_inbox_list", cx.view.inbox_ui.tab == Tab::Unreads))
         .max_height((screen.height() * 0.7 - 56.0).max(160.0))
@@ -156,12 +156,12 @@ fn mentions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal) {
             ui.allocate_space(est.size());
             continue;
         }
-        // Where it was said, once per run of cards from one channel: "#channel · Server".
+        // Where it was said, once per run of cards from one channel: "#channel in Server".
         if head {
             let (icon, place) = match guild_id.and_then(|g| cx.state.guild(g)) {
                 Some(g) => {
                     let (icon, name) = place_name(cx, msg.channel_id);
-                    (icon, format!("{name} · {}", g.name))
+                    (icon, format!("{name} in {}", g.name))
                 }
                 None => (None, cx.state.channel_name(msg.channel_id)),
             };

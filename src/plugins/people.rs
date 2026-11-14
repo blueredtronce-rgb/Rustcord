@@ -53,19 +53,19 @@ pub fn user_tag(state: &AppState, guild_id: Option<Id>, user_id: Id, member: Opt
     let Some(g) = guild_id.and_then(|g| state.guild(g)) else {
         // Group DM owner.
         let owner = state.selected_channel.and_then(|c| state.channels.get(&c)).filter(|c| c.kind == channel_type::GROUP_DM)?.owner_id;
-        return (owner == Some(user_id)).then_some(("OWNER", gold));
+        return (owner == Some(user_id)).then_some(("Owner", gold));
     };
     if g.owner_id == user_id {
-        return Some(("OWNER", gold));
+        return Some(("Owner", gold));
     }
     let roles = member.map(|m| m.roles.as_slice()).or_else(|| state.find_member(g.id, user_id).map(|m| m.roles.as_slice()))?;
     let p = member_perms(g, user_id, roles);
     if p == perm::ALL {
-        Some(("ADMIN", Color32::from_rgb(0xED, 0x42, 0x45)))
+        Some(("Admin", Color32::from_rgb(0xED, 0x42, 0x45)))
     } else if p & (perm::MANAGE_MESSAGES | perm::KICK_MEMBERS | perm::BAN_MEMBERS | perm::MODERATE_MEMBERS) != 0 {
-        Some(("MOD", Color32::from_rgb(0x3B, 0xA5, 0x5D)))
+        Some(("Mod", Color32::from_rgb(0x3B, 0xA5, 0x5D)))
     } else if p & (perm::MANAGE_GUILD | perm::MANAGE_CHANNELS | perm::MANAGE_ROLES) != 0 {
-        Some(("STAFF", Color32::from_rgb(0x58, 0x9C, 0xF0)))
+        Some(("Staff", Color32::from_rgb(0x58, 0x9C, 0xF0)))
     } else {
         None
     }

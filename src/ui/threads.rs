@@ -152,10 +152,10 @@ pub fn sidebar_rows(ui: &mut egui::Ui, cx: &mut UiCx<'_>, parent: Id, threads: &
 pub(super) fn thread_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: Id) {
     menu_setup(ui);
     let pal = Pal::new(cx.theme);
-    if ui.add_enabled_ui(cx.state.is_unread(t), |ui| menu_item(ui, "Mark As Read", MenuIcon::Glyph("✔"), pal.text)).inner {
+    if ui.add_enabled_ui(cx.state.is_unread(t), |ui| menu_item(ui, "Mark as read", MenuIcon::Glyph("✔"), pal.text)).inner {
         super::sidebar::mark_read(cx, [t]);
     }
-    if cx.view.thread_panel != Some(t) && menu_item(ui, "Open in Split View", MenuIcon::Glyph("⊞"), pal.text) {
+    if cx.view.thread_panel != Some(t) && menu_item(ui, "Open in split view", MenuIcon::Glyph("⊞"), pal.text) {
         open_in_panel(cx, t);
     }
     let Some(ch) = known(cx.state, t) else { return };
@@ -167,22 +167,22 @@ pub(super) fn thread_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: Id) {
         notify_items(ui, cx, t);
     }
     ui.separator();
-    if can_join && menu_item(ui, "Join Thread", MenuIcon::Glyph("➕"), pal.text) {
+    if can_join && menu_item(ui, "Join thread", MenuIcon::Glyph("➕"), pal.text) {
         cx.cmd.send(Command::Social(SocialCommand::JoinThread { thread_id: t }));
     }
-    if joined && !archived && menu_item(ui, "Leave Thread", MenuIcon::Glyph("🚪"), pal.danger) {
+    if joined && !archived && menu_item(ui, "Leave thread", MenuIcon::Glyph("🚪"), pal.danger) {
         cx.cmd.send(Command::Social(SocialCommand::LeaveThread { thread_id: t }));
     }
-    let label = if archived { "Unarchive Thread" } else { "Archive Thread" };
+    let label = if archived { "Unarchive thread" } else { "Archive thread" };
     if can_archive && menu_item(ui, label, MenuIcon::Glyph("🗄"), pal.text) {
         cx.cmd.send(Command::Social(SocialCommand::SetThreadArchived { thread_id: t, archived: !archived }));
     }
     ui.separator();
-    if menu_item(ui, "Copy Link", MenuIcon::Icon(Icon::Link), pal.text) {
+    if menu_item(ui, "Copy link", MenuIcon::Icon(Icon::Link), pal.text) {
         let place = guild.map_or_else(|| "@me".to_owned(), |g| g.0.to_string());
         ui.ctx().copy_text(format!("https://discord.com/channels/{place}/{}", t.0));
     }
-    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy Thread ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
+    if cx.state.account.settings.developer_mode() && menu_item(ui, "Copy thread ID", MenuIcon::Icon(Icon::IdCard), pal.text) {
         ui.ctx().copy_text(t.0.to_string());
     }
 }
@@ -195,10 +195,10 @@ pub(super) fn thread_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: Id) {
 fn notify_items(ui: &mut egui::Ui, cx: &UiCx<'_>, t: Id) {
     const WHY: &str = "Not available yet";
     let text = cx.theme.colors.text.to_color32();
-    let mute = if cx.state.is_channel_muted(t) { "Unmute Thread" } else { "Mute Thread" };
+    let mute = if cx.state.is_channel_muted(t) { "Unmute thread" } else { "Mute thread" };
     ui.add_enabled_ui(false, |ui| {
         ui.menu_button(RichText::new(mute).color(text), |_| {}).response.on_disabled_hover_text(WHY);
-        ui.menu_button(RichText::new("Notification Settings").color(text), |_| {}).response.on_disabled_hover_text(WHY);
+        ui.menu_button(RichText::new("Notifications").color(text), |_| {}).response.on_disabled_hover_text(WHY);
     });
 }
 
@@ -312,17 +312,14 @@ fn popout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, ch: Id) {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if cx.state.can_create_thread(ch, false) {
-                    let create = egui::Button::new(RichText::new("Create").color(cx.theme.colors.accent_text.to_color32())).fill(pal.accent);
-                    if ui.add(create).on_hover_text("Create Thread").clicked() {
-                        open_create(cx, ch, None);
-                        ui.close();
-                    }
+                if cx.state.can_create_thread(ch, false) && super::messages::button(ui, pal, super::messages::Btn::Primary, "Create thread", true).clicked() {
+                    open_create(cx, ch, None);
+                    ui.close();
                 }
             });
         });
     });
-    ui.painter().hline(ui.min_rect().x_range(), ui.min_rect().bottom(), Stroke::new(1.0, pal.line()));
+    ui.painter().hline(ui.min_rect().x_range(), ui.min_rect().bottom(), Stroke::new(1.0, pal.tk.rule));
 
     // Rows: Active = the known ones first, then those only the search found.
     let mut ids: Vec<Id> = if tab.is_none() { cx.state.active_threads(ch) } else { Vec::new() };
@@ -418,9 +415,9 @@ fn list_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, t: Id) -> bool {
     let name = ch.name.clone().unwrap_or_default();
     let count = ch.message_count.unwrap_or(0);
     let last = ch.last_message_id.map_or(ch.id, |m| m.max(ch.id));
-    let mut meta = format!("{count} message{} · {}", if count == 1 { "" } else { "s" }, ago(last.timestamp_ms()));
+    let mut meta = format!("{count} message{}, active {}", if count == 1 { "" } else { "s" }, ago(last.timestamp_ms()));
     if archived {
-        meta.push_str(" · archived");
+        meta.push_str(", archived");
     }
     let hot = resp.hovered();
     if hot {
@@ -486,17 +483,14 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
                     egui::Popup::menu(&more).show(|ui| thread_menu(ui, cx, thread));
                     if joined {
                         let bell = if cx.state.is_channel_muted(thread) { Icon::BellOff } else { Icon::Bell };
-                        let resp = vector_button(ui, &pal, bell, "Notification Settings", 32.0, false, pal.text);
+                        let resp = vector_button(ui, &pal, bell, "Notifications", 32.0, false, pal.text);
                         egui::Popup::menu(&resp).show(|ui| {
                             menu_setup(ui);
                             notify_items(ui, cx, thread);
                         });
                     }
-                    if can_join {
-                        let join = egui::Button::new(RichText::new("Join").color(cx.theme.colors.accent_text.to_color32())).fill(pal.accent);
-                        if ui.add(join).on_hover_text("Join Thread").clicked() {
-                            cx.cmd.send(Command::Social(SocialCommand::JoinThread { thread_id: thread }));
-                        }
+                    if can_join && super::messages::button(ui, &pal, super::messages::Btn::Primary, "Join thread", true).clicked() {
+                        cx.cmd.send(Command::Social(SocialCommand::JoinThread { thread_id: thread }));
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         vector_icon(ui, Icon::Thread, 20.0, pal.muted, pal.bg);
@@ -507,7 +501,7 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
             });
         });
     let r = header.response.rect;
-    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
     if archived {
         let bar = Frame::new().fill(pal.surface).inner_margin(Margin::symmetric(16, 8)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -522,7 +516,7 @@ pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, thread: Id) {
                 }
             });
         });
-        ui.painter().hline(bar.response.rect.x_range(), bar.response.rect.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+        ui.painter().hline(bar.response.rect.x_range(), bar.response.rect.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
     }
     super::messages::thread_chat(ui, cx, thread);
 }
@@ -557,7 +551,7 @@ pub fn create_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Id, from
     let allowed = cx.state.can_create_thread(channel_id, st.private);
     let valid = (1..=100).contains(&st.name.trim().chars().count());
     let theme = &*cx.theme;
-    let resp = dialog(ctx, theme, "rc_create_thread", 442.0, "Create Thread", |ui| {
+    let resp = dialog(ctx, theme, "rc_create_thread", 442.0, "Create thread", |ui| {
         if let Some((author, text)) = &starter {
             Frame::new().fill(pal.bg).corner_radius(pal.card_radius()).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -566,7 +560,7 @@ pub fn create_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Id, from
                 ui.add(Label::new(RichText::new(preview).size(pal.meta()).color(pal.muted)).wrap().selectable(false));
             });
         }
-        field_label(ui, &pal, "Thread Name");
+        field_label(ui, &pal, "Thread name");
         let edit = ui.add(TextEdit::singleline(&mut st.name).char_limit(100).hint_text("New thread").desired_width(f32::INFINITY));
         if ui.memory(|m| m.focused().is_none()) {
             edit.request_focus();
@@ -577,13 +571,13 @@ pub fn create_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, channel_id: Id, from
             ui.horizontal(|ui| {
                 let fill = ui.visuals().window_fill;
                 vector_icon(ui, Icon::Lock, 16.0, pal.muted, fill);
-                ui.label(RichText::new("Private Thread").color(pal.text));
+                ui.label(RichText::new("Private thread").color(pal.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     super::server_menu::switch(ui, &pal, &mut st.private).on_hover_text("Only people you invite and moderators can see it.");
                 });
             });
         }
-        field_label(ui, &pal, "Hide After Inactivity");
+        field_label(ui, &pal, "Hide after inactivity");
         archive_combo(ui, "rc_thread_archive", &mut st.archive_minutes);
         if !allowed {
             ui.label(RichText::new("You can't create threads here.").size(pal.meta()).color(pal.danger));

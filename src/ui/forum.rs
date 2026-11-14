@@ -104,7 +104,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, forum: Id) {
         top_bar(ui, cx, &pal, forum, (default_sort, default_gallery), &available);
     });
     let r = bar.response.rect;
-    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.line()));
+    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, pal.tk.rule));
     posts(ui, cx, &pal, forum, &available, gallery);
 }
 
@@ -115,8 +115,7 @@ fn top_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, defaults:
     let can_post = cx.state.can_create_post(forum);
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let new_post = egui::Button::new(RichText::new("New Post").color(cx.theme.colors.accent_text.to_color32())).fill(pal.accent).min_size(vec2(0.0, 32.0));
-            let resp = ui.add_enabled(can_post, new_post).on_disabled_hover_text("You can't post here.");
+            let resp = super::messages::button(ui, pal, super::messages::Btn::Primary, "New post", can_post).on_disabled_hover_text("You can't post in this forum.");
             if resp.clicked() {
                 open_new_post(cx, forum);
             }
@@ -143,7 +142,7 @@ fn top_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, forum: Id, defaults:
             let sort = fu.sort.unwrap_or(default_sort);
             let gallery = fu.gallery.unwrap_or(default_gallery);
             ui.label(RichText::new("Sort by").size(pal.meta()).family(bold_family()).color(pal.muted));
-            for (s, label) in [(ThreadSort::LastActivity, "Recent Activity"), (ThreadSort::Created, "Date Posted")] {
+            for (s, label) in [(ThreadSort::LastActivity, "Recent activity"), (ThreadSort::Created, "Date posted")] {
                 if radio_item(ui, label, sort == s, pal.text) {
                     fu.sort = Some(s);
                 }
@@ -186,14 +185,15 @@ fn tag_filter(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, available: &[Foru
     });
 }
 
-/// A tag as a toggle pill: quiet fill, accent outline and text while picked.
+/// A tag as a toggle pill: quiet fill; while picked the chip colours (`chip` fill, `link` text
+/// and outline), never the accent.
 fn tag_pill(ui: &mut egui::Ui, pal: &Pal, text: &str, on: bool) -> egui::Response {
-    let color = if on { pal.accent } else { pal.text };
+    let color = if on { pal.link } else { pal.text };
     let g = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(pal.meta()), color);
     let (rect, resp) = ui.allocate_exact_size(g.size() + vec2(20.0, 10.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, text));
-    let fill = if on { pal.accent.gamma_multiply(0.14) } else if resp.hovered() { pal.text.gamma_multiply(0.14) } else { pal.tint() };
-    let stroke = Stroke::new(1.0, if on { pal.accent } else { Color32::TRANSPARENT });
+    let fill = if on { pal.tk.chip } else if resp.hovered() { pal.tk.selected } else { pal.tk.hover };
+    let stroke = Stroke::new(1.0, if on { pal.link } else { Color32::TRANSPARENT });
     ui.painter().rect(rect, rect.height() / 2.0, fill, stroke, egui::StrokeKind::Inside);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, color);
     resp.on_hover_cursor(CursorIcon::PointingHand)
@@ -339,12 +339,12 @@ fn plain(text: &str) -> String {
     flat.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Card frame: raised on hover, accent outline while open in the panel.
+/// Card frame: raised on hover, a `text` outline while open in the panel (the selection).
 fn card_frame(ui: &mut egui::Ui, pal: &Pal, size: Vec2, open: bool) -> (Rect, egui::Response) {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let hot = resp.hovered();
     let fill = if hot { pal.surface } else { pal.surface.lerp_to_gamma(pal.bg, 0.45) };
-    let stroke = if open { pal.accent } else if hot { pal.muted.gamma_multiply(0.45) } else { pal.line() };
+    let stroke = if open { pal.text } else if hot { pal.muted.gamma_multiply(0.45) } else { pal.tk.rule };
     ui.painter().rect(rect, pal.card_radius(), fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
     (rect, resp.on_hover_cursor(CursorIcon::PointingHand))
 }
@@ -448,10 +448,10 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, id: Id, available: &[Fo
     resp
 }
 
-/// Thread icon, "12 · 3h ago" and the post's tags, left-centred on `at`.
+/// Thread icon, "12 replies, active 3h ago" and the post's tags, left-centred on `at`.
 fn footer(ui: &egui::Ui, pal: &Pal, p: &PostInfo, available: &[ForumTag], at: egui::Pos2, max_w: f32) {
     let font = FontId::proportional(pal.meta());
-    let meta = format!("{}  ·  {}", p.replies, ago(p.last.timestamp_ms()));
+    let meta = format!("{} repl{}, active {}", p.replies, if p.replies == 1 { "y" } else { "ies" }, ago(p.last.timestamp_ms()));
     icons::paint(ui.painter(), Icon::Thread, Rect::from_center_size(pos2(at.x + 7.0, at.y), Vec2::splat(14.0)), pal.muted, Color32::TRANSPARENT);
     let g = one_line(ui, meta, font.clone(), pal.muted, max_w - 18.0);
     let mut x = at.x + 18.0 + g.size().x + 12.0;
@@ -518,7 +518,7 @@ pub fn new_post_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, forum: Id) {
     let pal = Pal::new(&theme);
     let offered: Vec<ForumTag> = cx.state.post_tags(forum).into_iter().cloned().collect();
     let required = cx.state.channels.get(&forum).is_some_and(|c| c.flags & REQUIRE_TAG != 0);
-    let title = format!("New Post in {}", cx.state.channel_name(forum));
+    let title = format!("New post in {}", cx.state.channel_name(forum));
     let default_archive = cx.state.channels.get(&forum).and_then(|c| c.default_auto_archive_duration).unwrap_or(4320);
     cx.view.forum_ui.archive_minutes = threads::valid_archive(cx.view.forum_ui.archive_minutes, default_archive);
     // The message box gives way in short windows (720×420) so the form fits.
@@ -552,7 +552,7 @@ pub fn new_post_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, forum: Id) {
         composer::form_files(ui, cx, &pal, forum);
         let fu = &mut cx.view.forum_ui;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Hide After Inactivity").family(bold_family()).size(pal.meta()).color(pal.muted));
+            ui.label(RichText::new("Hide after inactivity").family(bold_family()).size(pal.meta()).color(pal.muted));
             archive_combo(ui, "rc_post_archive", &mut fu.archive_minutes);
         });
         if let Some(e) = &fu.error {
