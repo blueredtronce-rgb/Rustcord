@@ -1,5 +1,6 @@
 //! The setup window (docs/DESIGN.md §12 "Installer"): a 32 px title bar of its own with the
-//! mark, one screen with the options and the main button, then progress and the result.
+//! mark, one screen with the options and the main button, then progress and the result. The
+//! window takes each screen's height (`Setup::fit`), so no screen is half empty.
 //! Colours, sizes and controls follow DESIGN.md §2 (Ember Dark), §3, §9; the setup reads no
 //! theme files, so the values are repeated here.
 
@@ -31,6 +32,11 @@ const FOCUS: Color32 = Color32::from_rgb(0x81, 0xbf, 0xeb);
 const CLOSE_RED: Color32 = Color32::from_rgb(0xc4, 0x2b, 0x1c);
 const LOGO: &[u8] = include_bytes!("../../../assets/icons/rustcord-128.png");
 const SEMIBOLD: &str = "semibold";
+const WIDTH: f32 = 520.0;
+/// The first screen's height, so the window opens at its final size: install (all fixed sizes),
+/// remove (its paragraph wraps to two lines in Segoe UI; `Setup::fit` corrects any other font).
+const INSTALL_HEIGHT: f32 = 32.0 + 32.0 + 48.0 + 24.0 + 2.0 * 56.0 + 12.0 + 16.0 + 24.0 + 40.0 + 32.0;
+const REMOVE_HEIGHT: f32 = 341.0;
 
 /// `text` at `a` opacity: hover 6 %, selected and rules 10 % (DESIGN.md §2.2).
 fn tint(a: f32) -> Color32 {
@@ -64,6 +70,8 @@ struct Setup {
     /// `RUSTCORD_SCREENSHOT`: the PNG to save, and the frame count.
     shot: Option<PathBuf>,
     frame_no: u32,
+    /// The window's inner height asked for last (`fit`).
+    height: f32,
 }
 
 pub fn run(mode: Mode, opts: Options) -> eframe::Result {
@@ -71,11 +79,12 @@ pub fn run(mode: Mode, opts: Options) -> eframe::Result {
     let dir = opts.dir.clone();
     let icon = image::load_from_memory(LOGO).map(|i| i.resize(64, 64, image::imageops::FilterType::Lanczos3).to_rgba8());
     let icon = icon.map(|i| egui::IconData { width: i.width(), height: i.height(), rgba: i.into_raw() }).unwrap_or_default();
+    let height = if mode == Mode::Install { INSTALL_HEIGHT } else { REMOVE_HEIGHT };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Rustcord setup")
             .with_app_id("rustcord-setup")
-            .with_inner_size([520.0, 400.0])
+            .with_inner_size([WIDTH, height])
             .with_resizable(false)
             .with_decorations(false)
             .with_icon(icon),
@@ -84,7 +93,7 @@ pub fn run(mode: Mode, opts: Options) -> eframe::Result {
         ..Default::default()
     };
     let flag = removed.clone();
-    eframe::run_native("Rustcord setup", options, Box::new(move |cc| Ok(Box::new(Setup::new(cc, mode, opts, flag)))))?;
+    eframe::run_native("Rustcord setup", options, Box::new(move |cc| Ok(Box::new(Setup::new(cc, mode, opts, flag, height)))))?;
     if removed.load(Ordering::SeqCst) {
         setup::remove_self(&dir);
     }
@@ -92,7 +101,7 @@ pub fn run(mode: Mode, opts: Options) -> eframe::Result {
 }
 
 impl Setup {
-    fn new(cc: &eframe::CreationContext<'_>, mode: Mode, opts: Options, removed: Arc<AtomicBool>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, mode: Mode, opts: Options, removed: Arc<AtomicBool>, height: f32) -> Self {
         let ctx = &cc.egui_ctx;
         ctx.set_theme(egui::Theme::Dark);
         fonts(ctx);
@@ -100,7 +109,7 @@ impl Setup {
         let logo = egui::ColorImage::from_rgba_unmultiplied([logo.width() as usize, logo.height() as usize], logo.as_raw());
         let logo = ctx.load_texture("rustcord-logo", logo, egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR });
         let shot = std::env::var_os("RUSTCORD_SCREENSHOT").map(PathBuf::from);
-        let mut setup = Setup { mode, opts, screen: Screen::Options, error: String::new(), shared: Default::default(), logo, removed, shot, frame_no: 0 };
+        let mut setup = Setup { mode, opts, screen: Screen::Options, error: String::new(), shared: Default::default(), logo, removed, shot, frame_no: 0, height };
         if setup.shot.is_some() {
             setup.demo(&std::env::var("RUSTCORD_SETUP_SCREEN").unwrap_or_default());
         }
@@ -126,8 +135,11 @@ impl Setup {
         }
     }
 
+    /// Runs the install (or removal) on a worker thread; again after a failure ("Try again").
     fn start(&mut self, ctx: &egui::Context) {
         self.screen = Screen::Working;
+        self.error.clear();
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).fraction = 0.0;
         let (shared, opts, mode, ctx) = (self.shared.clone(), self.opts.clone(), self.mode, ctx.clone());
         std::thread::spawn(move || {
             let mut report = |f: f32| {
@@ -207,8 +219,11 @@ impl Setup {
         }
     }
 
+    /// The screen, top down; the window takes its height (`fit`).
     fn body(&mut self, ui: &mut egui::Ui) {
         let area = ui.max_rect();
+        // Every gap is written out below.
+        ui.spacing_mut().item_spacing.y = 0.0;
         // Header: the mark, the heading (title role) and the version (meta).
         let (head, _) = ui.allocate_exact_size(vec2(area.width(), 48.0), Sense::hover());
         let logo = Rect::from_min_size(head.min, Vec2::splat(48.0));
@@ -222,13 +237,15 @@ impl Setup {
         match (self.mode, self.screen) {
             (Mode::Install, Screen::Options) => {
                 let o = &mut self.opts;
-                let rows = group(ui, 3);
+                let rows = group(ui, 2);
                 // The same words as the app's Windows settings row (docs/DESIGN.md §12).
-                row_text(ui, rows[0], "Open Rustcord when I sign in to Windows", Some("It starts in the notification area."));
+                row_text(ui, rows[0], "Open Rustcord when I sign in to Windows", Some("Rustcord starts in the notification area."));
                 switch(ui, rows[0], &mut o.autostart, "Open Rustcord when I sign in to Windows");
                 row_text(ui, rows[1], "Create a desktop shortcut", None);
                 switch(ui, rows[1], &mut o.desktop, "Create a desktop shortcut");
-                row_text(ui, rows[2], "Location", Some(&o.dir.display().to_string()));
+                // Where it goes, as a note: the folder is fixed per user (--dir changes it).
+                ui.add_space(12.0);
+                meta_line(ui, &format!("Installs to {}", o.dir.display()));
             }
             (Mode::Uninstall, Screen::Options) => {
                 paragraph(ui, "This removes the app, its shortcuts and its startup entry. Your Discord account stays as it is.", MUTED);
@@ -251,10 +268,14 @@ impl Setup {
             (_, Screen::Failed) => paragraph(ui, &self.error.clone(), TEXT),
         }
 
-        // Footer: right-aligned, 12 apart, the main action rightmost.
-        let footer = Rect::from_min_max(pos2(area.left(), area.bottom() - 40.0), area.max);
+        if self.screen == Screen::Working {
+            return;
+        }
+        // Footer: 24 under the content, right-aligned, 12 apart, the main action rightmost.
+        ui.add_space(24.0);
         let ctx = ui.ctx().clone();
-        ui.scope_builder(UiBuilder::new().max_rect(footer).layout(Layout::right_to_left(Align::Center)), |ui| {
+        ui.allocate_ui_with_layout(vec2(area.width(), 40.0), Layout::right_to_left(Align::Center), |ui| {
+            ui.set_min_height(40.0);
             ui.spacing_mut().item_spacing.x = 12.0;
             match (self.mode, self.screen) {
                 (mode, Screen::Options) => {
@@ -275,14 +296,37 @@ impl Setup {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
-                (_, Screen::Done | Screen::Failed) => {
+                (_, Screen::Done) => {
                     if button(ui, "Close", Kind::Secondary).clicked() {
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
+                }
+                (_, Screen::Failed) => {
+                    if button(ui, "Try again", Kind::Primary).clicked() {
+                        self.start(&ctx);
+                    }
+                    if button(ui, "Close", Kind::Ghost).clicked() {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
                 (_, Screen::Working) => {}
             }
         });
+    }
+
+    /// Sizes the window to the screen's `height` (points), keeping its centre where it is.
+    fn fit(&mut self, ctx: &egui::Context, height: f32) {
+        let height = height.round();
+        if (height - self.height).abs() < 1.0 {
+            return;
+        }
+        self.height = height;
+        // The rects of the size the window has now (an earlier request may still be on its way).
+        let (inner, outer) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(WIDTH, height)));
+        if let (Some(inner), Some(outer)) = (inner, outer) {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(outer.min + vec2(0.0, ((inner.height() - height) / 2.0).round())));
+        }
     }
 
     /// `RUSTCORD_SCREENSHOT`: saves the 10th frame and closes.
@@ -321,7 +365,8 @@ impl eframe::App for Setup {
         let bar = Rect::from_min_size(full.min, vec2(full.width(), 32.0));
         self.title_bar(ui, bar);
         let body = Rect::from_min_max(pos2(full.left() + 32.0, bar.bottom() + 32.0), full.max - vec2(32.0, 32.0));
-        ui.scope_builder(UiBuilder::new().max_rect(body), |ui| self.body(ui));
+        let used = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| self.body(ui)).response.rect;
+        self.fit(&ctx, used.bottom() + 32.0 - full.top());
         self.screenshot(&ctx);
     }
 
@@ -359,6 +404,20 @@ fn paragraph(ui: &mut egui::Ui, text: &str, color: Color32) {
     let g = ui.painter().layout(text.to_owned(), FontId::proportional(14.0), color, ui.available_width());
     let (rect, _) = ui.allocate_exact_size(g.size(), Sense::hover());
     ui.painter().galley(rect.min, g, color);
+}
+
+/// One line of meta text (12, `text_muted`, 16 tall) in line with the rows' titles; a long
+/// one ends in "…" and shows in full on hover.
+fn meta_line(ui: &mut egui::Ui, text: &str) {
+    let mut job = LayoutJob::simple_singleline(text.into(), FontId::proportional(12.0), MUTED);
+    job.wrap = TextWrapping { max_width: ui.available_width() - 32.0, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let g = ui.painter().layout_job(job);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+    let elided = g.elided;
+    ui.painter().galley(pos2(rect.left() + 16.0, rect.center().y - g.size().y / 2.0), g, MUTED);
+    if elided {
+        resp.on_hover_text(text);
+    }
 }
 
 /// One `surface` container (radius 12) of `n` setting rows, 56 tall, with `rule` lines between
