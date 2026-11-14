@@ -144,6 +144,17 @@ Measured 2026-11-14 (**debug** build: C: had too little room for a release rebui
 | 1080p clip playing | 113 MB peak | 139 MB | 24 | 26–60 % of one core (debug) |
 | Ended, decoder thread gone (30 s after the last paint) | 102 MB | 136 MB | 17 | 0 between the app's own repaints |
 
+Playback CPU, **release** (2026-11-14, offline, 1180×760 at 125 %, process CPU over 20 s, median
+of 3 runs; per thread from the same runs):
+| | Total | GL driver thread (atio6axx.dll) | `rustcord-media` | UI thread |
+|---|---|---|---|---|
+| Inline demo.mp4 (360p, 30 fps) or gifv | 19–23 % | 82–103 ms/s | 38–52 ms/s | 27–40 ms/s |
+| 1080p clip in the lightbox | 38–41 % | 102–129 ms/s | 209–232 ms/s (≈ 200 decode) | 36–57 ms/s |
+
+The floor: every new video frame is one GL present, and AMD's OpenGL driver spends ~3.3–4 ms of CPU
+per present on its own thread, whatever changed. At 30 fps that is ~100 ms/s (10 % of a core)
+before any decode or UI work. Fewer presents would mean dropping video frames.
+
 ## Tests and test hooks
 Tests: `media::mp4` (avcC → Annex-B on the fixture, `to_annexb`, `lc_asc`, `keyframe_for` with
 B-frames, `audio_index_for`, the box budget, the fixture's tracks), `media::net`
