@@ -13,6 +13,7 @@ pub mod composer;
 pub mod cosmetics;
 pub mod dm_call;
 pub mod forum;
+pub mod frame_stats;
 pub mod friends;
 pub mod guild_card;
 pub mod icons;
@@ -793,7 +794,9 @@ impl RustcordApp {
 impl eframe::App for RustcordApp {
     /// Runs before every `ui` call and also while the window is hidden/minimized, so
     /// network events and notifications are processed even when nothing is drawn.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        frame_stats::begin(ctx, frame.info().cpu_usage);
+        let _t = frame_stats::scope("logic");
         self.view.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         self.drain_events(ctx);
         // Tray menu clicks, closing to the tray, `--minimized` (also while hidden in the tray).
@@ -852,6 +855,7 @@ impl eframe::App for RustcordApp {
                 let accept = cx.state.incoming_call().is_some()
                     && user_settings::shortcut(cx.settings, user_settings::Bind::AcceptCall).is_some_and(|k| ctx.input_mut(|i| i.consume_shortcut(&k)));
                 main_layout(ui, &mut cx);
+                let _t = frame_stats::scope("popups");
                 profile::show_popup(&ctx, &mut cx);
                 show_modals(&ctx, &mut cx);
                 viewer::end_frame(&ctx, &mut cx);
@@ -860,11 +864,15 @@ impl eframe::App for RustcordApp {
             }
         }
 
-        self.show_toasts(&ctx);
-        self.images.end_frame(&ctx);
-        self.startup_hooks(&ctx);
-        chrome::resize_cursor(&ctx);
-        text_field_focus_ring(&ctx);
+        frame_stats::time("end", || {
+            self.show_toasts(&ctx);
+            self.images.end_frame(&ctx);
+            self.startup_hooks(&ctx);
+            chrome::resize_cursor(&ctx);
+            text_field_focus_ring(&ctx);
+            self.settle_after_events(&ctx);
+        });
+        frame_stats::end(&ctx);
     }
 
     /// Test hook: RUSTCORD_POINTER=<x>x<y> keeps the pointer at that point (logical px), so
@@ -982,7 +990,7 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let right = right_column_w(cx.view, cx.settings, cx.state, width);
     let (channels_w, max_w) = channel_list_width(width, right, cx.view.channel_list_w);
     let edge = sidebar::line(&c);
-    title_bar(ui, cx);
+    frame_stats::time("title", || title_bar(ui, cx));
     // Full-screen layers.
     if cx.view.chat_hidden() {
         pickers::close_if_open(ui.ctx(), cx);
@@ -995,12 +1003,15 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         return;
     }
     cx.view.settings_themes = None;
+    let _t = frame_stats::scope("rail");
     egui::Panel::left("guild_bar")
         .exact_size(GUILD_BAR_W)
         .resizable(false)
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(fill.frame.to_color32()))
         .show(ui, |ui| sidebar::guild_bar(ui, cx));
+    drop(_t);
+    let _t = frame_stats::scope("channels");
     // On the server-bar colour, which shows around the card's rounded corner.
     let list = egui::Panel::left("channel_list")
         .exact_size(channels_w)
@@ -1013,9 +1024,11 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         })
         .response
         .rect;
+    drop(_t);
     ui.painter().vline(list.right() - 0.5, list.y_range(), edge);
 
     let page = egui::Frame::new().fill(fill.chat.to_color32());
+    let _t = frame_stats::scope("page");
     if friends::is_open(cx.state) {
         pickers::close_if_open(ui.ctx(), cx);
         // The DM home: Friends, or Quests (the row under Friends).
@@ -1041,11 +1054,12 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             ui.painter().vline(r.left() + 0.5, r.y_range(), edge);
         }
         // Spans the page and the member list / search results, like the web client's title section.
-        messages::chat_header(ui, cx);
+        frame_stats::time("+header", || messages::chat_header(ui, cx));
         // Open search results take the member list's place, so does the thread panel.
         if searching {
             search::side_panel(ui, cx);
         } else if thread.is_none() && right > 0.0 {
+            let _t = frame_stats::scope("+members");
             let r = egui::Panel::right("member_list")
                 .exact_size(MEMBER_LIST_W)
                 .resizable(false)
@@ -1056,6 +1070,7 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                 .rect;
             ui.painter().vline(r.left() + 0.5, r.y_range(), edge);
         }
+        let _t = frame_stats::scope("+chat");
         egui::CentralPanel::default().frame(page).show(ui, |ui| match (thread, forum::open_forum(cx.state)) {
             // Too narrow for a split: the thread panel takes the page.
             (Some(t), _) if right == 0.0 => threads::panel(ui, cx, t),
@@ -1063,10 +1078,11 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             _ => messages::show(ui, cx),
         });
     }
+    drop(_t);
     // The card's top hairline continues over the message area and the member list.
     ui.painter().hline(list.right()..=ui.max_rect().right(), list.top() + 0.5, edge);
     channel_list_handle(ui, cx, list, max_w);
-    sidebar::user_panel(ui.ctx(), cx, GUILD_BAR_W + channels_w);
+    frame_stats::time("user panel", || sidebar::user_panel(ui.ctx(), cx, GUILD_BAR_W + channels_w));
 }
 
 /// (width, current maximum) of the channel list in a window `width` wide with a `right` px

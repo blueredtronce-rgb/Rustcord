@@ -412,6 +412,7 @@ struct Out {
 
 /// The video player in `rect`: frame or poster, play disc, controls, error card.
 fn player_view(ui: &mut egui::Ui, cx: &mut UiCx<'_>, item: &MediaItem, rect: Rect, place: Place, no_seek_ahead: bool) -> Out {
+    let _t = super::frame_stats::scope("+player");
     let ctx = ui.ctx().clone();
     let pal = Pal::new(cx.theme);
     let mp = media_pal(&pal);
@@ -750,6 +751,7 @@ fn gifv_plays(lightbox: bool, hovered: bool, animate_always: bool, focused: bool
 }
 
 fn gifv_view(ui: &mut egui::Ui, cx: &mut UiCx<'_>, item: &MediaItem, rect: Rect, always: bool) -> egui::Response {
+    let _t = super::frame_stats::scope("+gifv");
     let ctx = ui.ctx().clone();
     let pal = Pal::new(cx.theme);
     let key = item.key();
@@ -1064,7 +1066,8 @@ pub(super) fn demo(ctx: &egui::Context, cx: &mut UiCx<'_>, ch: Id, flag: impl Fn
     if flag("player") || flag("play") || flag("viewer-video") {
         // A test hook never makes a sound.
         cx.view.media_ui.muted = flag("play");
-        let opts = Opts { output: cx.settings.voice_output.clone(), ..Opts::default() };
+        // `loop`: keeps playing for measurements (RUSTCORD_FRAME_STATS).
+        let opts = Opts { looped: flag("loop"), output: cx.settings.voice_output.clone(), ..Opts::default() };
         if let Some(p) = ensure_player(ctx, cx, &mp4, opts) {
             if flag("play") { p.play() } else { p.seek(1000) }
         }

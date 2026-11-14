@@ -828,7 +828,7 @@ fn chat(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, panel: bool) {
                 // The panel's list scrolls by its own flag (the shell's belongs to the chat).
                 memo.to_bottom |= jump_bar(ui, cx, &pal, ch) && panel;
             }
-            composer::show(ui, cx, ch, chat_top, panel)
+            super::frame_stats::time("+composer", || composer::show(ui, cx, ch, chat_top, panel))
         });
     // After the composer: a DM's call area sizes itself to the room the composer left.
     if !panel {

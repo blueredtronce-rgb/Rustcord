@@ -234,8 +234,20 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   gifv embed with a WebM upload showing the can't-play card, demo.mp4 at the bottom), `viewer` /
   `viewer-zoom` open the lightbox on demo.png fitted / at 1:1, `viewer-video` on demo.mp4 paused
   at 1.0 s, `player` pauses the inline demo.mp4 at 1.0 s, `play` plays it muted (frames arrive from the
-  worker: use `RUSTCORD_SCREENSHOT_FRAME=90`; `RUSTCORD_POINTER` over a gifv plays it). None of
+  worker: use `RUSTCORD_SCREENSHOT_FRAME=90`; `RUSTCORD_POINTER` over a gifv plays it), `loop`
+  makes the `play` / `player` / `viewer-video` demo.mp4 loop (CPU measurements). None of
   them sends a request.
+- `RUSTCORD_FRAME_STATS=1` (ui/frame_stats.rs): every 2 s one stderr line (release builds have no
+  console: redirect stderr, e.g. `Start-Process -RedirectStandardError f.txt`): frames drawn,
+  `frame` = eframe's time per frame (our passes + egui + tessellation + GL paint, not the vsync
+  wait) mean and p95, `app` = our `logic` + `ui`, `tess` = one tessellation of the current shapes
+  with their counts, `rest` = frame - app - tess (egui's end of pass, GL upload and draw), then
+  the sections in ms per frame (`xN`: calls per frame): logic, title, rail, channels, page
+  (Friends, call or chat column) with `+header`, `+members`, `+chat`, `+composer`, `+markdown`,
+  `+player`, `+gifv` inside it (`+` = inside another section), user panel, popups (popouts,
+  modals, the lightbox), end (toasts, image cache, hooks); `unscoped` = app - top-level sections.
+  `RUSTCORD_FRAME_STATS=continuous` also repaints every frame (the cost of a full repaint).
+  Off, each timer is one cached check.
 - `RUSTCORD_NAV_DEMO=<comma list>` (ui/sidebar.rs `nav_demo`): navigation / social states
   offline mode can't reach, none sends a request: `folders` / `folder-open` (server bar
   folders), `mentions` (inbox mentions from cached messages), `profile` (loaded profiles; with

@@ -33,6 +33,7 @@ pub struct MdOpts<'a> {
 
 /// Render message content. Emoji-only messages (<= 30 emoji) render jumbo (48 px emoji).
 pub fn render(ui: &mut egui::Ui, cx: &mut UiCx<'_>, text: &str, opts: &MdOpts<'_>) {
+    let _t = super::frame_stats::scope("+markdown");
     let doc = parsed(text);
     if doc.blocks.is_empty() {
         return;
