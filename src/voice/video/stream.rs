@@ -518,6 +518,8 @@ impl Video {
         match key {
             VideoKey::User(id) => *id != me,
             VideoKey::Stream(k) => !self.is_share(k),
+            // In-app videos never reach the voice manager.
+            VideoKey::Media(_) => false,
         }
     }
 
@@ -554,6 +556,7 @@ impl Video {
         let link = match &key {
             VideoKey::User(_) => self.call.as_ref().map(|(ctl, rx)| (ctl, rx)),
             VideoKey::Stream(k) => self.watching.iter().find(|l| l.key == *k).and_then(|l| l.conn.as_ref()).map(|c| (&c.ctl, &c.rx)),
+            VideoKey::Media(_) => None,
         };
         if let Some((ctl, rx)) = link
             && rx.set_wanted(&key, on)

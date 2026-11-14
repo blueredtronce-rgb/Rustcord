@@ -109,12 +109,15 @@ cargo check
 | markdown | `src/ui/markdown.rs`, `src/ui/markdown/parse.rs` |
 | phase2-profile | `src/overrides.rs` (local banner/avatar and local cosmetics: client-only, never uploaded) |
 | social / server / settings UI | `src/ui/{sidebar,friends,inbox,profile,profile_modal,threads,forum,server_menu,server_settings,user_settings}.rs`, `src/ui/user_settings/*`: split in `docs/SOCIAL_UI_DESIGN.md` |
+| profile | `src/ui/guild_card.rs` (server tag card: join / apply on click), badge popover and `tag_button` in `cosmetics.rs`, server marks (`icons::guild_mark`): see `docs/GUILD_CARD_NOTES.md` |
 | integrator | `src/model.rs`, `src/backend.rs` enums, `src/main.rs`, `src/config.rs`, `src/auth.rs`, `Cargo.toml` |
 | voice | `src/voice/*`, split per file in `docs/VOICE_DESIGN.md` (audio) and `docs/VIDEO_DESIGN.md` (video, Go Live) |
 | chat essentials | `src/api/chat.rs`, `src/api/upload.rs`, `src/state/chat.rs`, `src/emoji.rs`, gateway typing/presence/op 3/op 8: split in `docs/CHAT_ESSENTIALS_DESIGN.md` |
 | social | `src/api/social.rs`, `src/state/social.rs`, gateway thread/recipient/note dispatches: split in `docs/SOCIAL_DESIGN.md` |
 | account & server | `src/api/account.rs`, `src/api/settings_proto.rs`, `src/api/guild_admin.rs`, `src/state/account.rs`, gateway settings-proto/ban dispatches: split in `docs/ACCOUNT_SERVER_DESIGN.md` |
 | activities | `src/activity/*` (game detection thread, detectable-games table, my game in op 3, app icons), `src/api/apps.rs`, `src/ui/user_settings/games.rs`; activity art and cards in `ui/members.rs` (`art_slot`) and `ui/profile.rs` (`activity_section`) |
+| quests | `src/quests.rs`, `src/api/quests.rs`, `src/gateway/quests.rs`, `src/ui/quests.rs`; the Quests row in `ui/sidebar.rs`: see `docs/QUESTS_NOTES.md` |
+| media | `src/media/*` (player worker, Range reads, MP4/H.264/AAC, shared speaker output), `src/ui/viewer.rs` (inline video and gifv, the lightbox `Modal::Media`): see `docs/MEDIA_DESIGN.md` |
 | plugins | `src/plugins/*` (registry + plugins.toml, one module per area), `src/ui/user_settings/plugins.rs`; one-line hooks elsewhere guarded by `plugins::enabled`: see `docs/PLUGINS_NOTES.md` |
 
 Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.rs` (resvg) →

@@ -7,6 +7,8 @@
 //! - Decoding happens in `spawn_blocking`, downscaled so the longest side <= max_side.
 //!   GIF / APNG / animated WebP decode to multiple frames, capped by a memory budget
 //!   (fallback: first frame only).
+//! - The same disk cache, client and host list serve the media player (`media::net`): the
+//!   "media cache" of small videos and gifv loops.
 //!
 //! OWNERSHIP: cache implementer.
 
@@ -44,17 +46,7 @@ struct Inner {
 
 impl ImageLoader {
     pub fn new() -> Self {
-        // Same UA as the API client; no Authorization header ever.
-        let ua = crate::api::props::ClientProps::new(&crate::config::Settings::default()).user_agent().to_owned();
-        let http = reqwest::Client::builder()
-            .user_agent(ua)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::custom(|a| {
-                if a.previous().len() >= 5 || !host_allowed(a.url()) { a.stop() } else { a.follow() }
-            }))
-            .build()
-            .expect("image HTTP client");
+        let http = http_client();
         let dir = crate::config::paths().images_dir();
         let prune_dir = dir.clone();
         let _ = std::thread::Builder::new()
@@ -150,9 +142,29 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f).await.map_err(|e| format!("image task failed: {e}"))
 }
 
+/// The image (and media) HTTP client: same UA as the API client; no Authorization header ever;
+/// redirects only within the allowed hosts.
+pub(crate) fn http_client() -> reqwest::Client {
+    let ua = crate::api::props::ClientProps::new(&crate::config::Settings::default()).user_agent().to_owned();
+    reqwest::Client::builder()
+        .user_agent(ua)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.previous().len() >= 5 || !host_allowed(a.url()) { a.stop() } else { a.follow() }
+        }))
+        .build()
+        .expect("image HTTP client")
+}
+
+/// Disk-cache file of `url`.
+pub(crate) fn cache_path(url: &str) -> PathBuf {
+    crate::config::paths().images_dir().join(format!("{:016x}", fnv1a64(cache_key(url).as_bytes())))
+}
+
 /// https on a Discord CDN/media host, the GIF picker host (FEATURES_NOTES §1.8) or Spotify's
 /// album-art host only.
-fn host_allowed(url: &reqwest::Url) -> bool {
+pub(crate) fn host_allowed(url: &reqwest::Url) -> bool {
     url.scheme() == "https"
         && url.port().is_none()
         && url.host_str().is_some_and(|h| {
@@ -169,7 +181,7 @@ fn host_allowed(url: &reqwest::Url) -> bool {
 }
 
 /// URL without the expiring signature params (`ex`, `is`, `hm`); other params identify the variant.
-fn cache_key(url: &str) -> String {
+pub(crate) fn cache_key(url: &str) -> String {
     let Some((base, query)) = url.split_once('?') else { return url.to_owned() };
     let kept: Vec<&str> = query
         .split('&')
@@ -178,7 +190,7 @@ fn cache_key(url: &str) -> String {
     if kept.is_empty() { base.to_owned() } else { format!("{base}?{}", kept.join("&")) }
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3))
 }
 

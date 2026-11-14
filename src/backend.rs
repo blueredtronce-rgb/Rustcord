@@ -1069,6 +1069,8 @@ pub fn spawn(rt: &tokio::runtime::Handle, ctx: egui::Context) -> BackendHandle {
     let (cmd_tx, cmd_rx) = tmpsc::unbounded_channel();
     let (ev_tx, ev_rx) = mpsc::channel();
     let video = Arc::new(crate::voice::video::VideoFrames::new(ctx.clone()));
+    // In-app media (src/media): the same runtime, no new one.
+    crate::media::net::init(rt.clone());
     let sink = EventSink::new(ev_tx, ctx);
     // Weak, so the loop still ends when the UI drops its sender.
     rt.spawn(run(cmd_rx, cmd_tx.downgrade(), sink, video.clone()));

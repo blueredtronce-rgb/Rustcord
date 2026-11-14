@@ -6,9 +6,7 @@
 
 use super::{Plugin, enabled, opt_int};
 use crate::model::{Attachment, Id, Message};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use egui::{Color32, FontId, Rect, Sense, Stroke, Vec2, pos2, vec2};
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -172,79 +170,32 @@ fn run(url: &str, stop: &AtomicBool, pos: &AtomicU64, total: &AtomicU64, volume:
     total.store(granule.saturating_sub(pre_skip), Ordering::Relaxed);
     let mut dec = opus_rs::OpusDecoder::new(RATE as i32, 2).map_err(|_| "Opus decoder")?;
 
-    // The picked output (named as in voice::audio::device), else the system default.
-    let host = cpal::default_host();
-    let picked = output.and_then(|want| host.output_devices().ok()?.find(|d| d.description().is_ok_and(|x| x.name() == want)));
-    let dev = picked.or_else(|| host.default_output_device()).ok_or("No speaker")?;
-    let sc = dev.default_output_config().map_err(|_| "No speaker")?;
-    if sc.sample_format() != cpal::SampleFormat::F32 {
-        return Err("Speaker format not supported".into());
-    }
-    let (channels, dev_rate) = (usize::from(sc.channels().max(1)), sc.sample_rate());
-    let ring: Arc<Mutex<VecDeque<f32>>> = Arc::default();
-    let r = ring.clone();
-    let stream = dev
-        .build_output_stream(
-            sc.config(),
-            move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Never block the audio callback: a busy lock plays this buffer silent.
-                let mut q = r.try_lock().ok();
-                for s in out.iter_mut() {
-                    *s = q.as_mut().and_then(|q| q.pop_front()).unwrap_or(0.0);
-                }
-            },
-            |_| {},
-            None,
-        )
-        .map_err(|_| "Could not open the speaker")?;
-    stream.play().map_err(|_| "Could not open the speaker")?;
-
-    let target = dev_rate as usize * channels * 3 / 10;
+    // The picked output (named as in voice::audio::device), else the system default; the
+    // speaker code is shared with the video player.
+    let mut out = crate::media::audio::AudioOut::open(output, RATE)?;
+    out.set_volume(volume);
+    let played = |out: &crate::media::audio::AudioOut| out.played_frames() * u64::from(RATE) / u64::from(out.rate().max(1));
+    let target = out.rate() as usize * 3 / 10;
     let mut pcm = vec![0f32; 5760 * 2];
-    let (mut skip, mut played) = (pre_skip as usize, 0u64);
-    // Linear resampling position (device frames per 48 kHz frame = dev_rate / 48000).
-    let mut phase = 0f64;
-    let step = f64::from(RATE) / f64::from(dev_rate);
-    let mut last = [0f32; 2];
+    let mut skip = pre_skip as usize;
     for p in packets.iter().skip(2) {
-        if stop.load(Ordering::Relaxed) {
-            return Ok(());
-        }
         let n = dec.decode(p, 5760, &mut pcm).map_err(|_| "Could not decode")?;
         let start = skip.min(n);
         skip -= start;
-        let mut out = Vec::with_capacity((n - start) * channels * 2);
-        for f in start..n {
-            let cur = [pcm[2 * f] * volume, pcm[2 * f + 1] * volume];
-            while phase < 1.0 {
-                let t = phase as f32;
-                let s = [last[0] + (cur[0] - last[0]) * t, last[1] + (cur[1] - last[1]) * t];
-                match channels {
-                    1 => out.push((s[0] + s[1]) / 2.0),
-                    c => {
-                        out.extend_from_slice(&s);
-                        out.extend(std::iter::repeat_n(0.0, c - 2));
-                    }
-                }
-                phase += step;
-            }
-            phase -= 1.0;
-            last = cur;
-        }
-        played += (n - start) as u64;
         // Wait while the speaker has enough queued.
-        while ring.lock().map_or(0, |q| q.len()) > target {
+        while out.queued_frames() > target {
             if stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
+            pos.store(played(&out), Ordering::Relaxed);
         }
-        pos.store(played.saturating_sub(target as u64 / channels as u64 * u64::from(RATE) / u64::from(dev_rate)), Ordering::Relaxed);
-        ring.lock().map_err(|_| "Playback stopped")?.extend(out);
+        out.push(&pcm[2 * start..2 * n], 2);
     }
     // Let the queue drain.
-    while ring.lock().map_or(0, |q| q.len()) > 0 && !stop.load(Ordering::Relaxed) {
+    while out.queued_frames() > 0 && !stop.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(30));
+        pos.store(played(&out), Ordering::Relaxed);
     }
     pos.store(total.load(Ordering::Relaxed), Ordering::Relaxed);
     Ok(())

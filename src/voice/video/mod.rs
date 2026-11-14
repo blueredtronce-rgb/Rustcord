@@ -134,6 +134,8 @@ pub enum VideoKey {
     User(Id),
     /// A Go Live stream by stream key (my own key: my screen-share preview).
     Stream(String),
+    /// An in-app video (`media::Player`, own `VideoFrames`): hash of its URL's cache key.
+    Media(u64),
 }
 
 /// Send caps of one video (op 12 `max_*`, encoder settings).
