@@ -304,27 +304,75 @@ fn custom_font(path: &str) -> Option<FontData> {
 /// ~2.4 MB of private heap (Segoe UI, its bold face, Consolas). Once per process: every font
 /// rebuild shares the blob, so `set_fonts` compares pointers, not whole files, and one view
 /// per file stays mapped.
-#[cfg(windows)]
+/// `file`: a Windows font file name (`%WINDIR%\Fonts`); on Linux / macOS the stand-in from
+/// `unix_font_paths`, or an absolute path (the fallback chain's).
 pub(super) fn system_font(file: &str) -> Option<FontData> {
     static MAPPED: std::sync::Mutex<Vec<(String, Option<FontData>)>> = std::sync::Mutex::new(Vec::new());
     let mut cache = MAPPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, font)) = cache.iter().find(|(f, _)| f == file) {
         return font.clone();
     }
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    let path = Path::new(&root).join("Fonts").join(file);
-    let mapped = open_font(&path).and_then(|f| map_file(&f)).filter(|m| looks_like_font(m.as_ref()));
-    let font = match mapped {
-        Some(m) => Some(FontData::from_blob(Arc::new(m), 0)),
-        None => read_font(&path).map(FontData::from_owned),
+    #[cfg(windows)]
+    let paths = {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        vec![Path::new(&root).join("Fonts").join(file)]
     };
+    #[cfg(not(windows))]
+    let paths: Vec<std::path::PathBuf> = if file.starts_with('/') { vec![file.into()] } else { unix_font_paths(file).iter().map(Into::into).collect() };
+    let font = paths.iter().find_map(|path| {
+        let mapped = open_font(path).and_then(|f| map_file(&f)).filter(|m| looks_like_font(m.as_ref()));
+        match mapped {
+            Some(m) => Some(FontData::from_blob(Arc::new(m), 0)),
+            None => read_font(path).map(FontData::from_owned),
+        }
+    });
     cache.push((file.to_owned(), font.clone()));
     font
 }
 
+/// Linux / macOS stand-ins for the Windows faces (first one found wins). gg sans still leads
+/// every chain; these matter with it off or before its first download.
 #[cfg(not(windows))]
-pub(super) fn system_font(_file: &str) -> Option<FontData> {
-    None
+fn unix_font_paths(file: &str) -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        return match file {
+            "segoeui.ttf" => &["/System/Library/Fonts/Supplemental/Arial.ttf"],
+            "segoeuib.ttf" => &["/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+            "consola.ttf" => &["/System/Library/Fonts/Menlo.ttc"],
+            _ => &[],
+        };
+    }
+    match file {
+        "segoeui.ttf" => &[
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        ],
+        "seguisb.ttf" => &[
+            "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
+            "/usr/share/fonts/noto/NotoSans-SemiBold.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-SemiBold.ttf",
+        ],
+        "segoeuib.ttf" => &[
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+        ],
+        "consola.ttf" => &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+            "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+            "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+        ],
+        _ => &[],
+    }
 }
 
 /// Font data name of the OS color emoji font.
@@ -344,19 +392,18 @@ fn emoji_font() -> Option<FontData> {
     system_font("seguiemj.ttf").map(|f| f.tweak(egui::FontTweak { y_offset_factor: 0.17, ..Default::default() }))
 }
 
-/// Noto Color Emoji (CBDT), read into memory (~10 MB) once per process (see `system_font`).
-// shortcut: macOS' Apple Color Emoji.ttc (~190 MB) is over `open_font`'s cap, so macOS keeps
-// the monochrome emoji; map it (mmap) when a macOS build matters.
+/// Noto Color Emoji (CBDT), mapped like the UI fonts (see `system_font`).
+// shortcut: macOS' Apple Color Emoji.ttc (~190 MB, sbix) is over `open_font`'s cap, so macOS
+// keeps the monochrome emoji; lift the cap for mapped files when that matters.
 #[cfg(not(windows))]
 fn emoji_font() -> Option<FontData> {
-    static EMOJI: std::sync::OnceLock<Option<FontData>> = std::sync::OnceLock::new();
     let paths = [
         "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/noto/NotoColorEmoji.ttf",
         "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
         "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
     ];
-    EMOJI.get_or_init(|| paths.iter().find_map(|p| read_font(Path::new(p))).map(FontData::from_owned)).clone()
+    paths.iter().find_map(|p| system_font(p))
 }
 
 /// Opens a font file: only plain local files of a sane size.
@@ -388,20 +435,18 @@ pub(super) fn read_font(path: &Path) -> Option<Vec<u8>> {
     looks_like_font(&bytes).then_some(bytes)
 }
 
-/// Read-only view of a whole file (unmapped on drop). Writers can't truncate a mapped file.
-#[cfg(windows)]
+/// Read-only view of a whole file (unmapped on drop). Writers can't truncate a mapped file
+/// on Windows; on Unix the fonts are system files only root replaces (by rename, which keeps
+/// the mapped inode).
 struct MappedFile {
     ptr: *const u8,
     len: usize,
 }
 
 // SAFETY: the view is read-only and lives until drop.
-#[cfg(windows)]
 unsafe impl Send for MappedFile {}
-#[cfg(windows)]
 unsafe impl Sync for MappedFile {}
 
-#[cfg(windows)]
 impl AsRef<[u8]> for MappedFile {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: `ptr` is a live view of `len` readable bytes (see `map_file`).
@@ -443,6 +488,24 @@ fn map_file(file: &std::fs::File) -> Option<MappedFile> {
         CloseHandle(mapping);
         (!ptr.is_null()).then_some(MappedFile { ptr, len })
     }
+}
+
+#[cfg(unix)]
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        // SAFETY: `ptr`/`len` came from mmap and are unmapped once.
+        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+#[cfg(unix)]
+fn map_file(file: &std::fs::File) -> Option<MappedFile> {
+    use std::os::fd::AsRawFd;
+    let len = usize::try_from(file.metadata().ok()?.len()).ok().filter(|&l| l > 0)?;
+    // SAFETY: a private read-only mapping of the whole file on a valid descriptor; it stays
+    // valid after the descriptor is closed.
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0) };
+    (ptr != libc::MAP_FAILED).then_some(MappedFile { ptr: ptr as *const u8, len })
 }
 
 /// Sanity check of the sfnt table directory. epaint panics on a font it cannot parse, so a
@@ -529,6 +592,16 @@ mod tests {
         assert_eq!(mapped.bytes(), read_font(&Path::new(&root).join("Fonts").join("segoeui.ttf")).unwrap());
         // Mapped once: a rebuild shares the blob (`set_fonts` then compares pointers).
         assert!(Arc::ptr_eq(&mapped.font, &system_font("segoeui.ttf").unwrap().font));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mmap_matches_read() {
+        // Whatever this machine has (none: nothing to compare).
+        let Some(path) = ["segoeui.ttf", "consola.ttf"].iter().flat_map(|f| unix_font_paths(f)).find(|p| Path::new(p).is_file()) else { return };
+        let mapped = system_font(path).expect("a stock font passes the check");
+        assert_eq!(mapped.bytes(), read_font(Path::new(path)).unwrap());
+        assert!(Arc::ptr_eq(&mapped.font, &system_font(path).unwrap().font), "mapped once");
     }
 
     #[test]

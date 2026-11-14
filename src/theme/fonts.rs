@@ -4,8 +4,9 @@
 //!   and decoded in memory at every start. Never bundled, converted on disk or shared (§1.4).
 //!   The first frame uses what is cached; a background thread fetches the rest once per run
 //!   and re-applies the fonts. Off (`Settings::use_discord_font`) or unavailable: Segoe UI.
-//! - the Windows fallback chain: stock fonts, memory-mapped, asked for characters no configured
-//!   face has (decorated channel / role names: box drawing, `・`, Yi, Canadian syllabics …).
+//! - the system fallback chain: stock fonts (Windows, macOS; common ones on Linux),
+//!   memory-mapped, asked for characters no configured face has (decorated channel / role
+//!   names: box drawing, `・`, Yi, Canadian syllabics …).
 
 use super::ThemeFont;
 use egui::FontData;
@@ -48,7 +49,6 @@ pub(super) fn gg() -> MutexGuard<'static, Gg> {
 /// Startup (before the first `ThemeApplier::apply`): the system fallback chain, the box rules,
 /// and gg sans when `discord_font`.
 pub fn init_fonts(ctx: &egui::Context, discord_font: bool) {
-    #[cfg(windows)]
     ctx.add_font_provider(std::sync::Arc::new(system_fallback));
     ctx.add_glyph_rasterizer(egui::GlyphRasterizer::new("rustcord::box_rules", box_rule).with_priority(egui::FontPriority::Highest));
     set_discord_font(ctx, discord_font);
@@ -302,9 +302,29 @@ const FALLBACK: &[(&str, u32)] = &[
     ("l_10646.ttf", 0), ("micross.ttf", 0), ("tahoma.ttf", 0),
 ];
 
+/// Stock macOS fonts (absolute paths; missing ones are skipped).
+#[cfg(target_os = "macos")]
+const FALLBACK: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/Apple Symbols.ttf", 0),
+    ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 0),
+];
+
+/// Common Linux fonts (Debian / Ubuntu / Fedora / Arch paths; missing ones are skipped).
+#[cfg(not(any(windows, target_os = "macos")))]
+const FALLBACK: &[(&str, u32)] = &[
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/freefont/FreeSerif.ttf", 0),
+];
+
 /// egui font provider: the first stock font whose cmap has the character (asked once per family
 /// and character; the files are mapped once per process and shared).
-#[cfg(windows)]
 fn system_fallback(req: &egui::FallbackRequest<'_>) -> Option<egui::FontInsert> {
     let c = req.cluster.chars().next()?;
     let hit = FALLBACK.iter().find_map(|&(file, index)| {
@@ -320,7 +340,6 @@ fn system_fallback(req: &egui::FallbackRequest<'_>) -> Option<egui::FontInsert> 
     hit
 }
 
-#[cfg(windows)]
 fn has_glyph(font: &[u8], index: u32, c: char) -> bool {
     use skrifa::MetadataProvider;
     skrifa::FontRef::from_index(font, index).is_ok_and(|f| f.charmap().map(c).is_some_and(|g| g.to_u32() != 0))
