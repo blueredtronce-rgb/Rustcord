@@ -3,7 +3,7 @@
 //! The UI thread owns all application state (`state::AppState`). It sends `Command`s to the
 //! backend (a tokio task) and drains `BackendEvent`s once per frame. The backend never
 //! touches UI state; it only performs I/O and reports results. Every event send wakes the
-//! UI via `egui::Context::request_repaint`.
+//! UI via `egui::Context::request_repaint_after` (`EventSink`).
 //!
 //! OWNERSHIP: the enums/structs here are a shared contract (integrator only).
 //! `spawn`/`run` bodies belong to the api/ implementer.
@@ -1060,14 +1060,14 @@ impl EventSink {
         Self { tx, ctx }
     }
 
+    /// Wakes the UI for one pass, shared by a burst; a plain `request_repaint` would cost two.
+    /// The UI adds a settle pass itself when the event moved a widget (`ui::RustcordApp::ui`).
     pub fn send(&self, ev: BackendEvent) {
-        if self.tx.send(ev).is_ok() {
-            self.ctx.request_repaint();
-        }
+        self.send_after(ev, Duration::from_millis(1));
     }
 
     /// Like `send`, but the UI wakes within `delay`; egui keeps the earliest pending wake, so a
-    /// burst of these costs one pass (a plain `send` costs two).
+    /// burst of these costs one pass.
     pub fn send_after(&self, ev: BackendEvent, delay: Duration) {
         if self.tx.send(ev).is_ok() {
             self.ctx.request_repaint_after(delay);
@@ -2484,6 +2484,26 @@ mod tests {
         // Old entries are dropped on the way.
         assert!(t.should_send(Id(3), t0 + Duration::from_secs(60)));
         assert_eq!(t.last.len(), 1);
+    }
+
+    #[test]
+    fn an_event_wakes_one_pass() {
+        let ctx = egui::Context::default();
+        let pass = || ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        // The first passes settle egui itself (fonts …).
+        for _ in 0..5 {
+            pass();
+        }
+        assert!(!ctx.has_requested_repaint());
+        let (tx, rx) = mpsc::channel();
+        let sink = EventSink::new(tx, ctx.clone());
+        sink.send(BackendEvent::ActionFailed("a".into()));
+        sink.send(BackendEvent::ActionFailed("b".into()));
+        assert!(ctx.has_requested_repaint());
+        pass();
+        // egui's own settle pass (`request_repaint`) would still be pending here.
+        assert!(!ctx.has_requested_repaint());
+        assert_eq!(rx.try_iter().count(), 2);
     }
 
     #[test]

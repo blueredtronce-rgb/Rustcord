@@ -351,6 +351,8 @@ pub struct RustcordApp {
     started: Instant,
     frame_no: u64,
     last_cache_save: Instant,
+    /// Backend events were applied since the last shown pass (see `settle_after_events`).
+    event_pass: bool,
 }
 
 impl RustcordApp {
@@ -401,6 +403,7 @@ impl RustcordApp {
             started,
             frame_no: 0,
             last_cache_save: Instant::now(),
+            event_pass: false,
         }
     }
 
@@ -411,6 +414,7 @@ impl RustcordApp {
             None
         };
         while let Ok(ev) = self.backend.events.try_recv() {
+            self.event_pass = true;
             match ev {
                 BackendEvent::Conn(c) => {
                     if c != self.state.conn {
@@ -509,6 +513,19 @@ impl RustcordApp {
                     }
                 }
             }
+        }
+    }
+
+    /// An event wakes one pass (`EventSink::send`), but hover, the chat's stick-to-bottom and
+    /// area sizes follow the widget rects of the pass before: one more pass, as egui's
+    /// `request_repaint` used to give every event, only when this one moved a widget.
+    fn settle_after_events(&mut self, ctx: &egui::Context) {
+        if !self.event_pass || ctx.will_discard() {
+            return;
+        }
+        self.event_pass = false;
+        if !ctx.viewport(|vp| same_widgets(&vp.prev_pass.widgets, &vp.this_pass.widgets)) {
+            ctx.request_repaint_after(Duration::from_millis(1));
         }
     }
 
@@ -955,6 +972,13 @@ fn text_field_focus_ring(ctx: &egui::Context) {
             });
         }
     });
+}
+
+/// Same widgets at the same rects in the same paint order. `WidgetRects`' own `==` also
+/// compares the empty layer lists a recycled pass keeps, which differ between the two passes.
+fn same_widgets(a: &egui::WidgetRects, b: &egui::WidgetRects) -> bool {
+    let layers = |w: &egui::WidgetRects| w.layers().filter(|(_, ws)| !ws.is_empty()).count();
+    layers(a) == layers(b) && a.layers().all(|(l, ws)| ws.iter().eq(b.get_layer(*l)))
 }
 
 /// The 32 px title bar of the frameless window (`chrome`: drag, window buttons) with the
@@ -1537,6 +1561,39 @@ mod tests {
     fn dialog_widths_snap_to_the_three_tiers() {
         let snapped: Vec<f32> = [442.0, 460.0, 480.0, 520.0, 602.0, 800.0].into_iter().map(dialog_width).collect();
         assert_eq!(snapped, [440.0, 440.0, 520.0, 520.0, 640.0, 800.0]);
+    }
+
+    #[test]
+    fn same_widgets_ignores_empty_layers_only() {
+        let layer = |name| egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(name));
+        let w = |id, layer_id, y: f32| {
+            let rect = egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(10.0, 10.0));
+            egui::WidgetRect { id: egui::Id::unique(id), parent_id: egui::Id::NULL, layer_id, rect, interact_rect: rect, sense: egui::Sense::click(), enabled: true, visible: true }
+        };
+        let rects = |ws: &[egui::WidgetRect]| {
+            let mut r = egui::WidgetRects::default();
+            for &x in ws {
+                r.insert(x.layer_id, x, egui::InteractOptions::default());
+            }
+            r
+        };
+        let (a, b) = (w("a", layer("main"), 0.0), w("b", layer("main"), 10.0));
+        let one = rects(&[a, b]);
+        assert!(same_widgets(&one, &rects(&[a, b])));
+        // A recycled pass keeps an empty list for a layer gone since (a closed tooltip).
+        let mut recycled = rects(&[a, b, w("tip", layer("tooltip"), 0.0)]);
+        recycled.clear();
+        for x in [a, b] {
+            recycled.insert(x.layer_id, x, egui::InteractOptions::default());
+        }
+        assert!(same_widgets(&one, &recycled) && same_widgets(&recycled, &one));
+        // Moved, added, removed, reordered, new layer: changed.
+        assert!(!same_widgets(&one, &rects(&[a, w("b", layer("main"), 12.0)])));
+        assert!(!same_widgets(&one, &rects(&[a, b, w("c", layer("main"), 20.0)])));
+        assert!(!same_widgets(&one, &rects(&[a])));
+        assert!(!same_widgets(&one, &rects(&[b, a])));
+        assert!(!same_widgets(&one, &rects(&[a, b, w("tip", layer("tooltip"), 0.0)])));
+        assert!(!same_widgets(&rects(&[a, b, w("tip", layer("tooltip"), 0.0)]), &one));
     }
 
     #[test]
