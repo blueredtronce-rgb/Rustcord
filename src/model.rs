@@ -586,6 +586,8 @@ pub struct Guild {
     /// 1 = moderation needs 2FA (`AppState::guild_permissions` drops the elevated bits).
     #[serde(deserialize_with = "null_default")]
     pub mfa_level: u8,
+    /// The community's rules channel (its icon is `Icon::Rules`).
+    pub rules_channel_id: Option<Id>,
     /// Who is in voice (GUILD_CREATE; READY_SUPPLEMENTAL arrives as `VoiceStateUpdate`s).
     /// Runtime-only like `channels`: the state moves them into `AppState::voice_states`, and
     /// they are never written to the disk cache.
@@ -1407,16 +1409,25 @@ pub struct RichPresence {
     pub application_id: Option<Id>,
     /// `assets.large_image` / `small_image`: an app-asset id or `mp:<media proxy path>`.
     pub large_image: Option<String>,
-    /// Hover text of the large image.
+    /// Hover text of the large image (Spotify: the album).
     pub large_text: Option<String>,
     pub small_image: Option<String>,
+    pub small_text: Option<String>,
+    /// `timestamps.end`, Unix ms (Spotify: when the song ends).
+    pub end: Option<u64>,
+    /// Spotify track id (`sync_id`).
+    pub sync_id: Option<String>,
+    /// Stream URL (type 1).
+    pub url: Option<String>,
+    /// `party.size`: [current, max].
+    pub party: Option<[u32; 2]>,
 }
 
 impl Activity {
     /// "Playing", "Listening to", … for activity type `kind`.
     pub fn verb(kind: u8) -> &'static str {
         match kind {
-            1 => "Streaming",
+            1 => "Live on",
             2 => "Listening to",
             3 => "Watching",
             5 => "Competing in",
@@ -1429,16 +1440,62 @@ impl Activity {
         format!("{} {}", Self::verb(self.kind), self.name)
     }
 
-    /// "for 12m" / "for 2h 5m" / "for 3d" since `timestamps.start`; None without one (or one
-    /// in the future).
+    /// "for 12 min" / "for 2 h 5 min" / "for 3 d" since `timestamps.start`; None without one
+    /// (or one in the future).
     pub fn elapsed(&self, now_ms: u64) -> Option<String> {
         let mins = now_ms.checked_sub(self.rich.as_ref()?.start?)? / 60_000;
         Some(match (mins / 1440, mins / 60 % 24, mins % 60) {
-            (0, 0, m) => format!("for {m}m"),
-            (0, h, 0) => format!("for {h}h"),
-            (0, h, m) => format!("for {h}h {m}m"),
-            (d, _, _) => format!("for {d}d"),
+            (0, 0, m) => format!("for {m} min"),
+            (0, h, 0) => format!("for {h} h"),
+            (0, h, m) => format!("for {h} h {m} min"),
+            (d, _, _) => format!("for {d} d"),
         })
+    }
+
+    /// Card heading: "Playing", "Listening to Spotify", "Live on Twitch", "Watching", …
+    pub fn heading(&self) -> String {
+        match self.kind {
+            1 | 2 => self.label(),
+            k => Self::verb(k).to_owned(),
+        }
+    }
+
+    /// A Spotify song (album art, progress, "Play on Spotify").
+    pub fn is_spotify(&self) -> bool {
+        self.kind == 2 && (self.name == "Spotify" || self.rich.as_ref().and_then(|r| r.large_image.as_deref()).is_some_and(|i| i.starts_with("spotify:")))
+    }
+
+    /// `open.spotify.com` link of the song; its id comes from other users, so it must be a plain
+    /// base62 track id.
+    pub fn spotify_track_url(&self) -> Option<String> {
+        let id = self.rich.as_ref()?.sync_id.as_deref().filter(|_| self.is_spotify())?;
+        (id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| format!("https://open.spotify.com/track/{id}"))
+    }
+
+    /// The stream's page (type 1) when it is an https Twitch or YouTube link: it comes from other
+    /// users and opens in the browser on a click.
+    pub fn stream_url(&self) -> Option<&str> {
+        let url = self.rich.as_ref()?.url.as_deref().filter(|_| self.kind == 1)?;
+        let u = reqwest::Url::parse(url).ok()?;
+        let host = u.host_str()?;
+        let known = ["twitch.tv", "www.twitch.tv", "m.twitch.tv", "youtube.com", "www.youtube.com", "m.youtube.com"].contains(&host);
+        (u.scheme() == "https" && u.port().is_none() && u.username().is_empty() && known).then_some(url)
+    }
+
+    /// (played, length) in ms of a song with start and end times.
+    pub fn progress(&self, now_ms: u64) -> Option<(u64, u64)> {
+        let r = self.rich.as_ref()?;
+        let total = r.end?.checked_sub(r.start?).filter(|&t| t > 0)?;
+        Some((now_ms.saturating_sub(r.start?).min(total), total))
+    }
+}
+
+/// "4:07" / "1:02:33": a song position or a running timer.
+pub fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    match s / 3600 {
+        0 => format!("{}:{:02}", s / 60, s % 60),
+        h => format!("{h}:{:02}:{:02}", s / 60 % 60, s % 60),
     }
 }
 
@@ -1828,9 +1885,32 @@ mod tests {
         let started = |start| Activity { rich: Some(Box::new(RichPresence { start, ..Default::default() })), ..Default::default() };
         let now = 10 * 86_400_000;
         let ago = |mins: u64| started(Some(now - mins * 60_000 - 59_000)).elapsed(now);
-        assert_eq!([ago(0), ago(12), ago(120), ago(125), ago(3 * 1440 + 5)].map(Option::unwrap), ["for 0m", "for 12m", "for 2h", "for 2h 5m", "for 3d"]);
+        assert_eq!([ago(0), ago(12), ago(120), ago(125), ago(3 * 1440 + 5)].map(Option::unwrap), ["for 0 min", "for 12 min", "for 2 h", "for 2 h 5 min", "for 3 d"]);
         assert_eq!(started(Some(now + 1)).elapsed(now), None, "start in the future");
         assert_eq!((started(None).elapsed(now), Activity::default().elapsed(now)), (None, None));
+        assert_eq!(Activity { kind: 1, name: "Twitch".into(), rich: None }.heading(), "Live on Twitch");
+        assert_eq!(Activity { kind: 3, name: "YouTube".into(), rich: None }.heading(), "Watching");
+        assert_eq!([clock(0), clock(247_900), clock(3_753_000)], ["0:00", "4:07", "1:02:33"]);
+        let song = |sync: &str| Activity {
+            kind: 2,
+            name: "Spotify".into(),
+            rich: Some(Box::new(RichPresence { sync_id: Some(sync.into()), start: Some(1_000), end: Some(181_000), ..Default::default() })),
+        };
+        assert_eq!(song("4uLU6hMCjMI75M1A2tKUQC").spotify_track_url().as_deref(), Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"));
+        for bad in ["4uLU6hMCjMI75M1A2tKUQ", "4uLU6hMCjMI75M1A2tKU/C", "../../evil.example/xx", ""] {
+            assert_eq!(song(bad).spotify_track_url(), None, "{bad}");
+        }
+        assert_eq!(Activity { name: "Chess".into(), ..song("4uLU6hMCjMI75M1A2tKUQC") }.spotify_track_url(), None, "not Spotify");
+        assert_eq!(song("x").progress(61_000), Some((60_000, 180_000)));
+        assert_eq!(song("x").progress(999_000), Some((180_000, 180_000)), "capped at the end");
+        assert_eq!(Activity::default().progress(5), None);
+        let stream = |url: &str| Activity { kind: 1, name: "Twitch".into(), rich: Some(Box::new(RichPresence { url: Some(url.into()), ..Default::default() })) };
+        assert_eq!(stream("https://www.twitch.tv/rustcord").stream_url(), Some("https://www.twitch.tv/rustcord"));
+        assert_eq!(stream("https://www.youtube.com/watch?v=x").stream_url(), Some("https://www.youtube.com/watch?v=x"));
+        for bad in ["http://www.twitch.tv/x", "https://www.twitch.tv.evil.example/x", "https://evil@www.twitch.tv/x", "javascript:alert(1)", "file:///c:/x"] {
+            assert_eq!(stream(bad).stream_url(), None, "{bad}");
+        }
+        assert_eq!(Activity { kind: 0, ..stream("https://www.twitch.tv/x") }.stream_url(), None, "not a stream");
         let id = Id::from_timestamp_ms(1_700_000_000_000);
         assert_eq!(id.timestamp_ms(), 1_700_000_000_000);
         assert_eq!(Id::from_timestamp_ms(0), Id(0));

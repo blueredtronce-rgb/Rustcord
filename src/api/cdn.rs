@@ -135,9 +135,14 @@ pub fn embed_media_url(m: &EmbedMedia, max_w: u32, max_h: u32) -> Option<String>
 }
 
 /// Rich-presence image (`assets.large_image` / `small_image`): `mp:<path>` through the media
-/// proxy, an asset id as `app-assets/{application_id}/{asset}.png`. None for the rest
-/// (`spotify:`, `twitch:`, … live on third-party hosts, which would see the user's IP).
+/// proxy, an asset id as `app-assets/{application_id}/{asset}.png`, `spotify:<id>` as Spotify's
+/// album art (`i.scdn.co`, where the official client loads it from too). None for the rest
+/// (`twitch:`, `youtube:`, … live on other third-party hosts, which would see the user's IP).
 pub fn activity_asset_url(application_id: Option<Id>, asset: &str, size: u32) -> Option<String> {
+    if let Some(id) = asset.strip_prefix("spotify:") {
+        // From other users: exactly an image id (40 hex digits), so the URL stays this one path.
+        return (id.len() == 40 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then(|| format!("https://i.scdn.co/image/{id}"));
+    }
     if let Some(path) = asset.strip_prefix("mp:") {
         let side = cdn_size(size).to_string();
         // Presence data comes from other users: the result must stay on the proxy host.
@@ -326,7 +331,19 @@ mod tests {
         );
         assert!(activity_asset_url(None, "mp:@evil.example/x", 64).unwrap().starts_with("https://media.discordapp.net/@evil.example/x?"));
         assert_eq!(activity_asset_url(None, "123", 64), None, "app assets need the application id");
-        for other in ["spotify:ab67616d", "twitch:name", "https://example.com/a.png", "12a", ""] {
+        let album = "ab67616d0000b2734f8ef2c2c1b3a9a1c4d5e6f7";
+        assert_eq!(activity_asset_url(None, &format!("spotify:{album}"), 64).unwrap(), format!("https://i.scdn.co/image/{album}"));
+        for other in [
+            "spotify:ab67616d",
+            "spotify:AB67616D0000B2734F8EF2C2C1B3A9A1C4D5E6F7",
+            "spotify:ab67616d0000b2734f8ef2c2c1b3a9a1c4d5e6f7/../x",
+            "spotify:ab67616d0000b2734f8ef2c2c1b3a9a1c4d5e6g7",
+            "spotify:",
+            "twitch:name",
+            "https://example.com/a.png",
+            "12a",
+            "",
+        ] {
             assert_eq!(activity_asset_url(Some(Id(7)), other, 64), None, "{other}");
         }
     }

@@ -87,6 +87,9 @@ pub enum Command {
     /// Settings proto, own profile, server administration, invites, notification settings;
     /// answered with `BackendEvent::Account`. docs/ACCOUNT_SERVER_DESIGN.md.
     Account(AccountCommand),
+    /// Game detection and activity icons (`crate::activity`); answered with
+    /// `BackendEvent::Activity`.
+    Activity(crate::activity::ActivityCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -999,6 +1002,8 @@ pub enum BackendEvent {
     Social(SocialEvent),
     /// Account/server answers; the UI hands them to `AppState::apply_account`.
     Account(AccountEvent),
+    /// The activity thread and its fetches; the UI hands them to `AppState::activity`.
+    Activity(crate::activity::ActivityEvent),
 }
 
 /// Decoded image ready for texture upload. Static images have exactly one frame.
@@ -2024,6 +2029,69 @@ fn login_step(step: LoginStep) -> BackendEvent {
     BackendEvent::LoginStep(step)
 }
 
+/// `Command::Activity`: op 3 through the gateway, icon fetches through the limiter, the rest
+/// to the activity thread (local only).
+fn handle_activity(cmd: crate::activity::ActivityCommand, session: &mut Option<Session>, sink: &EventSink, activity: &crate::activity::Service) {
+    use crate::activity::{ActivityCommand as C, ActivityEvent};
+    match cmd {
+        // Without a session there is no presence to change; the UI sends it again after login.
+        C::SetGame(game) => {
+            if let Some(s) = session {
+                s.gateway.send(GatewayCommand::SetGame(game));
+            }
+        }
+        C::FetchApps(ids) => {
+            let (asked, service) = (ids.clone(), activity.clone());
+            rest(session, sink, move |api| async move { api.public_apps(&asked).await }, move |r| {
+                let found = r.map_err(|e| eprintln!("rustcord: app icons: {e}")).ok()?;
+                // Every asked id is answered (None: unknown app), so none is asked again.
+                let icons: Vec<(Id, Option<String>)> = ids.iter().map(|&id| (id, found.iter().find(|a| a.id == id).and_then(|a| a.icon.clone()))).collect();
+                service.save_apps(icons.clone());
+                Some(BackendEvent::Activity(ActivityEvent::Apps(icons)))
+            });
+        }
+        C::SetAdded(games) => activity.set_added(games),
+        C::ListWindows => activity.list_windows(),
+    }
+}
+
+/// After a login: fetch the detectable-games list when the saved one is missing or a day old,
+/// once per run (a failure waits for the next start), a little after the session's own start.
+fn refresh_detectable(session: &mut Option<Session>, sink: &EventSink, activity: &crate::activity::Service, fetched: &mut bool) {
+    use crate::activity::{ActivityEvent, Table};
+    let path = crate::activity::table_path();
+    if *fetched || crate::config::offline_mode() || !crate::activity::table_stale(&path) {
+        return;
+    }
+    *fetched = true;
+    let service = activity.clone();
+    rest(
+        session,
+        sink,
+        move |api| async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let body = api.detectable_games().await?;
+            // ~13 MB of JSON: parsed and saved on a blocking thread, the body dropped after.
+            let parsed = tokio::task::spawn_blocking(move || {
+                let t = Table::from_json(&body)?;
+                t.save(&path);
+                Ok::<_, String>(Arc::new(t))
+            });
+            parsed.await.map_err(|e| ApiError::Decode(e.to_string()))?.map_err(ApiError::Decode)
+        },
+        move |r| match r {
+            Ok(t) => {
+                service.table(t.clone());
+                Some(BackendEvent::Activity(ActivityEvent::Table(t)))
+            }
+            Err(e) => {
+                eprintln!("rustcord: games list: {e}");
+                None
+            }
+        },
+    );
+}
+
 async fn run(
     mut cmds: tmpsc::UnboundedReceiver<Command>,
     again: tmpsc::WeakUnboundedSender<Command>,
@@ -2034,6 +2102,9 @@ async fn run(
     let images = crate::cache::images::ImageLoader::new();
     // Outlives logins: device and input-mode choices are kept for the next call.
     let voice = VoiceManager::spawn(sink.clone(), video);
+    // Game detection (its own thread; local files only) and the games list fetched once a run.
+    let activity = crate::activity::Service::spawn(sink.clone());
+    let mut detectable_fetched = false;
     let mut session: Option<Session> = None;
     let not_connected = || BackendEvent::ActionFailed("Not connected".into());
     // Login screen state: unauthenticated client (+ fingerprint), 2FA ticket, running QR flow.
@@ -2066,6 +2137,7 @@ async fn run(
                             sink.send(BackendEvent::ActionFailed(n.into()));
                         }
                         session = Some(Session::start(api, token.clone(), remember, &props, &sink, &voice));
+                        refresh_detectable(&mut session, &sink, &activity, &mut detectable_fetched);
                         if remember {
                             let t = token.clone();
                             let saved = tokio::task::spawn_blocking(move || crate::auth::save_token(&t)).await;
@@ -2100,6 +2172,7 @@ async fn run(
                 let api = Arc::new(ApiClient::new(token.clone(), props.clone()));
                 // Resume runs with the token the keyring held: a rotated one goes back there.
                 session = Some(Session::start(api, token, true, &props, &sink, &voice));
+                refresh_detectable(&mut session, &sink, &activity, &mut detectable_fetched);
             }
             // Login calls run inline: one user action = one request, never retried.
             Command::LoginPassword { login, password, remember } => {
@@ -2175,6 +2248,8 @@ async fn run(
                 }
                 mfa = None;
                 auth_client = None;
+                // Like the image cache: the app icons of this account's friends' activities go.
+                activity.save_apps(Vec::new());
                 if let Some(old) = session.take() {
                     // Wait (bounded) so no event of the old connection arrives after Offline.
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), old.shutdown()).await;
@@ -2290,6 +2365,7 @@ async fn run(
             Command::Chat(c) => handle_chat(c, &mut session, &sink, &props, &mut chat),
             Command::Social(c) => handle_social(c, &mut session, &sink),
             Command::Account(c) => handle_account(c, &mut session, &sink, None),
+            Command::Activity(c) => handle_activity(c, &mut session, &sink, &activity),
         }
     }
 

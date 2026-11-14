@@ -256,11 +256,12 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
             let opts = super::markdown::MdOpts { guild_id, mentions: &[], id_salt: user.id, color: Some(pal.text), highlight: &[] };
             super::markdown::render(ui, cx, &bio, &opts);
         }
-        // Its own section like Roles: the verb as the label.
-        if let Some(activity) = cx.state.presence_of(user.id).and_then(|p| p.activity.clone()) {
+        // Its own section like Roles: "Playing", "Listening to Spotify", … as the label. Mine
+        // includes the game I share.
+        if let Some(activity) = crate::activity::activity_of(cx.state, user.id).map(std::borrow::Cow::into_owned) {
             ui.separator();
-            section(ui, pal, Activity::verb(activity.kind));
-            activity_section(ui, cx, pal, &activity, 56.0, pal.surface);
+            section(ui, pal, &activity.heading());
+            activity_section(ui, cx, pal, &activity, 64.0, pal.surface);
         }
         if !account {
             ui.separator();
@@ -286,51 +287,123 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
     rect.bottom()
 }
 
-/// An activity (profile card, full profile, Active Now): its large image (else its type icon on
-/// a tile) with the small image on the corner, `side` px, then the name, details, state and
-/// time elapsed. `bg`: the ring around the small image.
+/// An activity card (profile card, full profile, Active Now), `side` px art: its picture
+/// (`activity::art_url`) or its type icon on a tile, the small image on the corner (`bg`: its
+/// ring), then per kind (docs/DESIGN.md §11.2):
+/// - game, watching, competing: name, details, state with the party size, "12:34 elapsed";
+/// - Spotify: song, "by" artist, "on" album, a progress bar with both times, "Play on Spotify";
+/// - stream: "Live" tag and title, the game, "Watch".
+///
+/// The links open in the browser on a click only. Clocks repaint once a second while shown.
 pub(super) fn activity_section(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, a: &Activity, side: f32, bg: egui::Color32) {
     let rich = a.rich.as_deref();
     let now = super::threads::unix_ms();
-    let elapsed = a.elapsed(now);
-    if let Some(start) = rich.and_then(|r| r.start).filter(|_| elapsed.is_some()) {
-        // Counted in whole minutes since `start` (<= now): wake once, when the next one is up.
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(60_000 - (now - start) % 60_000));
+    let (spotify, stream) = (a.is_spotify(), a.kind == 1);
+    let start = rich.and_then(|r| r.start).filter(|&s| s <= now);
+    let progress = a.progress(now).filter(|_| spotify);
+    let timer = start.filter(|_| !spotify && !stream);
+    if timer.is_some() || progress.is_some_and(|(p, t)| p < t) {
+        // Whole seconds since `start`: wake once, when the shown time next changes.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(1000 - (now - start.unwrap_or(now)) % 1000));
     }
-    let meta = FontId::proportional(pal.meta());
-    let lines = [
-        Some((a.name.clone(), super::bold(pal.size), pal.text)),
-        rich.and_then(|r| r.details.clone()).map(|t| (t, meta.clone(), pal.text)),
-        rich.and_then(|r| r.state.clone()).map(|t| (t, meta.clone(), pal.muted)),
-        elapsed.map(|t| (t, meta.clone(), pal.muted)),
-    ];
+    let heading = FontId::new(pal.size + 1.0, crate::theme::semibold_family());
+    let (body, meta) = (FontId::proportional(pal.size - 1.0), FontId::proportional(pal.meta()));
+    let field = |f: fn(&crate::model::RichPresence) -> &Option<String>| rich.and_then(|r| f(r).clone());
+    let (details, state) = (field(|r| &r.details), field(|r| &r.state));
+    let title = |d: Option<String>| d.unwrap_or_else(|| a.name.clone());
+    let lines = if spotify {
+        [
+            Some((title(details), heading, pal.text)),
+            state.map(|s| (format!("by {s}"), body.clone(), pal.text)),
+            field(|r| &r.large_text).map(|album| (format!("on {album}"), body, pal.muted)),
+            None,
+        ]
+    } else if stream {
+        [Some((title(details), heading, pal.text)), state.map(|game| (game, body, pal.muted)), None, None]
+    } else {
+        let party = rich.and_then(|r| r.party).map(|[n, max]| format!("({n} of {max})"));
+        let state = match (state, party) {
+            (Some(s), Some(p)) => Some(format!("{s} {p}")),
+            (s, p) => s.or(p),
+        };
+        [
+            Some((a.name.clone(), heading, pal.text)),
+            details.map(|d| (d, body.clone(), pal.text)),
+            state.map(|s| (s, body, pal.muted)),
+            timer.map(|s| (format!("{} elapsed", crate::model::clock(now - s)), meta.clone(), pal.muted)),
+        ]
+    };
     let w = ui.available_width();
-    let galleys: Vec<_> = lines.into_iter().flatten().map(|(t, f, c)| (super::one_line(ui, t, f, c, w - side - 12.0), c)).collect();
-    let text_h = galleys.iter().map(|(g, _)| g.size().y + 2.0).sum::<f32>() - 2.0;
+    let text_w = w - side - 12.0;
+    // The stream's "Live" tag leads its title.
+    let live = stream.then(|| super::one_line(ui, "Live", FontId::new(pal.meta() - 1.0, bold_family()), Color32::WHITE, 64.0));
+    let tag_w = live.as_ref().map_or(0.0, |g| g.size().x + 8.0 + 6.0);
+    let galleys: Vec<_> = lines.into_iter().flatten().enumerate().map(|(i, (t, f, c))| super::one_line(ui, t, f, c, text_w - if i == 0 { tag_w } else { 0.0 })).collect();
+    let text_h = galleys.iter().map(|g| g.size().y + 2.0).sum::<f32>() - 2.0;
     let (rect, _) = ui.allocate_exact_size(vec2(w, side.max(text_h)), Sense::hover());
     let img = Rect::from_min_size(pos2(rect.left(), rect.center().y - side / 2.0), Vec2::splat(side));
-    let large = cdn::activity_image_url(a, false, 128).and_then(|u| cx.images.get(ui.ctx(), &u, 128, false));
-    match large {
-        Some(tex) => Image::from_texture(tex).corner_radius(8).paint_at(ui, img),
+    let art = crate::activity::art_url(ui.ctx(), cx.state, a, 128).and_then(|u| cx.images.get(ui.ctx(), &u, 128, false));
+    match art {
+        Some(tex) => Image::from_texture(tex).corner_radius(pal.radius).paint_at(ui, img),
         None => {
-            ui.painter().rect_filled(img, 8, pal.tint());
-            super::sidebar::paint_activity_icon(ui.painter(), a.kind, img.shrink(side * 0.22), pal.muted);
+            let tile = pal.text.gamma_multiply(0.06);
+            ui.painter().rect_filled(img, pal.radius, tile);
+            let color = if stream { super::members::live_color(pal.dark) } else { pal.muted };
+            let icon = Rect::from_center_size(img.center(), Vec2::splat((side / 2.0).round()));
+            super::icons::paint(ui.painter(), super::icons::activity(a.kind), icon, color, bg.blend(tile));
         }
     }
-    if let Some(tex) = cdn::activity_image_url(a, true, 64).and_then(|u| cx.images.get(ui.ctx(), &u, 64, false)) {
-        let small = Rect::from_center_size(img.right_bottom() - vec2(3.0, 3.0), Vec2::splat((side * 0.36).round()));
+    let small = cdn::activity_image_url(a, true, 64).filter(|_| !spotify).and_then(|u| cx.images.get(ui.ctx(), &u, 64, false));
+    if let Some(tex) = small {
+        let small = Rect::from_center_size(img.right_bottom() - vec2(3.0, 3.0), Vec2::splat((side * 0.375).round()));
         ui.painter().circle_filled(small.center(), small.width() / 2.0 + 2.0, bg);
         Image::from_texture(tex).corner_radius(small.width() / 2.0).paint_at(ui, small);
     }
-    if let Some(tip) = rich.and_then(|r| r.large_text.as_deref()) {
+    let tip = [field(|r| &r.large_text).filter(|_| !spotify), field(|r| &r.small_text)].into_iter().flatten().collect::<Vec<_>>().join("\n");
+    if !tip.is_empty() {
         ui.interact(img, ui.make_persistent_id(("rc_activity_art", rect.min.x.to_bits(), rect.min.y.to_bits())), Sense::hover()).on_hover_text(tip);
     }
     let mut y = rect.center().y - text_h / 2.0;
-    for (g, c) in galleys {
-        let h = g.size().y;
-        ui.painter().galley(pos2(img.right() + 12.0, y), g, c);
+    for (i, g) in galleys.into_iter().enumerate() {
+        let (h, mut x) = (g.size().y, img.right() + 12.0);
+        if let (0, Some(tag)) = (i, &live) {
+            let r = Rect::from_min_size(pos2(x, y + (h - tag.size().y - 2.0) / 2.0), tag.size() + vec2(8.0, 2.0));
+            ui.painter().rect_filled(r, (pal.radius / 2).max(2), live_fill(pal.dark));
+            ui.painter().galley(r.min + vec2(4.0, 1.0), tag.clone(), Color32::WHITE);
+            x = r.right() + 6.0;
+        }
+        ui.painter().galley(pos2(x, y), g, pal.text);
         y += h + 2.0;
     }
+    if let Some((played, total)) = progress {
+        ui.add_space(8.0);
+        let (bar, _) = ui.allocate_exact_size(vec2(w, 4.0), Sense::hover());
+        ui.painter().rect_filled(bar, 2.0, pal.muted.gamma_multiply(0.35));
+        let done = Rect::from_min_size(bar.min, vec2(bar.width() * played as f32 / total as f32, bar.height()));
+        ui.painter().rect_filled(done, 2.0, pal.text);
+        let (l, r) = [played, total].map(|ms| super::one_line(ui, crate::model::clock(ms), meta.clone(), pal.muted, w / 2.0)).into();
+        let (row, _) = ui.allocate_exact_size(vec2(w, l.size().y + 2.0), Sense::hover());
+        ui.painter().galley(row.left_top() + vec2(0.0, 2.0), l, pal.muted);
+        ui.painter().galley(pos2(row.right() - r.size().x, row.top() + 2.0), r, pal.muted);
+    }
+    let link = match (spotify, stream) {
+        (true, _) => a.spotify_track_url().map(|u| ("Play on Spotify", u)),
+        (_, true) => a.stream_url().map(|u| ("Watch", u.to_owned())),
+        _ => None,
+    };
+    if let Some((label, url)) = link {
+        ui.add_space(8.0);
+        let button = egui::Button::new(RichText::new(label).size(pal.size - 1.0).color(pal.text)).fill(pal.text.gamma_multiply(0.1)).corner_radius(pal.radius).min_size(vec2(w, 32.0));
+        if ui.add(button).on_hover_text(&url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+}
+
+/// "Live" tag fill (docs/DESIGN.md §2.2 `danger_fill`, white label).
+// shortcut: local until theme/tokens.rs has `danger_fill`; switch to it then.
+fn live_fill(dark: bool) -> Color32 {
+    if dark { Color32::from_rgb(0xcc, 0x3d, 0x3f) } else { Color32::from_rgb(0xcc, 0x28, 0x27) }
 }
 
 /// Section heading, Title Case like the full profile's (`profile_modal::label`).

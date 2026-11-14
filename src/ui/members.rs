@@ -5,19 +5,19 @@
 
 use super::sidebar::{name_and_status, row_fills, status_dot, status_tooltip, user_avatar_at, user_dot, user_presence, user_status_text};
 use super::{UiCx, bold, cosmetics, one_line, rgb};
-use crate::api::cdn;
 use crate::backend::ConnState;
 use crate::config::AnimateMode;
 use crate::model::{Activity, CustomStatus, Emoji, GatewayEvent, Id, Member, MemberListItem, Presence, RichPresence, Role, User, UserPresence, channel_type};
 use crate::state::AppState;
-use egui::{CornerRadius, FontId, Rect, Role as A11yRole, Sense, Shape, Vec2, WidgetInfo, pos2, vec2};
+use egui::{Color32, CornerRadius, FontId, Rect, Role as A11yRole, Sense, Shape, Vec2, WidgetInfo, pos2, vec2};
+use std::borrow::Cow;
 
 /// Fixed row height (groups and members) so the list can be virtualized.
 const ROW_H: f32 = 42.0;
 const AVATAR: f32 = 32.0;
 const PAD: f32 = 16.0;
-/// Rich presence art right in a row, and its CDN / decode size.
-const ART: f32 = 20.0;
+/// Activity art right in a row (DM rows too), and its CDN / decode size.
+pub(super) const ART: f32 = 20.0;
 const ART_PX: u32 = 64;
 
 /// Whether the selected channel has a member sidebar (guild channel or group DM). Offline with
@@ -174,25 +174,26 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
     }
     let role_color = guild_id.zip(member).and_then(|(g, m)| cx.state.role_color(g, &m.roles)).map(rgb).or_else(|| crate::plugins::people::irc_color(guild_id, user.id, ui.visuals().dark_mode));
     let color = if offline { c.text_muted.to_color32() } else { role_color.unwrap_or(c.text.to_color32()) };
+    let chip_color = if offline { color } else { c.text.to_color32() };
     let (text_left, mut max_w) = (avatar.right() + 12.0, row.right() - PAD - avatar.right() - 12.0);
-    // Rich presence art at the row's right end (the game's image).
-    let art = cx.state.presence_of(user.id).and_then(|p| cdn::activity_image_url(p.activity.as_ref()?, false, ART_PX)).filter(|_| !offline);
-    if let Some(url) = art {
+    // The activity's picture at the row's right end, always (the line may show the custom status).
+    let activity = crate::activity::activity_of(cx.state, user.id).filter(|_| !offline).map(Cow::into_owned);
+    let mut art_tip = None;
+    if let Some(a) = &activity {
         let r = Rect::from_min_size(pos2(row.right() - PAD - ART, row.center().y - ART / 2.0), Vec2::splat(ART));
-        if let Some(tex) = cx.images.get(ui.ctx(), &url, ART_PX, false) {
-            egui::Image::from_texture(tex).corner_radius(4).paint_at(ui, r);
-        }
+        let tip = art_slot(ui, cx, a, r, ring);
+        art_tip = ui.rect_contains_pointer(r).then_some(tip);
         max_w -= ART + 8.0;
     }
     let size = cx.theme.font.size;
-    let (tag, chip_color) = (cosmetics::guild_tag(user, member), if offline { color } else { c.text.to_color32() });
+    let tag = cosmetics::guild_tag(user, member);
     let chip_w = tag.map_or(0.0, |pg| cosmetics::tag_chip_width(ui, pg, size) + 4.0);
     // Plugin tags after the name get their room first: the name is cut with "…" instead.
     let plug_w = crate::plugins::people::member_row_width(ui, cx, guild_id, user, member);
     let style = fx.name_style.as_ref().filter(|_| !offline);
     let g = cosmetics::name_galley(ui, &name, FontId::proportional(size), style, color, (max_w - chip_w - plug_w).max(24.0));
     let status = user_status_text(cx.state, user.id).filter(|_| !offline);
-    let tip = status.as_ref().and_then(|st| status_tooltip(ui, st));
+    let tip = art_tip.or_else(|| status.as_ref().and_then(|st| status_tooltip(ui, st)));
     let under = ui.painter().add(Shape::Noop);
     let (name_rect, text_end) = name_and_status(ui, cx, g.clone(), color, status.as_ref(), pos2(text_left, row.center().y), max_w);
     ui.painter().set(under, cosmetics::name_underlay(name_rect.min, &g, style, ui.visuals().dark_mode));
@@ -232,48 +233,107 @@ fn member_row(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Option<Id>, user: 
     }
 }
 
-/// Test hooks: a sample activity of type `kind` (0-5) with rich presence; the game (0) has
-/// app-asset art (`DEMO_APP` / `DEMO_ASSET`, from the image cache offline), music (2) a Spotify
-/// image (not loaded: third-party host, so its type icon stands in).
+/// The activity's picture at a row's right end, where Discord shows the rich-presence icon:
+/// its art (`activity::art_url`: rich presence, Spotify album art, the app's icon), else its type
+/// icon on a tile (streams in the live colour). `bg`: the row's fill. Returns its tooltip.
+pub(super) fn art_slot(ui: &egui::Ui, cx: &mut UiCx<'_>, a: &Activity, rect: Rect, bg: Color32) -> String {
+    let url = crate::activity::art_url(ui.ctx(), cx.state, a, ART_PX);
+    let tex = url.and_then(|u| cx.images.get(ui.ctx(), &u, ART_PX, false));
+    // The chip tier: half the theme's radius.
+    let radius = (cx.theme.layout.corner_radius / 2.0).round().clamp(0.0, 8.0) as u8;
+    match tex {
+        Some(tex) => egui::Image::from_texture(tex).corner_radius(radius).paint_at(ui, rect),
+        None => {
+            let tile = cx.theme.colors.text.to_color32().gamma_multiply(0.06);
+            ui.painter().rect_filled(rect, radius, tile);
+            let color = if a.kind == 1 { live_color(ui.visuals().dark_mode) } else { cx.theme.colors.text_muted.to_color32() };
+            let icon = Rect::from_center_size(rect.center(), Vec2::splat((rect.width() * 0.8).round()));
+            super::icons::paint(ui.painter(), super::icons::activity(a.kind), icon, color, bg.blend(tile));
+        }
+    }
+    art_tooltip(a, super::threads::unix_ms())
+}
+
+/// "Playing Factorio for 47 min", "Listening to Ferris Song by Crabs".
+pub(super) fn art_tooltip(a: &Activity, now_ms: u64) -> String {
+    let r = a.rich.as_deref();
+    match (r.and_then(|r| r.details.as_deref()), r.and_then(|r| r.state.as_deref())) {
+        (Some(song), Some(by)) if a.is_spotify() => format!("Listening to {song} by {by}"),
+        (Some(song), None) if a.is_spotify() => format!("Listening to {song}"),
+        _ => [Some(a.label()), a.elapsed(now_ms)].into_iter().flatten().collect::<Vec<_>>().join(" "),
+    }
+}
+
+/// Streaming status (temper purple, docs/DESIGN.md §2.2 `live`).
+// shortcut: local until theme/tokens.rs has `live`; switch to it then.
+pub(super) fn live_color(dark: bool) -> Color32 {
+    if dark { Color32::from_rgb(0xa6, 0x82, 0xe1) } else { Color32::from_rgb(0x7a, 0x4a, 0xba) }
+}
+
+/// Test hooks: a sample activity of type `kind` (0-5) with rich presence: the game (0) with
+/// app-asset art and a small image (`DEMO_APP`, `DEMO_ASSET`, `DEMO_SMALL`), Spotify (2) with
+/// album art (`DEMO_ALBUM`), a Twitch stream (1), YouTube (3) and a tournament (5). Offline the
+/// art comes from the image cache only (seed it for screenshots); else the type icon shows.
 pub(super) fn demo_activity(kind: u8) -> Activity {
     let (name, details, state, mins) = match kind {
         1 => ("Twitch", "Speedrunning the borrow checker", "Factorio", 95),
-        2 => ("Spotify", "Borrow Checker Blues", "The Lifetimes", 3),
+        2 => ("Spotify", "Borrow Checker Blues", "The Lifetimes", 1),
         3 => ("YouTube", "Rust in 100 seconds", "", 12),
         5 => ("Rust Golf Cup", "Round 3", "Top 10", 1500),
-        _ => ("Factorio", "Building a megabase", "Nauvis · 3 of 4", 47),
+        _ => ("Factorio", "Building a megabase", "Nauvis", 47),
     };
     let text = |s: &str| (!s.is_empty()).then(|| s.to_owned());
+    let start = super::threads::unix_ms() - mins * 60_000 - 23_000;
     let rich = RichPresence {
         details: text(details),
         state: text(state),
-        start: Some(super::threads::unix_ms() - mins * 60_000),
+        start: Some(start),
         application_id: (kind == 0).then_some(DEMO_APP),
         large_image: match kind {
             0 => Some(DEMO_ASSET.into()),
-            2 => Some("spotify:ab67616d0000b273".into()),
+            2 => Some(format!("spotify:{DEMO_ALBUM}")),
             _ => None,
         },
-        large_text: (kind == 0).then(|| "Factorio 2.0".into()),
-        small_image: None,
+        large_text: match kind {
+            0 => Some("Factorio 2.0".into()),
+            2 => Some("Zero-Cost Abstractions".into()),
+            _ => None,
+        },
+        small_image: (kind == 0).then(|| DEMO_SMALL.into()),
+        end: (kind == 2).then_some(start + 3 * 60_000 + 34_000),
+        sync_id: (kind == 2).then(|| "0rUSTcoRDdem0TRack000x".into()),
+        url: (kind == 1).then(|| "https://www.twitch.tv/rustcord".into()),
+        party: (kind == 0).then_some([3, 4]),
+        ..Default::default()
     };
     Activity { kind, name: name.into(), rich: Some(Box::new(rich)) }
 }
 
-/// The demo game's application and art asset (seed the image cache with
-/// `app-assets/{DEMO_APP}/{DEMO_ASSET}.png?size=64` and `?size=128` for screenshots).
+/// Test hooks: a detected game as others see it (no rich-presence art): its app icon shows
+/// (`DEMO_DETECTED`'s icon from the saved games list), else the controller tile.
+pub(super) fn demo_detected() -> Activity {
+    let rich = RichPresence { start: Some(super::threads::unix_ms() - 12 * 60_000), application_id: Some(DEMO_DETECTED), ..Default::default() };
+    Activity { kind: 0, name: "Celeste".into(), rich: Some(Box::new(rich)) }
+}
+
+/// The demo game's application and art assets (seed the image cache with
+/// `app-assets/{DEMO_APP}/{DEMO_ASSET}.png?size=64|128` and `{DEMO_SMALL}.png?size=64` for
+/// screenshots), Spotify's album (`i.scdn.co/image/{DEMO_ALBUM}`) and the detected game.
 const DEMO_APP: Id = Id(1565443437363200900);
 const DEMO_ASSET: &str = "1565443437363200901";
+const DEMO_SMALL: &str = "1565443437363200902";
+const DEMO_ALBUM: &str = "ab67616d0000b273c0ffee00000000000000beef";
+const DEMO_DETECTED: Id = Id(1565443437363200903);
 
 /// Test hook (`RUSTCORD_OPEN=members`, ui/mod.rs): the demo list's presences as the gateway
-/// reports them next to a member list, the 2nd-4th online member with a custom status, a game
-/// and a phone.
+/// reports them next to a member list, the 2nd-4th online member with a custom status over a
+/// game with art, a detected game (app icon) and Spotify on a phone.
 pub(super) fn demo_presences(state: &mut AppState, items: &[MemberListItem]) {
     let custom = CustomStatus { text: Some("Reviewing PRs".into()), emoji: Some(Emoji { name: Some("👀".into()), ..Default::default() }) };
     let extras = [
         UserPresence::default(),
-        UserPresence { custom_status: Some(custom), ..Default::default() },
-        UserPresence { activity: Some(demo_activity(0)), ..Default::default() },
+        UserPresence { custom_status: Some(custom), activity: Some(demo_activity(0)), ..Default::default() },
+        UserPresence { activity: Some(demo_detected()), ..Default::default() },
         UserPresence { mobile: true, activity: Some(demo_activity(2)), ..Default::default() },
     ];
     let online = items.iter().filter_map(|it| match it {

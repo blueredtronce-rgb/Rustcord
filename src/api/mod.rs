@@ -4,6 +4,7 @@
 //! `backend::run`). Pub signatures below are the contract used by backend.rs/ui.
 
 pub mod account;
+pub mod apps;
 pub mod auth;
 pub mod calls;
 pub mod cdn;

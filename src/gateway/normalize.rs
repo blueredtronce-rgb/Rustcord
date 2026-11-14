@@ -134,20 +134,30 @@ struct ActivityWire {
     timestamps: serde_json::Value,
     application_id: serde_json::Value,
     assets: serde_json::Value,
+    sync_id: serde_json::Value,
+    url: serde_json::Value,
+    party: serde_json::Value,
 }
 
 impl ActivityWire {
     fn into_activity(self) -> Activity {
         let text = |v: &serde_json::Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
-        let start = &self.timestamps["start"];
+        let ms = |v: &serde_json::Value| v.as_u64().or_else(|| v.as_str()?.parse().ok());
+        let size = &self.party["size"];
+        let party = size.as_array().filter(|s| s.len() == 2).and_then(|s| Some([u32::try_from(s[0].as_u64()?).ok()?, u32::try_from(s[1].as_u64()?).ok()?]));
         let rich = RichPresence {
             details: text(&self.details),
             state: self.state.filter(|s| !s.is_empty()),
-            start: start.as_u64().or_else(|| start.as_str()?.parse().ok()),
+            start: ms(&self.timestamps["start"]),
             application_id: Id::deserialize(&self.application_id).ok().filter(|id| !id.is_zero()),
             large_image: text(&self.assets["large_image"]),
             large_text: text(&self.assets["large_text"]),
             small_image: text(&self.assets["small_image"]),
+            small_text: text(&self.assets["small_text"]),
+            end: ms(&self.timestamps["end"]),
+            sync_id: text(&self.sync_id),
+            url: text(&self.url),
+            party: party.filter(|p| p[1] > 0),
         };
         Activity { kind: self.kind, name: self.name, rich: (rich != RichPresence::default()).then(|| Box::new(rich)) }
     }
@@ -265,6 +275,7 @@ struct GuildWire {
     premium_tier: u8,
     #[serde(deserialize_with = "null_default")]
     mfa_level: u8,
+    rules_channel_id: Option<Id>,
     #[serde(deserialize_with = "null_default")]
     roles: Vec<Role>,
     #[serde(deserialize_with = "null_default")]
@@ -296,6 +307,7 @@ impl GuildWire {
             unavailable: self.unavailable,
             premium_tier: self.premium_tier,
             mfa_level: self.mfa_level,
+            rules_channel_id: self.rules_channel_id,
             voice_states: self.voice_states,
         };
         if let Some(p) = self.properties {
@@ -308,6 +320,7 @@ impl GuildWire {
             g.default_message_notifications = p.default_message_notifications;
             g.premium_tier = p.premium_tier;
             g.mfa_level = p.mfa_level;
+            g.rules_channel_id = p.rules_channel_id;
         }
         // Channels and voice states inside guild dispatches may lack guild_id.
         for c in &mut g.channels {
@@ -984,7 +997,7 @@ mod tests {
         let r = ready_of(
             r#"{"t":"READY","s":1,"op":0,"d":{"user":{"id":"1","username":"me"},"session_id":"s2",
             "guilds":[{"id":"10","data_mode":"full",
-              "properties":{"id":"10","name":"Nested","owner_id":"1","icon":"abc","default_message_notifications":1,"premium_tier":2,"mfa_level":1},
+              "properties":{"id":"10","name":"Nested","owner_id":"1","icon":"abc","default_message_notifications":1,"premium_tier":2,"mfa_level":1,"rules_channel_id":"100"},
               "channels":[{"id":"100","type":0}],"roles":[],"emojis":[{"id":"9","name":"e"}],
               "members":[{"user":{"id":"3","username":"x"},"roles":[]},{"user":{"id":"1","username":"me"},"roles":["7"]}]}],
             "private_channels":[
@@ -998,6 +1011,7 @@ mod tests {
         let g = &d.guilds[0];
         assert_eq!((g.id, g.name.as_str(), g.owner_id, g.icon.as_deref()), (Id(10), "Nested", Id(1), Some("abc")));
         assert_eq!((g.default_message_notifications, g.premium_tier, g.mfa_level), (1, 2, 1));
+        assert_eq!(g.rules_channel_id, Some(Id(100)));
         assert_eq!(g.emojis.len(), 1);
         assert_eq!(g.channels[0].guild_id, Some(Id(10)));
         assert_eq!(d.my_members.len(), 1);
@@ -1143,8 +1157,9 @@ mod tests {
               {"type":"weird","name":"skipped"},
               {"type":4,"name":"Custom Status","state":"brb","emoji":{"name":"🍕"}},
               {"type":6,"name":"Hang Status"},
-              {"type":2,"name":"Spotify","details":"x","timestamps":{"start":"1700000000000","end":1},"application_id":7,
-               "assets":{"large_image":"spotify:ab","large_text":"","small_image":5}},
+              {"type":2,"name":"Spotify","details":"x","timestamps":{"start":"1700000000000","end":1700000180000},"application_id":7,
+               "assets":{"large_image":"spotify:ab","large_text":"","small_image":5,"small_text":"s"},"sync_id":"4uLU6hMCjMI75M1A2tKUQC",
+               "party":{"id":"spotify:2","size":[1,"x"]},"url":3},
               {"type":0,"name":"Chess"}]}"#,
         );
         let [GatewayEvent::PresenceUpdate(list)] = &r[..] else { panic!("{r:?}") };
@@ -1155,8 +1170,11 @@ mod tests {
         let rich = RichPresence {
             details: Some("x".into()),
             start: Some(1_700_000_000_000),
+            end: Some(1_700_000_180_000),
             application_id: Some(Id(7)),
             large_image: Some("spotify:ab".into()),
+            small_text: Some("s".into()),
+            sync_id: Some("4uLU6hMCjMI75M1A2tKUQC".into()),
             ..Default::default()
         };
         let spotify = Activity { kind: 2, name: "Spotify".into(), rich: Some(Box::new(rich)) };
@@ -1182,6 +1200,15 @@ mod tests {
         assert_eq!(list[1].1.activity.as_ref().unwrap().label(), "Watching TV");
         assert_eq!(list[1].1.activity.as_ref().unwrap().rich, None, "no rich presence: nothing boxed");
         assert_eq!(ev("READY_SUPPLEMENTAL", r#"{"guilds":[],"merged_presences":null}"#).len(), 0);
+
+        // Stream URL and party size.
+        let r = ev(
+            "PRESENCE_UPDATE",
+            r#"{"user":{"id":"5"},"status":"online","activities":[{"type":1,"name":"Twitch","url":"https://www.twitch.tv/x","party":{"size":[3,4]}}]}"#,
+        );
+        let [GatewayEvent::PresenceUpdate(list)] = &r[..] else { panic!("{r:?}") };
+        let rich = list[0].1.activity.as_ref().unwrap().rich.as_deref().unwrap();
+        assert_eq!((rich.url.as_deref(), rich.party), (Some("https://www.twitch.tv/x"), Some([3, 4])));
     }
 
     #[test]

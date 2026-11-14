@@ -1,7 +1,7 @@
 //! Image fetching + disk cache + decoding (runs on the backend runtime).
 //!
-//! - Only Discord CDN/media hosts and the GIF host (static.klipy.com) are fetched; never sends
-//!   the auth token.
+//! - Only Discord CDN/media hosts, the GIF host (static.klipy.com) and Spotify's album art
+//!   (i.scdn.co) are fetched; never sends the auth token.
 //! - Disk cache in `config::paths().images_dir()`, file name = FNV-1a hash of the cache key.
 //!   The cache key strips volatile signature params (`ex`, `is`, `hm`) of attachment URLs.
 //! - Decoding happens in `spawn_blocking`, downscaled so the longest side <= max_side.
@@ -150,7 +150,8 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f).await.map_err(|e| format!("image task failed: {e}"))
 }
 
-/// https on a Discord CDN/media host or the GIF picker host (FEATURES_NOTES §1.8) only.
+/// https on a Discord CDN/media host, the GIF picker host (FEATURES_NOTES §1.8) or Spotify's
+/// album-art host only.
 fn host_allowed(url: &reqwest::Url) -> bool {
     url.scheme() == "https"
         && url.port().is_none()
@@ -158,6 +159,9 @@ fn host_allowed(url: &reqwest::Url) -> bool {
             h == "cdn.discordapp.com"
                 || h == "media.discordapp.net"
                 || h == "static.klipy.com"
+                // Album art of `spotify:` activities (`cdn::activity_asset_url`); the official
+                // client loads it from here too.
+                || h == "i.scdn.co"
                 || h.strip_prefix("images-ext-")
                     .and_then(|r| r.strip_suffix(".discordapp.net"))
                     .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -365,6 +369,9 @@ mod tests {
         assert!(ok("https://images-ext-1.discordapp.net/external/x/y.png"));
         assert!(ok("https://images-ext-12.discordapp.net/external/x/y.png"));
         assert!(ok("https://static.klipy.com/ii/x/y.gif"));
+        assert!(ok("https://i.scdn.co/image/ab67616d0000b2734f8ef2c2c1b3a9a1c4d5e6f7"));
+        assert!(!ok("http://i.scdn.co/image/x"));
+        assert!(!ok("https://i.scdn.co.evil.example/image/x"));
         assert!(!ok("https://static.klipy.com.evil.example/a.gif"));
         assert!(!ok("http://static.klipy.com/a.gif"));
         assert!(!ok("http://cdn.discordapp.com/a.png"));

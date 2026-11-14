@@ -145,6 +145,8 @@ pub struct AppState {
     /// states, with unread messages: the NEW divider stays there for the visit although
     /// `mark_read` acks the channel right away. "Mark Unread" moves it.
     pub unread_marker: Option<(Id, Id)>,
+    /// Game detection, my added games, activity icons (`crate::activity`). Not cached.
+    pub activity: crate::activity::ActivityState,
 }
 
 /// What `BackendEvent::Voice` reported so far (read by the voice panel).
@@ -196,6 +198,7 @@ impl Default for AppState {
             social: social::SocialState::default(),
             account: account::AccountState::default(),
             unread_marker: None,
+            activity: Default::default(),
         }
     }
 }
@@ -636,7 +639,9 @@ impl AppState {
 
     /// Clear everything (logout).
     pub fn reset(&mut self) {
-        *self = Self::default();
+        // This device's games stay; the session's presence and friends' app icons go.
+        let activity = std::mem::take(&mut self.activity).after_logout();
+        *self = Self { activity, ..Self::default() };
     }
 
     // ----- selection ---------------------------------------------------------
@@ -1506,6 +1511,7 @@ fn merge_guild(old: &mut Guild, new: Guild) {
     old.default_message_notifications = new.default_message_notifications;
     old.premium_tier = new.premium_tier;
     old.mfa_level = new.mfa_level;
+    old.rules_channel_id = new.rules_channel_id;
     old.unavailable = false;
 }
 
