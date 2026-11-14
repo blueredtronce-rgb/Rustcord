@@ -4,12 +4,16 @@
 //!
 //! Sizes <= 32 px use `logo-small.svg` when it exists next to the main SVG (a simplified mark
 //! that stays legible at tiny sizes). `logo-mono.svg` next to it (the flat mark) becomes
-//! `rustcord-tray.ico`, the notification-area icon (resource id 2, notify.rs).
+//! `rustcord-tray.ico`, the notification-area icon (resource id 2, notify.rs), and
+//! `icons/rustcord-tray-36.png`, the macOS menu bar template image (black + alpha).
 
 use resvg::{tiny_skia, usvg};
 use std::path::{Path, PathBuf};
 
-const PNG_SIZES: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
+/// 1024: the macOS iconset's icon_512x512@2x (scripts/build-macos.sh).
+const PNG_SIZES: [u32; 8] = [16, 32, 48, 64, 128, 256, 512, 1024];
+/// macOS menu bar icon: 18 pt at 2x.
+const MENU_BAR_SIZE: u32 = 36;
 const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 /// The small-icon size at 100-300 % scaling.
 const TRAY_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
@@ -37,6 +41,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mono.exists() {
         let mono_tree = load(&mono)?;
         write_ico(&out.join("rustcord-tray.ico"), &TRAY_SIZES, |_| &mono_tree)?;
+        // A template image: macOS only reads the alpha channel and tints it for the menu bar.
+        let mut rgba = render(&mono_tree, MENU_BAR_SIZE)?;
+        for px in rgba.as_chunks_mut::<4>().0 {
+            px[..3].fill(0);
+        }
+        let path = out.join("icons").join(format!("rustcord-tray-{MENU_BAR_SIZE}.png"));
+        image::save_buffer(&path, &rgba, MENU_BAR_SIZE, MENU_BAR_SIZE, image::ExtendedColorType::Rgba8)?;
+        println!("wrote {}", path.display());
     }
     Ok(())
 }
