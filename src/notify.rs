@@ -39,6 +39,7 @@ mod unix;
 pub enum TrayAction {
     Show,
     /// A click on one of Rustcord's notifications (Windows, Linux; macOS reports `Show`).
+    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS reports a notification click as Show"))]
     Notification,
     ToggleMute,
     ToggleDeafen,
