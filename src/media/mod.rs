@@ -11,13 +11,13 @@
 //! - Or own a `Player` (`Player::open(ctx, url, Opts { no_seek_ahead: true, .. })`), call
 //!   `drawn()` and `set_target()` on every paint it is visible, read `status()`:
 //!   - `played_ms`: media time that really played (state Playing) while the player was drawn in
-//!     the last second. Monotonic, never settable, advances at most in real time; a seek does not
+//!     the last second (unless `Opts::background`: drawn or not). Monotonic, never settable, advances at most in real time; a seek does not
 //!     add to it. This is the only number a quest's progress may come from.
 //!   - `position_ms` / `duration_ms` / `max_ms` (furthest position reached by playing).
 //!   - `state`: Loading, Paused, Playing, Ended, Failed(why), Freed (worker gone: drop the
 //!     handle; reopening starts at 0).
-//! - A player not drawn for 1 s pauses itself (scrolled away, window hidden or minimized); one
-//!   paused or ended and not drawn for 30 s frees its decoders and thread.
+//! - A player not drawn for 1 s pauses itself (scrolled away, window hidden or minimized), unless
+//!   `Opts::background` (quest videos); one paused or ended and not drawn for 30 s frees its decoders and thread.
 
 pub mod audio;
 pub mod mp4;
@@ -90,6 +90,10 @@ pub struct Opts {
     pub no_seek_ahead: bool,
     /// Speaker name (Voice & Video's output), else the default.
     pub output: Option<String>,
+    /// Keeps playing while not drawn (quest videos): no pause after `HIDDEN_PAUSE`, `played_ms`
+    /// counts while playing drawn or not, pictures not drawn are decoded but neither converted
+    /// nor published (no UI wakes).
+    pub background: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,7 +298,7 @@ fn run(url: &str, opts: &Opts, sh: &Shared, rx: &mpsc::Receiver<Ctl>, frames: &V
             Some(Ctl::Pause) => e.pause(State::Paused),
             Some(Ctl::Seek(ms)) => e.seek(if opts.no_seek_ahead { ms.min(sh.max.load(Relaxed)) } else { ms }),
             // A second's grace after a (re)start: a slow load can outlast the UI's last paint.
-            None if e.playing && sh.drawn_age() >= HIDDEN_PAUSE && e.started.is_some_and(|t| t.elapsed() >= HIDDEN_PAUSE) => e.pause(State::Paused),
+            None if e.playing && !opts.background && sh.drawn_age() >= HIDDEN_PAUSE && e.started.is_some_and(|t| t.elapsed() >= HIDDEN_PAUSE) => e.pause(State::Paused),
             None if e.playing => e.step()?,
             None if e.show_one => e.show_paused()?,
             None => {}
@@ -511,15 +515,22 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
+    /// A `background` player nobody has drawn for `HIDDEN_PAUSE`: its pictures are not shown.
+    fn unseen(&self) -> bool {
+        self.opts.background && self.sh.drawn_age() >= HIDDEN_PAUSE
+    }
+
     /// Feeds one sample (or flushes at the end) and queues the picture that comes out.
     fn decode_next(&mut self, late_before: u64) -> Result<(), Fail> {
+        // shortcut: unseen pictures are still decoded (H.264 references); audio-only needs a keyframe resync when drawn again. Upgrade if 1080p background CPU matters.
+        let unseen = self.unseen();
         let (w, h) = self.out_size();
         let Some(&s) = self.v.samples.get(self.vi) else {
             let rest = self.dec.flush_remaining().map_err(|_| Fail::Unsupported)?;
             for yuv in &rest {
                 let pts = self.heap.pop().map_or(self.dur, |Reverse(t)| t.max(0) as u64 * 1000 / self.v.timescale);
                 if pts + self.frame_ms > self.skip_until.max(late_before) {
-                    let rgba = convert(yuv, (w, h), self.spare.pop());
+                    let rgba = if unseen { Vec::new() } else { convert(yuv, (w, h), self.spare.pop()) };
                     self.pending.push_back(Pending { pts, size: (w, h), rgba });
                 }
             }
@@ -539,7 +550,7 @@ impl<'a> Engine<'a> {
         if let Ok(Some(yuv)) = self.dec.decode_with_options(&self.annexb, DecodeOptions::new()) {
             let pts = self.heap.pop().map_or(0, |Reverse(t)| t.max(0) as u64 * 1000 / self.v.timescale);
             if pts + self.frame_ms > self.skip_until.max(late_before) {
-                let rgba = convert(&yuv, (w, h), self.spare.pop());
+                let rgba = if unseen { Vec::new() } else { convert(&yuv, (w, h), self.spare.pop()) };
                 self.pending.push_back(Pending { pts, size: (w, h), rgba });
             }
         }
@@ -557,11 +568,13 @@ impl<'a> Engine<'a> {
 
     fn publish(&mut self) {
         if let Some(p) = self.pending.pop_front() {
-            self.writer.write(p.size.0, p.size.1, |px| {
-                if px.len() == p.rgba.len() {
-                    px.copy_from_slice(&p.rgba);
-                }
-            });
+            if !p.rgba.is_empty() {
+                self.writer.write(p.size.0, p.size.1, |px| {
+                    if px.len() == p.rgba.len() {
+                        px.copy_from_slice(&p.rgba);
+                    }
+                });
+            }
             self.sh.pos.store(p.pts.min(self.dur), Relaxed);
             self.spare.push(p.rgba);
         }
@@ -582,7 +595,7 @@ impl<'a> Engine<'a> {
         let clock = self.clock().min(self.dur);
         if clock > self.last_clock {
             // Only time that played on screen counts (docs at the top).
-            if self.sh.drawn_age() < HIDDEN_PAUSE {
+            if self.opts.background || self.sh.drawn_age() < HIDDEN_PAUSE {
                 self.sh.played.fetch_add(clock - self.last_clock, Relaxed);
             }
             self.sh.max.fetch_max(clock, Relaxed);
@@ -755,6 +768,29 @@ mod tests {
         e.seek(2500.min(sh.max.load(Relaxed)));
         assert_eq!(sh.played.load(Relaxed), played);
         assert!(sh.max.load(Relaxed) >= before);
+    }
+
+    #[test]
+    fn background_plays_unseen() {
+        let (opts, sh, frames) = (Opts { muted: true, background: true, ..Opts::default() }, Shared::default(), VideoFrames::default());
+        let mut e = engine(&opts, &sh, &frames);
+        sh.drawn.store(now_ms(), Relaxed);
+        std::thread::sleep(Duration::from_millis(1100));
+        e.play();
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(300) {
+            e.step().unwrap();
+        }
+        let played = sh.played.load(Relaxed);
+        assert!((200..=330).contains(&played), "{played} ms counts unseen");
+        assert!(frames.latest(&VideoKey::Media(1)).is_none(), "nothing is published unseen");
+        // Drawn again: pictures come out.
+        let t = Instant::now();
+        while frames.latest(&VideoKey::Media(1)).is_none() && t.elapsed() < Duration::from_secs(2) {
+            sh.drawn.store(now_ms(), Relaxed);
+            e.step().unwrap();
+        }
+        assert!(frames.latest(&VideoKey::Media(1)).is_some());
     }
 
     #[test]
