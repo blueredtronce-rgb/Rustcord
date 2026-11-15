@@ -1,3 +1,4 @@
+import { startFx } from './fx.js';
 import { SYSTEMS, LATEST, detectOs, fetchLatest, buttonState, mb } from './download.js';
 
 const html = document.documentElement, q = new URLSearchParams(location.search);
@@ -114,3 +115,5 @@ if (tk !== null && tour && html.classList.contains('pin')) {
     scrollTo({ top: top - (parseFloat(getComputedStyle(html).getPropertyValue('--header-h')) || 64) + len * (k + .5) / 5, behavior: 'instant' }); };
   addEventListener('load', () => { place(); setTimeout(place, 300); });
 }
+
+startFx();
