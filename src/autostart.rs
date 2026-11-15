@@ -112,23 +112,40 @@ fn entry_exists() -> bool {
 
 /// This exe is the installed one: the installer's folder on Windows, a system or per-user
 /// install (or an app bundle) elsewhere. Dev builds in a target dir never are.
-fn installed_copy(exe: &Path) -> bool {
+pub(crate) fn installed_copy(exe: &Path) -> bool {
     #[cfg(windows)]
     {
-        let key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Rustcord";
-        let norm = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
-        crate::winreg::get_string(key, "InstallLocation").is_some_and(|dir| exe.parent().is_some_and(|p| norm(p) == norm(Path::new(&dir))))
+        in_install_dir(exe, crate::config::APP_NAME)
     }
     #[cfg(unix)]
     {
-        unix_installed(exe, directories::BaseDirs::new().as_ref().map(|d| d.home_dir()))
+        // Both sides canonical: a symlinked home (`/home -> /data/home`) is still home.
+        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let home = directories::BaseDirs::new().map(|d| canon(d.home_dir()));
+        unix_installed(&canon(exe), home.as_deref())
     }
+}
+
+/// Windows: `exe` sits in the folder of the Apps entry `id` ("Rustcord", or the setup's test
+/// identity): its `InstallLocation`.
+#[cfg(windows)]
+pub(crate) fn in_install_dir(exe: &Path, id: &str) -> bool {
+    let key = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{id}");
+    crate::winreg::get_string(&key, "InstallLocation").is_some_and(|dir| exe.parent().is_some_and(|p| same_dir(p, Path::new(&dir))))
+}
+
+/// Windows paths: case-insensitive, with or without a trailing backslash.
+#[cfg(any(windows, test))]
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    norm(a) == norm(b)
 }
 
 /// Under `/usr/`, `/opt/` or `~/.local/`, or an app bundle in `/Applications` or
 /// `~/Applications` (not the mounted dmg or an App Translocation copy, gone at the next login).
+/// Callers pass canonical paths.
 #[cfg(any(unix, test))]
-fn unix_installed(exe: &Path, home: Option<&Path>) -> bool {
+pub(crate) fn unix_installed(exe: &Path, home: Option<&Path>) -> bool {
     let local = home.map(|h| h.join(".local"));
     let apps = exe.starts_with("/Applications") || home.is_some_and(|h| exe.starts_with(h.join("Applications")));
     exe.starts_with("/usr") || exe.starts_with("/opt") || local.is_some_and(|l| exe.starts_with(l)) || (apps && exe.to_string_lossy().contains(".app/Contents/MacOS/"))
@@ -235,6 +252,12 @@ mod tests {
         assert!(!unix_installed(Path::new("/home/ann/rc-target/release/rustcord"), home));
         assert!(!unix_installed(Path::new("/usrx/rustcord"), home), "whole folder names only");
         assert!(!unix_installed(Path::new("/home/ann/.localx/rustcord"), home));
+    }
+
+    #[test]
+    fn windows_install_dir_compare() {
+        assert!(same_dir(Path::new(r"C:\Users\ann\AppData\Local\Programs\Rustcord"), Path::new(r"c:\users\ann\appdata\local\programs\rustcord\")));
+        assert!(!same_dir(Path::new(r"C:\Programs\Rustcord"), Path::new(r"C:\Programs\RustcordSetupTest")));
     }
 
     /// A temp dir only, never the real ~/.config/autostart.
