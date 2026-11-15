@@ -7,6 +7,7 @@ mod auth;
 mod autostart;
 mod backend;
 mod cache;
+mod captcha;
 mod config;
 mod emoji;
 mod gateway;
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 
 /// Flags: `--minimized` (sign-in autostart: start hidden in the tray), `--quit` (asks the running
 /// Rustcord to quit and waits for it; the installer uses it before replacing files),
+/// `--captcha` (the captcha window's helper process, started by the login flow),
 /// `--clear-login` (removes the saved login from the keyring and exits; `install.sh --uninstall --purge`),
 /// `--after-update` (started by the updater: waits up to 30 s for the previous
 /// version to release the instance lock instead of handing off to it, then cleans up its
@@ -36,6 +38,12 @@ fn main() -> eframe::Result {
     let started = Instant::now();
     trace_startup("main", started);
     ui::images::mem_trace("main");
+    // The captcha window (src/captcha.rs): its own tiny process, before the single-instance claim.
+    #[cfg(any(windows, target_os = "macos"))]
+    if std::env::args().nth(1).as_deref() == Some("--captcha") {
+        captcha::helper_main();
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--clear-login") {
         if let Err(e) = auth::clear_token() {
             eprintln!("rustcord: {e}");

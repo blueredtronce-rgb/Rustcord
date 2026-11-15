@@ -47,8 +47,8 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 symphonia-codec-aac = "=0.6.1"
 # Codec parameters and audio buffers that the AAC decoder takes and returns (approved).
 symphonia-core = "=0.6.1"
-# `net`: voice UDP socket.
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+# `net`: voice UDP socket. `process` + `io-util`: the captcha helper process.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util"] }
 tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
 toml = "1.2.1"
 # WOFF2 -> sfnt for gg sans, decoded in memory at runtime (docs/FONTS_NOTES.md; ~330 KiB with its 2 deps, approved).
@@ -68,6 +68,13 @@ windows-capture = "=2.0.1"
 # Registry: autostart + the installer's Apps entry. Threading + Security: the single-instance mutex.
 # Diagnostics_ToolHelp (+ Threading): the process list of game detection (src/activity/scan.rs).
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_System_Threading", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_Accessibility"] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+# Discord's hCaptcha shown to the user in a helper window (docs/AUTH_NOTES.md section 0). Pinned: the
+# Windows page origin relies on its `https://<protocol>.*` mapping. No default features: they only add Linux WebKitGTK.
+wry = { version = "=0.57.2", default-features = false }
+# The captcha helper's own window (the version eframe already builds).
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 [target."cfg(windows)".build-dependencies]
 embed-resource = "3.0.12"
@@ -90,7 +97,9 @@ tray-icon = { version = "=0.26.1", default-features = false }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNError"] }
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSNotification", "NSOperation", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSNotification", "NSOperation", "NSURL", "block2"] }
+# The captcha page's discord.com base URL (wry loads HTML without one).
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKNavigation", "objc2-app-kit"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
 
 [dev-dependencies]
