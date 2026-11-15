@@ -2093,6 +2093,13 @@ async fn login_client(
     c
 }
 
+/// Ends the login screen's client but keeps the cookies its calls collected.
+fn drop_login_client(slot: &mut Option<Arc<AuthClient>>, cookies: &mut Option<reqwest::header::HeaderValue>) {
+    if let Some(c) = slot.take() {
+        *cookies = c.cookies().or(cookies.take());
+    }
+}
+
 fn login_step(step: LoginStep) -> BackendEvent {
     BackendEvent::LoginStep(step)
 }
@@ -2242,7 +2249,7 @@ async fn run(
                         sink.send(BackendEvent::LoggedIn);
                         // Logged in (maybe through another tab): drop leftover login-screen credentials.
                         mfa = None;
-                        auth_client = None;
+                        drop_login_client(&mut auth_client, &mut device_cookies);
                         if let Some(n) = notice.take() {
                             sink.send(BackendEvent::ActionFailed(n.into()));
                         }
@@ -2306,7 +2313,7 @@ async fn run(
                 (Some(t), Some(client)) => {
                     match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref()).await {
                         Ok(token) => {
-                            auth_client = None;
+                            drop_login_client(&mut auth_client, &mut device_cookies);
                             relogin(&again, token, t.remember);
                         }
                         Err(e) => {
@@ -2353,7 +2360,7 @@ async fn run(
                     t.abort();
                 }
                 mfa = None;
-                auth_client = None;
+                drop_login_client(&mut auth_client, &mut device_cookies);
                 // Like the image cache: the app icons of this account's friends' activities go.
                 activity.save_apps(Vec::new());
                 if let Some(old) = session.take() {

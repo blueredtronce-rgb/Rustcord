@@ -12,6 +12,7 @@ use reqwest::header::{COOKIE, HeaderMap, HeaderValue, REFERER, SET_COOKIE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub const CAPTCHA_PASSWORD: &str = "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works.";
@@ -40,12 +41,28 @@ pub enum LoginOutcome {
     Mfa { ticket: Secret, login_instance_id: Option<String>, methods: Vec<MfaMethod> },
 }
 
-pub struct AuthClient {
-    http: reqwest::Client,
-    fingerprint: Option<HeaderValue>,
+/// What Discord knows about this device before login.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Device {
     /// Discord's device cookies (`__dcfduid`, `__sdcfduid`, `_cfuvid`) as one `Cookie` value; a
     /// browser sends them on every login call and keeps them across logouts.
-    cookies: Option<HeaderValue>,
+    cookies: String,
+    fingerprint: Option<String>,
+}
+
+impl Device {
+    /// Takes the `Set-Cookie` lines of one response; true if the cookies changed.
+    fn absorb(&mut self, headers: &HeaderMap) -> bool {
+        let merged = merge_cookies(&self.cookies, headers.get_all(SET_COOKIE).iter().filter_map(|v| v.to_str().ok()));
+        let changed = merged != self.cookies;
+        self.cookies = merged;
+        changed
+    }
+}
+
+pub struct AuthClient {
+    http: reqwest::Client,
+    device: Mutex<Device>,
 }
 
 impl AuthClient {
@@ -61,50 +78,58 @@ impl AuthClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("HTTP client (TLS backend) failed to initialise");
-        Self { http, fingerprint: None, cookies }
+        let cookies = cookies.and_then(|c| c.to_str().ok().map(str::to_owned)).unwrap_or_default();
+        Self { http, device: Mutex::new(Device { cookies, fingerprint: None }) }
     }
 
     /// GET /experiments once per login screen for the `X-Fingerprint` header (3 valid ones per
     /// 2 minutes per IP). Recommended, not required: on any failure go on without it. Also keeps
     /// the device cookies the response sets.
-    pub async fn with_fingerprint(mut self) -> Self {
+    pub async fn with_fingerprint(self) -> Self {
         let mut req = self.http.get(format!("{API_BASE}/experiments?with_guild_experiments=true"));
-        if let Some(c) = &self.cookies {
-            req = req.header(COOKIE, c.clone());
+        if let Some(c) = self.cookie_header() {
+            req = req.header(COOKIE, c);
         }
         let fp = match req.send().await {
             Ok(r) if r.status().is_success() => {
-                let old = self.cookies.as_ref().and_then(|c| c.to_str().ok()).unwrap_or_default().to_owned();
-                let merged = merge_cookies(&old, r.headers().get_all(SET_COOKIE).iter().filter_map(|v| v.to_str().ok()));
-                self.cookies = HeaderValue::from_str(&merged).ok().filter(|_| !merged.is_empty()).map(|mut v| {
-                    v.set_sensitive(true);
-                    v
-                });
+                self.device.lock().unwrap().absorb(r.headers());
                 r.json::<Value>().await.ok()
             }
             _ => None,
         };
-        self.fingerprint = fp.and_then(|v| HeaderValue::from_str(v.get("fingerprint")?.as_str()?).ok());
+        self.device.lock().unwrap().fingerprint =
+            fp.and_then(|v| v.get("fingerprint")?.as_str().map(str::to_owned)).filter(|f| HeaderValue::from_str(f).is_ok());
         self
     }
 
     pub fn cookies(&self) -> Option<HeaderValue> {
-        self.cookies.clone()
+        self.cookie_header()
+    }
+
+    fn cookie_header(&self) -> Option<HeaderValue> {
+        let c = self.device.lock().unwrap().cookies.clone();
+        HeaderValue::from_str(&c).ok().filter(|_| !c.is_empty()).map(|mut v| {
+            v.set_sensitive(true);
+            v
+        })
     }
 
     /// One POST, no retries. Non-2xx responses go through `classify`.
     async fn post<B: Serialize + ?Sized, R: DeserializeOwned>(&self, path: &str, body: &B, captcha: &str) -> Result<R, LoginError> {
         let mut req = self.http.post(format!("{API_BASE}{path}")).json(body);
-        if let Some(fp) = &self.fingerprint {
-            req = req.header("x-fingerprint", fp.clone());
+        let fp = self.device.lock().unwrap().fingerprint.clone().and_then(|f| HeaderValue::from_str(&f).ok());
+        if let Some(fp) = fp {
+            req = req.header("x-fingerprint", fp);
         }
-        if let Some(c) = &self.cookies {
-            req = req.header(COOKIE, c.clone());
+        if let Some(c) = self.cookie_header() {
+            req = req.header(COOKIE, c);
         }
         let network = |e| LoginError::new(net_err(e).to_string(), true);
         let resp = req.send().await.map_err(network)?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
+        // Every response, errors included: the browser's jar takes them all.
+        self.device.lock().unwrap().absorb(&headers);
         let bytes = resp.bytes().await.map_err(network)?;
         if !(200..300).contains(&status) {
             return Err(classify(status, &headers, &bytes, captcha));
@@ -356,6 +381,23 @@ mod tests {
         assert!(err(403, r#"{"code":40333,"message":"internal network error"}"#).message.contains("firewall"));
         assert!(err(403, r#"{"code":10008,"message":"Unknown Message"}"#).message.contains("blocked"));
         assert_eq!(err(502, "bad gateway").message, "Discord returned an error (HTTP 502).");
+    }
+
+    #[test]
+    fn every_response_updates_the_device_cookies() {
+        let resp = |lines: &[&str]| {
+            let mut h = HeaderMap::new();
+            for l in lines {
+                h.append(SET_COOKIE, HeaderValue::from_str(l).unwrap());
+            }
+            h
+        };
+        let mut d = Device::default();
+        assert!(d.absorb(&resp(&["__dcfduid=a; Path=/", "_cfuvid=b"])));
+        // A login, MFA or QR-exchange answer (also an error one) can replace a cookie.
+        assert!(d.absorb(&resp(&["_cfuvid=c; HttpOnly"])));
+        assert_eq!(d.cookies, "__dcfduid=a; _cfuvid=c");
+        assert!(!d.absorb(&resp(&["_cfuvid=c"])) && !d.absorb(&HeaderMap::new()));
     }
 
     #[test]
