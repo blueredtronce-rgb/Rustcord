@@ -10,7 +10,7 @@
 :root {
   --frame: #151a1e; --pane: #1c2125; --chat: #23282c; --surface: #2c3236; --well: #181d21;
   --text: #ece9e4; --muted: #abb4bc; --ember: #f68842; --on-ember: #21110a; --temper: #81bfeb;
-  --heat-cold: #a42d15; --heat-core: #feeec1; --straw: #ebc166; --straw-tint: #373732; --positive: #50c76a;
+  --heat-cold: #a42d15; --heat-core: #feeec1; --straw: #ebc166; --positive: #50c76a;
   --rule: rgb(236 233 228 / .10); --hover: rgb(236 233 228 / .06); --selected: rgb(236 233 228 / .12);
   --font: "Archivo", ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
@@ -182,16 +182,15 @@ details[open] > summary .chev { rotate: 0deg; }
 .motion.ready .boot:not(.run) .boot-fill { scale: 0 1; }
 .motion.ready .boot.run .boot-fill { animation: boot 199ms linear both; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 32px; margin: 0 0 32px; max-width: 880px; }
-.stats > div { display: flex; flex-direction: column-reverse; }
-.stats dt { color: var(--muted); font-size: 1rem; }
+.stats dt { color: var(--muted); font-size: 1rem; margin-bottom: 4px; }
 .stats dd { margin: 0; color: var(--muted); font-size: .875rem; line-height: 1.45; }
-.stat { display: block; font-size: 3rem; font-stretch: 112%; font-weight: 800; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+.stats dd.stat { font-size: 1.5rem; font-weight: 600; line-height: 1.25; color: var(--text); font-variant-numeric: tabular-nums; margin-bottom: 4px; }
 .measured { max-width: 68ch; }
-@media (max-width: 479.98px) { .stats { gap: 16px; } .stat { font-size: 2.25rem; } .boot-l { font-size: .8125rem; } }
+@media (max-width: 479.98px) { .stats { gap: 16px; } .boot-l { font-size: .8125rem; } }
 
-.note-list { list-style: none; margin: 32px 0 0; padding: 0; display: grid; gap: 8px; }
-.note { padding: 20px 24px; border-left: 2px solid var(--straw); background: var(--straw-tint); border-radius: 0 8px 8px 0; }
-.note-plain { background: none; border: 2px solid var(--rule); border-left-width: 2px; border-radius: 8px; }
+.note-list { list-style: none; margin: 32px 0 0; padding: 0; display: grid; gap: 32px; }
+@media (min-width: 900px) { .note-list { grid-template-columns: repeat(3, 1fr); gap: 48px; } }
+.note { padding: 2px 0 2px 20px; border-left: 2px solid var(--straw); }
 .note h3 { margin-bottom: 8px; font-size: 1.1875rem; }
 .note p { margin: 0; font-size: 1rem; }
 

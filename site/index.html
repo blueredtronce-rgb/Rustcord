@@ -116,7 +116,29 @@
   </div>
 </section>
 
-<section class="sec sec-pane" id="why" aria-labelledby="why-title">
+<section class="sec sec-pane" id="speed" aria-labelledby="speed-title">
+  <div class="wrap">
+    <h2 id="speed-title">How light it is</h2>
+    <p class="lede">Rustcord draws its own interface with egui and runs its network code on tokio. There’s no Electron and no bundled browser.</p>
+    <figure class="boot" data-boot>
+      <div class="boot-scale">
+        <span class="boot-l boot-l-top">Window visible, 183 ms</span>
+        <div class="boot-track"><div class="boot-fill"></div><i class="tick" style="left:91.5%"></i><i class="tick" style="left:99.5%"></i></div>
+        <span class="boot-l boot-l-zero">0 ms</span>
+        <span class="boot-l boot-l-bot">First frame, 199 ms</span>
+      </div>
+      <figcaption>The bar fills in 199 ms, the time from starting Rustcord to its first frame with your cached servers.
+        <button class="btn btn-secondary btn-small" type="button" data-boot-replay hidden>Replay</button></figcaption>
+    </figure>
+    <dl class="stats">
+      <div><dt>Memory in use</dt><dd class="stat">96 MB</dd><dd>working set, 87 MB of it private</dd></div>
+      <div><dt>CPU while idle</dt><dd class="stat">0 %</dd><dd>16 ms of CPU in 20 s</dd></div>
+    </dl>
+    <p class="meta measured">Measured on a release build with a Ryzen 7 5825U and Windows 11, median of 5 runs, offline with cached data for 3 servers and DMs and no network images loaded. With a live connection, avatars and attachments add to the memory use.</p>
+  </div>
+</section>
+
+<section class="sec sec-chat" id="why" aria-labelledby="why-title">
   <div class="wrap why-grid">
     <div>
       <h2 id="why-title">Why it exists</h2>
@@ -135,7 +157,7 @@
   </div>
 </section>
 
-<section class="sec sec-chat" id="features" aria-labelledby="features-title">
+<section class="sec sec-pane" id="features" aria-labelledby="features-title">
   <div class="wrap">
     <h2 id="features-title">What it does</h2>
     <p class="lede">The layout follows Discord’s web app, so you’ll know your way around. The look, the icons and the code are Rustcord’s own.</p>
@@ -205,36 +227,13 @@
   </div>
 </section>
 
-<section class="sec sec-pane" id="speed" aria-labelledby="speed-title">
-  <div class="wrap">
-    <h2 id="speed-title">How light it is</h2>
-    <p class="lede">Rustcord draws its own interface with egui and runs its network code on tokio. There’s no Electron and no bundled browser.</p>
-    <figure class="boot" data-boot>
-      <div class="boot-scale">
-        <span class="boot-l boot-l-top">Window visible, 183 ms</span>
-        <div class="boot-track"><div class="boot-fill"></div><i class="tick" style="left:91.5%"></i><i class="tick" style="left:99.5%"></i></div>
-        <span class="boot-l boot-l-zero">0 ms</span>
-        <span class="boot-l boot-l-bot">First frame, 199 ms</span>
-      </div>
-      <figcaption>The bar fills in 199 ms, the time from starting Rustcord to its first frame with your cached servers.
-        <button class="btn btn-secondary btn-small" type="button" data-boot-replay hidden>Replay</button></figcaption>
-    </figure>
-    <dl class="stats">
-      <div><dt>Memory in use</dt><dd><span class="stat">96 MB</span> working set, 87 MB of it private</dd></div>
-      <div><dt>CPU while idle</dt><dd><span class="stat">0 %</span></dd></div>
-    </dl>
-    <p class="meta measured">Measured on a release build with a Ryzen 7 5825U and Windows 11, median of 5 runs, offline with cached data for 3 servers and DMs and no network images loaded. With a live connection, avatars and attachments add to the memory use.</p>
-  </div>
-</section>
-
 <section class="sec sec-chat sec-notes" id="notes" aria-labelledby="notes-title">
-  <div class="wrap narrow">
+  <div class="wrap">
     <h2 id="notes-title">Before you download</h2>
     <ul class="note-list">
       <li class="note"><h3>It’s a beta, and it was vibe-coded</h3><p>Almost all of Rustcord’s code was written with AI coding tools (Claude Code), not by hand. Many features have only been tested with offline demo data, and the Linux and macOS builds have had the least testing. If something breaks, please <a href="https://github.com/r0sc/Rustcord/issues">open an issue</a>.</p></li>
       <li class="note"><h3>Your account is at risk</h3><p>Third-party clients that log in with a user account violate Discord’s Terms of Service and can get the account banned. You use Rustcord at your own risk. It behaves like a normal user client (no automation, nothing is sent on your behalf, all rate limits are respected), but that doesn’t remove the risk.</p></li>
       <li class="note"><h3>It’s unofficial</h3><p>Rustcord is not affiliated with Discord. Its logo, look and icons are its own; it doesn’t use Discord’s logo, wordmark or brand colours.</p></li>
-      <li class="note note-plain"><h3>Updates come from GitHub</h3><p>To update itself, Rustcord asks GitHub for the newest version every 6 hours. GitHub sees your IP address and the app’s version; no Discord token or other personal data is sent.</p></li>
     </ul>
   </div>
 </section>
@@ -289,6 +288,8 @@
           <div class="cmd"><pre><code data-v="tar -xzf rustcord-{v}-linux-x86_64.tar.gz&#10;sh rustcord-{v}/install.sh">tar -xzf rustcord-&lt;version&gt;-linux-x86_64.tar.gz
 sh rustcord-&lt;version&gt;/install.sh</code></pre><button class="btn btn-secondary btn-small" type="button" data-copy><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span aria-live="polite">Copy</span></button></div>
           <p>Rustcord runs on X11, or through XWayland on Wayland desktops. The tray icon needs a desktop with a StatusNotifierItem tray, like KDE, Xfce, Cinnamon or Ubuntu’s GNOME.</p></div></details>
+      <details id="notes-updates"><summary>Updates come from GitHub <svg class="icon chev" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <div class="acc-body"><p>To update itself, Rustcord asks GitHub for the newest version every 6 hours. GitHub sees your IP address and the app’s version; no Discord token or other personal data is sent.</p></div></details>
       <details id="notes-verify"><summary>Check a download <svg class="icon chev" aria-hidden="true"><use href="#i-chev"/></svg></summary>
         <div class="acc-body">
           <p>Every release has a SHA256SUMS file. Compare your download with it:</p>
