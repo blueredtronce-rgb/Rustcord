@@ -342,7 +342,7 @@ re-checked against [UD]/[MOB] in `docs/GUILD_CARD_NOTES.md`, which wins over thi
 ```
 [UD] types `type`, `order` and `anchor` as integers with no enum. The client uses strings [MOB `shared-constants/ProfileFrameLayer*.tsx`]. Deserialize both (`#[serde(untagged)]` int|string). The int mapping is UNCONFIRMED; assume declaration order: 0 staple / 1 rail / 2 border, 0 front / 1 back, 0 top / 1 bottom / 2 center.
 
-**Asset:** `https://cdn.discordapp.com/media/v1/collectibles-shop/{sku_id}/{layer.id}/static?width={W}&height={H}`. Only `static` is used.
+**Asset:** `https://cdn.discordapp.com/media/v1/collectibles-shop/{sku_id}/{layer.id}/static?width={W}&height={H}`. Only `static` is used. Rustcord decodes it at the full drawn width (≤ 768 px).
 
 **Layout** [MOB `profile_frames/native/ProfileFrame.tsx`, `scaleProfileFrame.tsx`]:
 1. `k = cardW / inner_width`. Then `ot = overflow_top*k`, `ob = overflow_bottom*k`, `oh = overflow_horizontal*k`.
