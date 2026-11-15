@@ -6,7 +6,8 @@
 //!   The cache key strips volatile signature params (`ex`, `is`, `hm`) of attachment URLs.
 //! - Decoding happens in `spawn_blocking`, downscaled so the longest side <= max_side.
 //!   GIF / APNG / animated WebP decode to multiple frames, capped by a memory budget
-//!   (fallback: first frame only).
+//!   (fallback: first frame only); avatar decorations keep every frame and give up resolution
+//!   (down to half) instead.
 //! - The same disk cache, client and host list serve the media player (`media::net`): the
 //!   "media cache" of small videos and gifv loops.
 //!
@@ -30,7 +31,8 @@ const DISK_CAP: u64 = 300 * 1024 * 1024;
 const DISK_PRUNE_TARGET: u64 = 240 * 1024 * 1024;
 /// A third of the UI texture budget (12 MB) so one GIF can't crowd out everything else.
 const MAX_ANIM_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ANIM_FRAMES: usize = 60;
+/// Bounds the texture count; MAX_ANIM_BYTES is the real cap.
+const MAX_ANIM_FRAMES: usize = 480;
 
 #[derive(Clone)]
 pub struct ImageLoader {
@@ -84,8 +86,9 @@ impl Inner {
 
     async fn load(&self, url: &str, max_side: u32) -> Result<DecodedImage, String> {
         // Local profile overrides: only files inside the overrides folder, never the network.
+        let keep = keeps_frames(url);
         if let Some(path) = crate::overrides::local_path(url) {
-            return blocking(move || std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| decode(&b, max_side))).await?;
+            return blocking(move || std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| decode(&b, max_side, keep))).await?;
         }
         let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid image URL: {e}"))?;
         if !host_allowed(&parsed) {
@@ -96,7 +99,7 @@ impl Inner {
 
         let p = path.clone();
         // A cached file that no longer decodes is treated as a miss and overwritten.
-        let cached = blocking(move || std::fs::read(&p).ok().and_then(|b| decode(&b, max_side).ok())).await?;
+        let cached = blocking(move || std::fs::read(&p).ok().and_then(|b| decode(&b, max_side, keep).ok())).await?;
         if let Some(img) = cached {
             return Ok(img);
         }
@@ -107,7 +110,7 @@ impl Inner {
 
         let bytes = self.download(parsed).await?;
         blocking(move || {
-            let img = decode(&bytes, max_side)?;
+            let img = decode(&bytes, max_side, keep)?;
             // Only cache what decodes, so error pages never end up on disk.
             if let Err(e) = crate::config::write_atomic(&path, &bytes) {
                 eprintln!("rustcord: image cache write failed: {e}");
@@ -219,10 +222,17 @@ fn prune(dir: &Path, cap: u64, target: u64) {
     }
 }
 
+/// Avatar decorations keep their frames (`fit_side`): small, and the motion is the point.
+fn keeps_frames(url: &str) -> bool {
+    url.strip_prefix(crate::api::cdn::CDN).is_some_and(|p| p.starts_with("/avatar-decoration-presets/"))
+}
+
 /// Decode bytes (also used for local override images) into frames, longest side <= max_side.
-pub fn decode(bytes: &[u8], max_side: u32) -> Result<DecodedImage, String> {
+/// `keep_frames`: an APNG keeps all its frames, the side drops instead (`fit_side`).
+pub fn decode(bytes: &[u8], max_side: u32, keep_frames: bool) -> Result<DecodedImage, String> {
     let max_side = max_side.max(1);
     let reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| e.to_string())?;
+    let mut count = None;
     let animation = match reader.format() {
         Some(ImageFormat::Gif) => {
             let mut dec = GifDecoder::new(Cursor::new(bytes)).map_err(err)?;
@@ -231,7 +241,12 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Result<DecodedImage, String> {
         }
         Some(ImageFormat::Png) => {
             let dec = PngDecoder::with_limits(Cursor::new(bytes), anim_limits()).map_err(err)?;
-            if dec.is_apng().map_err(err)? { Some(dec.apng().map_err(err)?.into_frames()) } else { None }
+            if dec.is_apng().map_err(err)? {
+                count = keep_frames.then(|| apng_frames(bytes)).flatten();
+                Some(dec.apng().map_err(err)?.into_frames())
+            } else {
+                None
+            }
         }
         Some(ImageFormat::WebP) => {
             let mut dec = WebPDecoder::new(Cursor::new(bytes)).map_err(err)?;
@@ -241,7 +256,7 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Result<DecodedImage, String> {
         _ => None,
     };
     let frames = match animation {
-        Some(frames) => animation_frames(frames, max_side)?,
+        Some(frames) => animation_frames(frames, max_side, count)?,
         None => vec![ImageFrame { image: color_image(reader.decode().map_err(err)?.into_rgba8(), max_side), delay_ms: 0 }],
     };
     Ok(DecodedImage { frames })
@@ -260,10 +275,37 @@ fn err(e: image::ImageError) -> String {
     e.to_string()
 }
 
+/// Frame count declared by an APNG's `acTL` chunk (it precedes the first `IDAT`). Untrusted: a
+/// wrong count only changes the side, the halving in `animation_frames` still bounds memory.
+fn apng_frames(bytes: &[u8]) -> Option<u32> {
+    let mut at = 8usize; // signature
+    loop {
+        let head = bytes.get(at..at.checked_add(8)?)?;
+        let len = u32::from_be_bytes(head[..4].try_into().ok()?) as usize;
+        let data = at.checked_add(8)?;
+        match &head[4..] {
+            b"acTL" => return Some(u32::from_be_bytes(bytes.get(data..data.checked_add(4)?)?.try_into().ok()?)),
+            b"IDAT" => return None,
+            _ => at = data.checked_add(len)?.checked_add(4)?, // data + crc
+        }
+    }
+}
+
+/// Decorations keep every frame: the side drops instead until `n` frames of a w×h canvas fit
+/// MAX_ANIM_BYTES, at most to half of `max_side` (then frames are halved as for any animation).
+fn fit_side(max_side: u32, n: u32, w: u32, h: u32) -> u32 {
+    let (long, short) = (w.max(h).max(1), w.min(h).max(1));
+    let side = long.min(max_side);
+    let fit = (MAX_ANIM_BYTES as f64 * long as f64 / (4.0 * n.max(1) as f64 * short as f64)).sqrt() as u32;
+    fit.clamp(max_side.div_ceil(2).min(side), side)
+}
+
 /// Collects frames within MAX_ANIM_FRAMES / MAX_ANIM_BYTES: when over budget, every other
 /// kept frame is dropped (its delay merged into the previous one) and from then on only every
 /// `stride`-th frame is resized, so memory stays bounded even for very long animations.
-fn animation_frames(frames: Frames<'_>, max_side: u32) -> Result<Vec<ImageFrame>, String> {
+/// `count` (frames declared by the file): the side is lowered up front to fit them all.
+fn animation_frames(frames: Frames<'_>, max_side: u32, count: Option<u32>) -> Result<Vec<ImageFrame>, String> {
+    let mut side = None;
     let mut kept: Vec<ImageFrame> = Vec::new();
     let mut bytes = 0usize;
     let mut stride = 1usize;
@@ -281,7 +323,9 @@ fn animation_frames(frames: Frames<'_>, max_side: u32) -> Result<Vec<ImageFrame>
             }
             continue;
         }
-        let image = color_image(frame.into_buffer(), max_side);
+        let (w, h) = frame.buffer().dimensions();
+        let side = *side.get_or_insert_with(|| count.map_or(max_side, |n| fit_side(max_side, n, w, h)));
+        let image = color_image(frame.into_buffer(), side);
         bytes += image.pixels.len() * 4;
         kept.push(ImageFrame { image, delay_ms });
         while kept.len() > MAX_ANIM_FRAMES || bytes > MAX_ANIM_BYTES {
@@ -310,11 +354,12 @@ fn halve(frames: Vec<ImageFrame>) -> Vec<ImageFrame> {
     out
 }
 
-/// Browsers show very short GIF delays (often 0) as 100 ms.
+/// Browsers show delays of 10 ms or less (often 0) as 100 ms; APNG / WebP delays are exact
+/// (60 fps = 17 ms) and must stay.
 fn frame_delay_ms(delay: image::Delay) -> u32 {
     let (n, d) = delay.numer_denom_ms();
     let ms = (n + d / 2).checked_div(d).unwrap_or(0);
-    if ms < 20 { 100 } else { ms }
+    if ms <= 10 { 100 } else { ms }
 }
 
 /// Premultiply (imageops::resize assumes it; avoids dark fringes), downscale, convert.
@@ -399,13 +444,13 @@ mod tests {
         let img = RgbaImage::from_pixel(64, 32, Rgba([200, 100, 50, 255]));
         let mut buf = Vec::new();
         img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png).unwrap();
-        let out = decode(&buf, 16).unwrap();
+        let out = decode(&buf, 16, false).unwrap();
         assert_eq!(out.frames.len(), 1);
         assert_eq!(out.frames[0].image.size, [16, 8]);
         assert_eq!(out.frames[0].delay_ms, 0);
         assert_eq!(out.frames[0].image.pixels[0], egui::Color32::from_rgb(200, 100, 50));
         // Small images are not upscaled.
-        assert_eq!(decode(&buf, 128).unwrap().frames[0].image.size, [64, 32]);
+        assert_eq!(decode(&buf, 128, false).unwrap().frames[0].image.size, [64, 32]);
     }
 
     #[test]
@@ -418,7 +463,7 @@ mod tests {
                 enc.encode_frame(Frame::from_parts(img, 0, 0, Delay::from_numer_denom_ms(ms, 1))).unwrap();
             }
         }
-        let out = decode(&buf, 4).unwrap();
+        let out = decode(&buf, 4, false).unwrap();
         let delays: Vec<u32> = out.frames.iter().map(|f| f.delay_ms).collect();
         assert_eq!(delays, [50, 100, 70]);
         assert!(out.frames.iter().all(|f| f.image.size == [4, 4]));
@@ -435,29 +480,63 @@ mod tests {
             g.extend_from_slice(b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b");
             g
         };
-        assert_eq!(decode(&gif(2), 64).unwrap().frames[0].image.size, [2, 2]);
+        assert_eq!(decode(&gif(2), 64, false).unwrap().frames[0].image.size, [2, 2]);
         // 65535² would need ~17 GB per canvas buffer and abort the process.
-        assert!(decode(&gif(65535), 64).is_err());
+        assert!(decode(&gif(65535), 64, false).is_err());
     }
 
     #[test]
     fn caps_frame_count_keeping_duration() {
-        let list = (0..200).map(|_| (RgbaImage::new(2, 2), 30)).collect();
-        let out = animation_frames(frames_of(list), 64).unwrap();
+        let n = MAX_ANIM_FRAMES * 2 + 40;
+        let list = (0..n).map(|_| (RgbaImage::new(2, 2), 30)).collect();
+        let out = animation_frames(frames_of(list), 64, None).unwrap();
         assert!(out.len() <= MAX_ANIM_FRAMES);
-        assert_eq!(out.iter().map(|f| f.delay_ms).sum::<u32>(), 200 * 30);
+        assert_eq!(out.iter().map(|f| f.delay_ms).sum::<u32>(), n as u32 * 30);
+    }
+
+    #[test]
+    fn short_delays_play_as_100_ms_but_exact_ones_stay() {
+        assert_eq!(frame_delay_ms(Delay::from_numer_denom_ms(50, 3)), 17);
+        let d = |ms| frame_delay_ms(Delay::from_numer_denom_ms(ms, 1));
+        assert_eq!([d(10), d(0), d(11), d(20)], [100, 100, 11, 20]);
+    }
+
+    #[test]
+    fn reads_apng_frame_count() {
+        let chunk = |t: &[u8; 4], d: &[u8]| [&(d.len() as u32).to_be_bytes()[..], t, d, &[0; 4]].concat();
+        let mut apng = b"\x89PNG\r\n\x1a\n".to_vec();
+        apng.extend(chunk(b"IHDR", &[0; 13]));
+        apng.extend(chunk(b"acTL", &[&120u32.to_be_bytes()[..], &[0; 4]].concat()));
+        assert_eq!(apng_frames(&apng), Some(120));
+        assert_eq!(apng_frames(&apng[..30]), None, "truncated");
+        let mut png = Vec::new();
+        RgbaImage::new(2, 2).write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
+        assert_eq!(apng_frames(&png), None);
+    }
+
+    #[test]
+    fn fit_side_trades_resolution_for_frames() {
+        assert_eq!(fit_side(144, 120, 288, 288), 93);
+        assert_eq!(fit_side(216, 120, 288, 288), 108);
+        assert_eq!(fit_side(48, 120, 288, 288), 48);
+        assert_eq!(fit_side(216, 120, 40, 40), 40);
+        assert_eq!(fit_side(96, 60, 288, 288), 96);
+        let list = (0..100).map(|_| (RgbaImage::new(288, 288), 30)).collect();
+        let out = animation_frames(frames_of(list), 128, Some(100)).unwrap();
+        assert_eq!((out.len(), out[0].image.size), (100, [102, 102]));
+        assert_eq!(out.iter().map(|f| f.delay_ms).sum::<u32>(), 3000);
     }
 
     #[test]
     fn caps_frame_bytes() {
         // 6 x 1 MiB = 6 MiB > 4 MiB budget.
         let list = (0..6).map(|_| (RgbaImage::new(512, 512), 40)).collect();
-        let out = animation_frames(frames_of(list), 4096).unwrap();
+        let out = animation_frames(frames_of(list), 4096, None).unwrap();
         assert_eq!(out.len(), 3);
         assert_eq!(out.iter().map(|f| f.delay_ms).sum::<u32>(), 240);
         // One frame alone over budget (1100² x 4 > 4 MiB): still first frame.
         let list = (0..3).map(|_| (RgbaImage::new(1100, 1100), 40)).collect();
-        let out = animation_frames(frames_of(list), 4096).unwrap();
+        let out = animation_frames(frames_of(list), 4096, None).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].delay_ms, 0);
     }

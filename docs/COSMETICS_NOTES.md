@@ -225,6 +225,7 @@ re-checked against [UD]/[MOB] in `docs/GUILD_CARD_NOTES.md`, which wins over thi
 **Animation:**
 - Animate on hover in lists, and always in an open profile (UNCONFIRMED).
 - Keep it static in the low-RAM or performance mode.
+- Rustcord: decoded at the drawn physical size (snapped to pixels), every frame kept; over the 4 MiB animation budget the side drops (to half at most) before frames do; frame delays ≤ 10 ms play as 100 ms like browsers.
 
 **Where:** message avatars, member list, DM list, user panel, profile popout/modal, voice user list.
 

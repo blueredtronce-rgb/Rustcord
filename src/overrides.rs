@@ -143,7 +143,7 @@ pub fn import_image(src: &Path, kind: Kind) -> Result<String, String> {
         return Err(format!("file is larger than {} MB", MAX_FILE_BYTES / (1024 * 1024)));
     }
     let bytes = std::fs::read(src).map_err(|e| format!("cannot read file: {e}"))?;
-    crate::cache::images::decode(&bytes, 64).map_err(|e| format!("not a supported image: {e}"))?;
+    crate::cache::images::decode(&bytes, 64, false).map_err(|e| format!("not a supported image: {e}"))?;
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("img").to_ascii_lowercase();
     let prefix = match kind {
         Kind::Banner => "banner",

@@ -32,6 +32,8 @@ struct Entry {
     state: State,
     /// `ctx.input(|i| i.time)` of the last frame this entry was drawn.
     last_used: f64,
+    /// `max_side` of the last load sent; drawn bigger, a texture that load capped is loaded again.
+    side: u32,
 }
 
 pub struct ImageCache {
@@ -58,13 +60,20 @@ impl ImageCache {
     pub fn on_loaded(&mut self, ctx: &egui::Context, url: String, result: Result<DecodedImage, String>) {
         // Ignore results for entries removed/cleared (e.g. logout) while loading.
         let Some(entry) = self.entries.get_mut(&url) else { return };
-        if !matches!(entry.state, State::Loading) {
-            return;
-        }
+        let old = match entry.state {
+            State::Loading => 0,
+            // A reload (`get`, drawn bigger) replaces the texture only with a sharper one.
+            State::Ready { size, bytes, .. } => match &result {
+                Ok(img) if img.frames.first().is_some_and(|f| f.image.size.into_iter().max().unwrap_or(0) as f32 > size.max_elem()) => bytes,
+                _ => return,
+            },
+            State::Failed { .. } => return,
+        };
         entry.state = match result {
             Ok(img) if !img.frames.is_empty() => upload(ctx, &url, img),
             _ => State::Failed { at: now(ctx) },
         };
+        self.bytes -= old;
         if let State::Ready { bytes, .. } = entry.state {
             self.bytes += bytes;
             self.sweep_at = self.sweep_at.min(entry.last_used + IDLE_EVICT_SECS);
@@ -76,12 +85,11 @@ impl ImageCache {
     /// retried for a while.
     pub fn get(&mut self, ctx: &egui::Context, url: &str, max_side: u32, animate: bool) -> Option<SizedTexture> {
         let (now, max_tex) = ctx.input(|i| (i.time, i.max_texture_side as u32));
-        let request = |cmd: &CommandSender| {
-            cmd.send(Command::LoadImage { url: url.to_owned(), max_side: max_side.clamp(1, max_tex.max(1)) })
-        };
+        let max_side = max_side.clamp(1, max_tex.max(1));
+        let request = |cmd: &CommandSender| cmd.send(Command::LoadImage { url: url.to_owned(), max_side });
         let Some(entry) = self.entries.get_mut(url) else {
             request(&self.cmd);
-            self.entries.insert(url.to_owned(), Entry { state: State::Loading, last_used: now });
+            self.entries.insert(url.to_owned(), Entry { state: State::Loading, last_used: now, side: max_side });
             return None;
         };
         entry.last_used = now;
@@ -91,10 +99,17 @@ impl ImageCache {
                 if now - at > RETRY_FAILED_SECS {
                     request(&self.cmd);
                     entry.state = State::Loading;
+                    entry.side = max_side;
                 }
                 None
             }
-            State::Ready { frames, total_ms, .. } => {
+            State::Ready { frames, total_ms, size, .. } => {
+                // Drawn bigger than the load allowed (another surface asked first, or the scale
+                // changed): load once more at this size; this texture shows meanwhile.
+                if max_side > entry.side && size.max_elem() as u32 >= entry.side {
+                    request(&self.cmd);
+                    entry.side = max_side;
+                }
                 if !animate || frames.len() < 2 || *total_ms == 0 {
                     return Some(SizedTexture::from_handle(&frames[0].0));
                 }
@@ -159,7 +174,7 @@ impl ImageCache {
     }
 
     /// Pixel size of a loaded image (for layout when the caller doesn't know it).
-    fn loaded_size(&self, url: &str) -> Option<Vec2> {
+    pub fn loaded_size(&self, url: &str) -> Option<Vec2> {
         match self.entries.get(url)?.state {
             State::Ready { size, .. } => Some(size),
             _ => None,
@@ -208,7 +223,7 @@ pub fn mem_hooks(ctx: &egui::Context, state: &mut crate::state::AppState, images
                 if let State::Ready { bytes, .. } = state {
                     images.bytes += bytes;
                 }
-                images.entries.insert(format!("memtest:{i}"), Entry { state, last_used: now });
+                images.entries.insert(format!("memtest:{i}"), Entry { state, last_used: now, side: side as u32 });
                 images.sweep_at = now + IDLE_EVICT_SECS;
             }
         }
@@ -483,14 +498,18 @@ pub fn user_avatar_url(guild_id: Option<Id>, user: &User, member: Option<&Member
     }
 }
 
-/// Avatar decoration (docs/COSMETICS_NOTES.md §3) over the avatar at `avatar`: 1.2× its size,
-/// centred, painted over it without taking layout space (paint status dots after it). The
+/// Avatar decoration (docs/COSMETICS_NOTES.md §3) over the avatar at `avatar`: 1.2× its size
+/// (snapped to physical pixels), centred, painted over it without taking layout space (paint status dots after it). The
 /// static PNG at rest, the APNG while `animate`. `deco`: from `overrides::effective_for`, so my
 /// local pick replaces mine.
 pub fn decoration_at(ui: &egui::Ui, images: &mut ImageCache, avatar: egui::Rect, deco: Option<&crate::model::DecorationData>, animate: bool, opacity: f32) -> Option<String> {
     let d = deco?;
-    let rect = egui::Rect::from_center_size(avatar.center(), avatar.size() * 1.2);
-    let side = (rect.width() * ui.ctx().pixels_per_point()).ceil() as u32;
+    let ppp = ui.ctx().pixels_per_point();
+    // Whole physical pixels on a pixel-aligned spot: the texture (decoded at exactly `side`) maps 1:1.
+    let side = (avatar.width() * 1.2 * ppp).round().max(1.0);
+    let min = ((avatar.center().to_vec2() * ppp - Vec2::splat(side / 2.0)).round() / ppp).to_pos2();
+    let rect = egui::Rect::from_min_size(min, Vec2::splat(side / ppp));
+    let side = side as u32;
     let url = crate::api::cdn::decoration_url(&d.asset, side, animate)?;
     if ui.is_rect_visible(rect)
         && let Some(tex) = images.get(ui.ctx(), &url, side, animate)
@@ -569,5 +588,39 @@ mod tests {
         drop(cache);
         ctx.begin_pass(at(100.0));
         end(&ctx);
+    }
+
+    #[test]
+    fn drawn_bigger_loads_sharper() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cache = ImageCache::new(CommandSender(tx));
+        let ctx = egui::Context::default();
+        let img = |side: usize| {
+            let image = egui::ColorImage::new([side, side], vec![egui::Color32::WHITE; side * side]);
+            Ok(DecodedImage { frames: vec![crate::backend::ImageFrame { image, delay_ms: 0 }] })
+        };
+        let size = |c: &ImageCache| c.loaded_size("u").unwrap().x as u32;
+        let mut t = 0.0;
+        let mut pass = |cache: &mut ImageCache, f: &dyn Fn(&mut ImageCache, &egui::Context)| {
+            t += 1.0;
+            ctx.begin_pass(egui::RawInput { time: Some(t), ..Default::default() });
+            f(cache, &ctx);
+            cache.end_frame(&ctx);
+            ctx.end_pass().textures_delta.clear();
+        };
+        pass(&mut cache, &|c, ctx| assert!(c.get(ctx, "u", 48, false).is_none()));
+        pass(&mut cache, &|c, ctx| c.on_loaded(ctx, "u".into(), img(48)));
+        pass(&mut cache, &|c, ctx| assert!(c.get(ctx, "u", 40, false).is_some(), "smaller: no new load"));
+        pass(&mut cache, &|c, ctx| assert!(c.get(ctx, "u", 60, false).is_some(), "old texture meanwhile"));
+        pass(&mut cache, &|c, ctx| c.on_loaded(ctx, "u".into(), img(60)));
+        assert_eq!((size(&cache), cache.bytes), (60, 60 * 60 * 4));
+        pass(&mut cache, &|c, ctx| c.on_loaded(ctx, "u".into(), img(48)));
+        assert_eq!(size(&cache), 60, "a late smaller result is ignored");
+        pass(&mut cache, &|c, ctx| assert!(c.get(ctx, "u", 120, false).is_some()));
+        pass(&mut cache, &|c, ctx| c.on_loaded(ctx, "u".into(), img(60)));
+        pass(&mut cache, &|c, ctx| assert!(c.get(ctx, "u", 120, false).is_some(), "no second request"));
+        assert_eq!(size(&cache), 60);
+        let sides: Vec<u32> = std::iter::from_fn(|| rx.try_recv().ok()).filter_map(|c| if let Command::LoadImage { max_side, .. } = c { Some(max_side) } else { None }).collect();
+        assert_eq!(sides, [48, 60, 120]);
     }
 }

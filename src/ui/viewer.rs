@@ -729,7 +729,7 @@ fn copy_image(ctx: &egui::Context, cx: &mut UiCx<'_>, item: &MediaItem) {
     let (tx, url, ctx2) = (cx.view.media_ui.done.0.clone(), item.file_url.clone(), ctx.clone());
     net::spawn(async move {
         let r = match net::fetch_all(url, net::MAX_WHOLE).await {
-            Ok(bytes) => tokio::task::spawn_blocking(move || crate::cache::images::decode(&bytes, 4096).and_then(|d| d.frames.into_iter().next().map(|f| f.image).ok_or_else(|| "empty".to_owned())))
+            Ok(bytes) => tokio::task::spawn_blocking(move || crate::cache::images::decode(&bytes, 4096, false).and_then(|d| d.frames.into_iter().next().map(|f| f.image).ok_or_else(|| "empty".to_owned())))
                 .await
                 .unwrap_or_else(|e| Err(e.to_string())),
             Err(e) => Err(e),
