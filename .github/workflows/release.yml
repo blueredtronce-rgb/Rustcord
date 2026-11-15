@@ -2,8 +2,9 @@
 # requests; start it by hand (Actions > release > Run workflow) or push a tag v<version>.
 # - Run by hand: tests, then the packages as workflow artifacts. With "check_only": fmt, clippy
 #   and tests on all three systems, no packages.
-# - Tag v<version> (must equal Cargo.toml's version): the packages plus SHA256SUMS in a draft
-#   release, which is published by hand.
+# - Tag v<version> (must equal Cargo.toml's version): the packages, the self-updater's signed
+#   feed (latest.json + latest.json.sig, docs/UPDATER_DESIGN.md) and SHA256SUMS in a draft
+#   release, which is published by hand. Signing needs the secret RUSTCORD_UPDATE_SIGNING_KEY.
 # Actions are pinned to commits: the packages are signed and installed by the self-updater.
 name: release
 
@@ -52,7 +53,9 @@ jobs:
           - os: macos-15
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             package: bash scripts/build-macos.sh
-            artifact: dist/*.dmg
+            artifact: |
+              dist/*.dmg
+              dist/*.app.tar.gz
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -111,6 +114,15 @@ jobs:
           test -x "$prefix/.local/bin/rustcord"
           test -f "$prefix/.local/share/applications/rustcord.desktop"
           test -f "$prefix/.config/autostart/rustcord.desktop"
+          # The self-updater's --update: replaces the app, never writes the login entry.
+          rm "$prefix/.config/autostart/rustcord.desktop"
+          sh "$RUNNER_TEMP"/rustcord-*/install.sh --update
+          test -x "$prefix/.local/bin/rustcord"
+          test ! -e "$prefix/.config/autostart/rustcord.desktop"
+          if RUSTCORD_SETUP_PREFIX=$RUNNER_TEMP/empty-prefix sh "$RUNNER_TEMP"/rustcord-*/install.sh --update; then
+            echo "::error::install.sh --update installed where nothing was installed"; exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/empty-prefix"
           sh "$prefix/.local/share/rustcord/install.sh" --uninstall --purge
           if [ -e "$prefix" ]; then find "$prefix"; echo "::error::install.sh --uninstall left files behind"; exit 1; fi
 
@@ -128,10 +140,38 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The update signing key, the manifest script (before the download: checkout cleans).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
+
+      - name: Update manifest
+        run: python3 scripts/make-update-manifest.py dist --require-all
+
+      # Never `set -x` here. The key lives only in this step's env and, briefly, in RUNNER_TEMP.
+      - name: Sign the update manifest
+        env:
+          SIGNING_KEY: ${{ secrets.RUSTCORD_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${SIGNING_KEY:-}" ]; then echo "::error::RUSTCORD_UPDATE_SIGNING_KEY is not set"; exit 1; fi
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/update-key.pem"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/update-key.pem" -rawin -in dist/latest.json -out "$RUNNER_TEMP/sig.bin"
+          rm -f "$RUNNER_TEMP/update-key.pem"
+          base64 -w0 "$RUNNER_TEMP/sig.bin" > dist/latest.json.sig
+
+      # Against the key the apps carry: a wrong secret fails here, not on users' machines.
+      - name: Verify the signature
+        run: |
+          # The DER SubjectPublicKeyInfo prefix of an Ed25519 key, then the raw 32 bytes.
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; base64 -d assets/update-signing.pub; } > "$RUNNER_TEMP/pub.der"
+          openssl pkey -pubin -inform DER -in "$RUNNER_TEMP/pub.der" -out "$RUNNER_TEMP/pub.pem"
+          base64 -d dist/latest.json.sig > "$RUNNER_TEMP/sig.bin"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin -in dist/latest.json -sigfile "$RUNNER_TEMP/sig.bin"
 
       - name: Checksums
         working-directory: dist
