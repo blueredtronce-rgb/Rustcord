@@ -18,6 +18,7 @@ use crate::auth::Secret;
 #[derive(Debug)]
 pub enum CaptchaReply {
     /// The widget's token.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // only the window makes one
     Solved(Secret),
     /// The user closed the window, or it timed out.
     Cancelled,
@@ -205,7 +206,7 @@ document.head.appendChild(s);
         /// is the page at `https://discord.com/`; every other request of that webview is a 404.
         #[cfg(windows)]
         pub(super) fn serve(page: &str, uri: &wry::http::Uri) -> wry::http::Response<std::borrow::Cow<'static, [u8]>> {
-            let ok = uri.to_string() == "discord://com/";
+            let ok = *uri == "discord://com/";
             let body: std::borrow::Cow<'static, [u8]> = if ok { page.as_bytes().to_vec().into() } else { Default::default() };
             wry::http::Response::builder()
                 .status(if ok { 200 } else { 404 })
@@ -237,7 +238,7 @@ document.head.appendChild(s);
                 #[cfg(target_os = "macos")]
                 {
                     // wry loads HTML without a base URL; the widget needs the discord.com origin.
-                    use super::super::ORIGIN;
+                    use super::ORIGIN;
                     use objc2_foundation::{NSString, NSURL};
                     use wry::WebViewExtMacOS as _;
                     let base = NSURL::URLWithString(&NSString::from_str(ORIGIN));

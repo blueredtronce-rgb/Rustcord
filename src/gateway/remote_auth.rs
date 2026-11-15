@@ -4,7 +4,6 @@
 //!
 //! OWNERSHIP: email/QR login implementer.
 
-use crate::api::auth::AuthClient;
 use crate::api::props::ClientProps;
 use crate::auth::{Secret, Token};
 use crate::backend::{BackendEvent, EventSink, LoginStep};
@@ -41,11 +40,21 @@ fn network() -> End {
 }
 
 fn protocol(e: impl std::fmt::Display) -> End {
-    End::Failed(format!("QR login failed ({e}). Get a new code, or use another login method."))
+    End::Failed(protocol_text(e))
 }
 
-/// Per-code RSA key. No Debug: it holds the private key.
-struct RaKeys {
+fn protocol_text(e: impl std::fmt::Display) -> String {
+    format!("QR login failed ({e}). Get a new code, or use another login method.")
+}
+
+impl std::fmt::Debug for RaKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RaKeys(..)")
+    }
+}
+
+/// Per-code RSA key. Debug prints nothing: it holds the private key.
+pub(crate) struct RaKeys {
     key: PrivateKey,
     encoded_public_key: String,
     fingerprint: String,
@@ -53,7 +62,7 @@ struct RaKeys {
 
 impl RaKeys {
     /// Slow (~100 ms+): call from `spawn_blocking`.
-    fn generate() -> Result<Self, BoxErr> {
+    pub(crate) fn generate() -> Result<Self, BoxErr> {
         // 2048 bits as the protocol requires (rsa's `Generate` default is 3072).
         let key = PrivateKey::new(&mut getrandom::SysRng, 2048)?;
         let der = key.to_public_key().to_public_key_der()?;
@@ -67,6 +76,12 @@ impl RaKeys {
     /// base64 -> RSA-OAEP (SHA-256 for OAEP and MGF1, empty label).
     fn decrypt_b64(&self, b64: &str) -> Result<Vec<u8>, BoxErr> {
         Ok(self.key.oaep_decrypt::<Sha256>(&STANDARD.decode(b64)?)?)
+    }
+
+    /// The exchange's `encrypted_token` (base64) -> the account token.
+    pub(crate) fn token(&self, encrypted_b64: &str) -> Result<Token, String> {
+        let token = self.decrypt_b64(encrypted_b64).map_err(protocol_text)?;
+        std::str::from_utf8(&token).ok().and_then(Token::parse).ok_or_else(|| protocol_text("unreadable token"))
     }
 
     /// v2: the raw decrypted nonce, base64url without padding (v1 sent a SHA-256 "proof").
@@ -102,11 +117,12 @@ fn close_end(code: Option<u16>) -> End {
     }
 }
 
-/// Runs one QR login. Emits `LoginStep`s; returns the token after the phone approved.
+/// Runs one QR login. Emits `LoginStep`s; returns the ticket (and the key that decrypts the token it
+/// buys) after the phone approved; the backend exchanges it, so a captcha there can be answered.
 /// Cancel by aborting the task (socket and key drop with it).
-pub async fn run(props: Arc<ClientProps>, auth: Arc<AuthClient>, sink: EventSink) -> Option<Token> {
-    match flow(&props, &auth, &sink).await {
-        Ok(token) => Some(token),
+pub async fn run(props: Arc<ClientProps>, sink: EventSink) -> Option<(Secret, RaKeys)> {
+    match flow(&props, &sink).await {
+        Ok(approved) => Some(approved),
         Err(end) => {
             sink.send(BackendEvent::LoginStep(match end {
                 End::Expired => LoginStep::QrExpired,
@@ -117,7 +133,7 @@ pub async fn run(props: Arc<ClientProps>, auth: Arc<AuthClient>, sink: EventSink
     }
 }
 
-async fn flow(props: &ClientProps, auth: &AuthClient, sink: &EventSink) -> Result<Token, End> {
+async fn flow(props: &ClientProps, sink: &EventSink) -> Result<(Secret, RaKeys), End> {
     let keys = tokio::task::spawn_blocking(RaKeys::generate);
     // Same browser-like headers as the gateway (Origin is mandatory here).
     let req = super::conn::upgrade_request(URL, props).map_err(protocol)?;
@@ -182,10 +198,8 @@ async fn flow(props: &ClientProps, auth: &AuthClient, sink: &EventSink) -> Resul
     };
     drop((tx, rx)); // the server closes with 1000 now anyway
 
-    // Exchanged right away: the ticket's lifetime is unknown. Never retried.
-    let encrypted = auth.remote_auth_login(&ticket, None).await.map_err(|e| End::Failed(e.message))?;
-    let token = keys.decrypt_b64(&encrypted).map_err(protocol)?;
-    std::str::from_utf8(&token).ok().and_then(Token::parse).ok_or_else(|| protocol("unreadable token"))
+    // The backend exchanges it right away: the ticket's lifetime is unknown. Never retried.
+    Ok((ticket, keys))
 }
 
 fn op(v: &Value) -> &str {

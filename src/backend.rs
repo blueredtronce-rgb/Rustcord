@@ -28,11 +28,16 @@ pub enum Command {
     Resume { token: Token },
     /// Email/phone + password login (POST /auth/login). Answered with `LoginStep`s; on
     /// success the received token goes through the same path as `Login`.
-    LoginPassword { login: String, password: Secret, remember: bool },
+    /// `captcha`: the answer to the captcha Discord asked for (set by the backend, never the UI).
+    LoginPassword { login: String, password: Secret, remember: bool, captcha: Option<CaptchaAnswer> },
     /// Answer the 2FA challenge of the last `LoginPassword`.
-    SubmitMfa { method: MfaMethod, code: Secret },
+    SubmitMfa { method: MfaMethod, code: Secret, captcha: Option<CaptchaAnswer> },
     /// Text me the 2FA code (only offered when `MfaRequired` lists `Sms`).
-    SendMfaSms,
+    SendMfaSms { captcha: Option<CaptchaAnswer> },
+    /// Backend only: buy the token for an approved QR login's ticket.
+    QrExchange { ticket: Secret, keys: Arc<RaKeys>, remember: bool, captcha: Option<CaptchaAnswer> },
+    /// The captcha window's result (`LoginStep::Captcha`), or the UI's Cancel (`Cancelled`).
+    Captcha(CaptchaReply),
     /// Start a QR-code (remote auth) login; replaces a running one.
     StartQrLogin { remember: bool },
     /// Stop the QR login (other tab chosen / login screen left).
@@ -980,6 +985,8 @@ pub enum MfaMethod {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoginStep {
+    /// Discord asked for a captcha and its window is open; the login waits for the user.
+    Captcha,
     /// Password accepted; a second factor is needed (methods the account allows).
     MfaRequired { methods: Vec<MfaMethod> },
     /// SMS code sent to this (masked) phone number.
@@ -1110,7 +1117,11 @@ pub fn spawn(rt: &tokio::runtime::Handle, ctx: egui::Context) -> BackendHandle {
 // Backend loop (api implementer)
 // ---------------------------------------------------------------------------
 
-use crate::api::auth::{AuthClient, EXPIRED, LoginOutcome};
+use crate::api::auth::{
+    AuthClient, CAPTCHA_CANCELLED, CAPTCHA_REJECTED, CaptchaAnswer, CaptchaChallenge, EXPIRED, LoginError, LoginOutcome,
+};
+use crate::captcha::CaptchaReply;
+use crate::gateway::remote_auth::RaKeys;
 use crate::api::props::ClientProps;
 use crate::api::{ApiClient, ApiError};
 use crate::gateway::{GatewayCommand, GatewayHandle};
@@ -2070,6 +2081,57 @@ struct MfaTicket {
     remember: bool,
 }
 
+/// A login request that waits for the user to solve Discord's captcha; its answer goes with the same
+/// request again. The task is the captcha window (aborting it closes the window).
+struct Parked {
+    cmd: Command,
+    challenge: CaptchaChallenge,
+    /// What to show when the window cannot be opened.
+    fallback: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+type ParkedSlot = Arc<std::sync::Mutex<Option<Parked>>>;
+
+fn unpark(slot: &ParkedSlot) {
+    if let Some(p) = lock(slot).take() {
+        p.task.abort();
+    }
+}
+
+fn set_answer(cmd: &mut Command, answer: CaptchaAnswer) {
+    match cmd {
+        Command::LoginPassword { captcha, .. }
+        | Command::SubmitMfa { captcha, .. }
+        | Command::SendMfaSms { captcha }
+        | Command::QrExchange { captcha, .. } => *captcha = Some(answer),
+        _ => {}
+    }
+}
+
+/// A login request failed. A captcha the user can solve opens the window and parks `retry` (the same
+/// request); an answered one that Discord still refuses is final: the next try is the user's click.
+fn fail_or_park(slot: &ParkedSlot, again: &tmpsc::WeakUnboundedSender<Command>, sink: &EventSink, e: LoginError, retry: Command, answered: bool) {
+    let challenge = match e.captcha {
+        Some(ch) if crate::captcha::supported() => *ch,
+        _ => return sink.send(login_step(LoginStep::Failed(e.message))),
+    };
+    if answered {
+        return sink.send(login_step(LoginStep::Failed(CAPTCHA_REJECTED.into())));
+    }
+    let (again, shown) = (again.clone(), challenge.clone());
+    let task = tokio::spawn(async move {
+        let reply = crate::captcha::solve(&shown).await;
+        if let Some(tx) = again.upgrade() {
+            let _ = tx.send(Command::Captcha(reply));
+        }
+    });
+    if let Some(old) = lock(slot).replace(Parked { cmd: retry, challenge, fallback: e.message, task }) {
+        old.task.abort();
+    }
+    sink.send(login_step(LoginStep::Captcha));
+}
+
 /// A finished email/QR login re-enters the normal token path (validate, keyring, gateway).
 fn relogin(again: &tmpsc::WeakUnboundedSender<Command>, token: Token, remember: bool) {
     if let Some(tx) = again.upgrade() {
@@ -2218,6 +2280,8 @@ async fn run(
     // Shared with the spawned password login, which may finish while other commands run.
     let mfa: Arc<std::sync::Mutex<Option<MfaTicket>>> = Default::default();
     let mut qr: Option<tokio::task::JoinHandle<()>> = None;
+    // A login request waiting for the captcha window; shared with the tasks that run the requests.
+    let parked: ParkedSlot = Default::default();
     // Shown as a toast once the password login's token is accepted.
     let notice: Arc<std::sync::Mutex<Option<&'static str>>> = Default::default();
     let mut chat = ChatBackend::default();
@@ -2239,6 +2303,7 @@ async fn run(
                         sink.send(BackendEvent::LoggedIn);
                         // Logged in (maybe through another tab): drop leftover login-screen credentials.
                         *lock(&mfa) = None;
+                        unpark(&parked);
                         auth_client = None;
                         // Like the web client: a login ends the fingerprint, the device cookies stay.
                         tokio::task::spawn_blocking(|| crate::api::auth::forget_fingerprint(&crate::config::paths().device_file()));
@@ -2285,12 +2350,25 @@ async fn run(
             }
             // One user action = one request, never retried. The password login runs in its own task:
             // its first request may fetch the fingerprint first, which must not stall other commands.
-            Command::LoginPassword { login, password, remember } => {
+            Command::LoginPassword { login, password, remember, captcha } => {
+                unpark(&parked);
                 *lock(&mfa) = None;
+                let retry = Command::LoginPassword { login: login.clone(), password: password.clone(), remember, captcha: None };
+                // Test hook: a captcha without a request to Discord (docs/AUTH_NOTES.md section 0).
+                if std::env::var_os("RUSTCORD_CAPTCHA_DEMO").is_some() {
+                    match &captcha {
+                        None => fail_or_park(&parked, &again, &sink, crate::api::auth::demo_captcha(), retry, false),
+                        Some(a) => {
+                            let n = crate::api::auth::captcha_headers(a).len();
+                            sink.send(login_step(LoginStep::Failed(format!("Captcha demo: Discord would now get the answer in {n} header(s)."))));
+                        }
+                    }
+                    continue;
+                }
                 let client = login_client(&mut auth_client, &props);
-                let (sink, again, mfa, notice) = (sink.clone(), again.clone(), mfa.clone(), notice.clone());
+                let (sink, again, mfa, notice, parked) = (sink.clone(), again.clone(), mfa.clone(), notice.clone(), parked.clone());
                 tokio::spawn(async move {
-                    match client.login(&login, &password, None).await {
+                    match client.login(&login, &password, captcha.as_ref()).await {
                         Ok(LoginOutcome::Token { token, update_password }) => {
                             *lock(&notice) =
                                 update_password.then_some("Discord asks you to change your password. Do it in the official app.");
@@ -2301,15 +2379,15 @@ async fn run(
                                 Some(MfaTicket { ticket, login_instance_id, remember });
                             sink.send(login_step(LoginStep::MfaRequired { methods }));
                         }
-                        Err(e) => sink.send(login_step(LoginStep::Failed(e.message))),
+                        Err(e) => fail_or_park(&parked, &again, &sink, e, retry, captcha.is_some()),
                     }
                 });
             }
-            Command::SubmitMfa { method, code } => {
+            Command::SubmitMfa { method, code, captcha } => {
                 let ticket = lock(&mfa).take();
                 match (ticket, &auth_client) {
                     (Some(t), Some(client)) => {
-                        match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref(), None).await {
+                        match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref(), captcha.as_ref()).await {
                             Ok(token) => {
                                 auth_client = None;
                                 relogin(&again, token, t.remember);
@@ -2318,23 +2396,24 @@ async fn run(
                                 if e.keep_ticket {
                                     *lock(&mfa) = Some(t);
                                 }
-                                sink.send(login_step(LoginStep::Failed(e.message)));
+                                let retry = Command::SubmitMfa { method, code, captcha: None };
+                                fail_or_park(&parked, &again, &sink, e, retry, captcha.is_some());
                             }
                         }
                     }
                     _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
                 }
             }
-            Command::SendMfaSms => {
+            Command::SendMfaSms { captcha } => {
                 let ticket = lock(&mfa).as_ref().map(|t| t.ticket.clone());
                 match (ticket, &auth_client) {
-                    (Some(ticket), Some(client)) => match client.send_mfa_sms(&ticket, None).await {
+                    (Some(ticket), Some(client)) => match client.send_mfa_sms(&ticket, captcha.as_ref()).await {
                         Ok(phone) => sink.send(login_step(LoginStep::SmsSent { phone })),
                         Err(e) => {
                             if !e.keep_ticket {
                                 *lock(&mfa) = None;
                             }
-                            sink.send(login_step(LoginStep::Failed(e.message)));
+                            fail_or_park(&parked, &again, &sink, e, Command::SendMfaSms { captcha: None }, captcha.is_some());
                         }
                     },
                     _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
@@ -2344,13 +2423,49 @@ async fn run(
                 if let Some(old) = qr.take() {
                     old.abort();
                 }
-                let auth = login_client(&mut auth_client, &props);
+                unpark(&parked);
+                // Created now so the exchange after the scan has the device's cookies and fingerprint.
+                login_client(&mut auth_client, &props);
                 let (props, sink, again) = (props.clone(), sink.clone(), again.clone());
                 qr = Some(tokio::spawn(async move {
-                    if let Some(token) = crate::gateway::remote_auth::run(props, auth, sink).await {
-                        relogin(&again, token, remember);
+                    if let Some((ticket, keys)) = crate::gateway::remote_auth::run(props, sink).await
+                        && let Some(tx) = again.upgrade()
+                    {
+                        let _ = tx.send(Command::QrExchange { ticket, keys: Arc::new(keys), remember, captcha: None });
                     }
                 }));
+            }
+            // The phone approved: one exchange per ticket, never retried (a captcha is answered once).
+            Command::QrExchange { ticket, keys, remember, captcha } => {
+                let auth = login_client(&mut auth_client, &props);
+                let (sink, again, parked) = (sink.clone(), again.clone(), parked.clone());
+                tokio::spawn(async move {
+                    match auth.remote_auth_login(&ticket, captcha.as_ref()).await {
+                        Ok(encrypted) => match keys.token(&encrypted) {
+                            Ok(token) => relogin(&again, token, remember),
+                            Err(msg) => sink.send(login_step(LoginStep::Failed(msg))),
+                        },
+                        Err(e) => {
+                            let answered = captcha.is_some();
+                            fail_or_park(&parked, &again, &sink, e, Command::QrExchange { ticket, keys, remember, captcha: None }, answered);
+                        }
+                    }
+                });
+            }
+            Command::Captcha(reply) => {
+                let Some(p) = lock(&parked).take() else { continue }; // late or duplicate
+                p.task.abort();
+                match reply {
+                    CaptchaReply::Solved(key) => {
+                        let mut cmd = p.cmd;
+                        set_answer(&mut cmd, p.challenge.answer(key));
+                        if let Some(tx) = again.upgrade() {
+                            let _ = tx.send(cmd);
+                        }
+                    }
+                    CaptchaReply::Cancelled => sink.send(login_step(LoginStep::Failed(CAPTCHA_CANCELLED.into()))),
+                    CaptchaReply::Unavailable => sink.send(login_step(LoginStep::Failed(p.fallback))),
+                }
             }
             Command::CancelQrLogin => {
                 if let Some(t) = qr.take() {
@@ -2361,6 +2476,7 @@ async fn run(
                 if let Some(t) = qr.take() {
                     t.abort();
                 }
+                unpark(&parked);
                 *lock(&mfa) = None;
                 auth_client = None;
                 // Like the image cache: the app icons of this account's friends' activities go.
@@ -2497,6 +2613,36 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_captcha_answer_goes_into_the_parked_request() {
+        let answer = || CaptchaChallenge { sitekey: "k".into(), rqdata: None, rqtoken: Some("rq".into()), session_id: None }.answer(Secret::new("tok".into()));
+        let has = |c: &Option<CaptchaAnswer>| c.as_ref().is_some_and(|a| a.key.expose() == "tok" && a.rqtoken.as_deref() == Some("rq"));
+        let keys = Arc::new(RaKeys::generate().unwrap());
+        let mut cmds = vec![
+            Command::LoginPassword { login: "a".into(), password: Secret::new("p".into()), remember: true, captcha: None },
+            Command::SubmitMfa { method: MfaMethod::Totp, code: Secret::new("1".into()), captcha: None },
+            Command::SendMfaSms { captcha: None },
+            Command::QrExchange { ticket: Secret::new("t".into()), keys, remember: false, captcha: None },
+        ];
+        for c in &mut cmds {
+            set_answer(c, answer());
+            assert!(
+                match c {
+                    Command::LoginPassword { captcha, .. }
+                    | Command::SubmitMfa { captcha, .. }
+                    | Command::SendMfaSms { captcha }
+                    | Command::QrExchange { captcha, .. } => has(captcha),
+                    _ => false,
+                },
+                "{c:?}"
+            );
+        }
+        // Anything else is left alone.
+        let mut logout = Command::Logout;
+        set_answer(&mut logout, answer());
+        assert!(matches!(logout, Command::Logout));
+    }
 
     #[test]
     fn typing_throttle_per_channel_and_reset() {

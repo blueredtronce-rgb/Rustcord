@@ -111,6 +111,8 @@ pub struct ViewState {
     pub login_remember: bool,
     pub login_busy: bool,
     pub login_error: Option<String>,
+    /// Discord's captcha window is open and the login waits for it (`LoginStep::Captcha`).
+    pub login_captcha: bool,
     /// Composer drafts per channel.
     pub drafts: HashMap<Id, String>,
     /// (channel, message, ping author)
@@ -248,6 +250,7 @@ impl Default for ViewState {
             login_remember: true,
             login_busy: false,
             login_error: None,
+            login_captcha: false,
             drafts: HashMap::new(),
             reply_to: None,
             editing: None,

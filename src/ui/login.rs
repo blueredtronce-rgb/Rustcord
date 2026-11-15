@@ -10,6 +10,7 @@
 use super::UiCx;
 use crate::auth::{Secret, Token};
 use crate::backend::{Command, CommandSender, LoginStep, MfaMethod};
+use crate::captcha::CaptchaReply;
 use crate::theme::Theme;
 use egui::emath::GuiRounding;
 use egui::{Align, Align2, Color32, FontId, Frame, Key, Layout, Margin, Rect, RichText, Sense, Vec2, vec2};
@@ -532,6 +533,7 @@ fn email_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     remember(ui, cx);
     // Captcha guidance arrives as this error text, only when Discord asks for one.
     error_line(ui, cx);
+    demo_captcha_login(cx);
 
     ui.add_space(16.0);
     let form = &cx.view.login_form;
@@ -543,9 +545,20 @@ fn email_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         let password = Secret::new(std::mem::replace(&mut *form.password, String::with_capacity(4 * PASSWORD_LIMIT)));
         forget_history(ui.ctx(), password_id());
         let login = form.email.trim().to_owned();
-        cx.cmd.send(Command::LoginPassword { login, password, remember: cx.view.login_remember });
+        cx.cmd.send(Command::LoginPassword { login, password, remember: cx.view.login_remember, captcha: None });
         cx.view.login_busy = true;
         cx.view.login_error = None;
+    }
+}
+
+/// Test hook `RUSTCORD_CAPTCHA_DEMO=auto`: signs in once by itself (nothing typed; the backend never
+/// sends it to Discord) so a screenshot can show the login screen with the captcha window open.
+fn demo_captcha_login(cx: &mut UiCx<'_>) {
+    static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if std::env::var("RUSTCORD_CAPTCHA_DEMO").is_ok_and(|v| v == "auto") && !cx.view.login_busy && !SENT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let password = Secret::new("demo-password".into());
+        cx.cmd.send(Command::LoginPassword { login: "demo@example.test".into(), password, remember: false, captcha: None });
+        cx.view.login_busy = true;
     }
 }
 
@@ -608,12 +621,12 @@ fn mfa_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         if let Some(mfa) = cx.view.login_form.mfa.as_mut() {
             let code = Secret::new(std::mem::replace(&mut *mfa.code, String::with_capacity(4 * CODE_LIMIT)));
             forget_history(ui.ctx(), code_id());
-            cx.cmd.send(Command::SubmitMfa { method, code });
+            cx.cmd.send(Command::SubmitMfa { method, code, captcha: None });
         }
         cx.view.login_busy = true;
         cx.view.login_error = None;
     } else if send_sms {
-        cx.cmd.send(Command::SendMfaSms);
+        cx.cmd.send(Command::SendMfaSms { captcha: None });
         cx.view.login_busy = true;
         cx.view.login_error = None;
     }
@@ -778,8 +791,18 @@ fn remember(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
 }
 
-fn error_line(ui: &mut egui::Ui, cx: &UiCx<'_>) {
-    if let Some(err) = &cx.view.login_error {
+fn error_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    if cx.view.login_captcha {
+        let muted = cx.theme.colors.text_muted.to_color32();
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Finish the captcha in the window that opened.").color(muted));
+            let cancel = ui.add(text_button(RichText::new("Cancel").color(cx.theme.colors.text.to_color32())));
+            if cancel.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                cx.cmd.send(Command::Captcha(CaptchaReply::Cancelled));
+            }
+        });
+    } else if let Some(err) = &cx.view.login_error {
         ui.add_space(12.0);
         ui.label(RichText::new(err).color(cx.theme.colors.danger.to_color32()));
     }
@@ -818,10 +841,13 @@ fn primary_button(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, enabled: bool) 
 
 /// Progress of an email/password or QR login.
 pub fn on_step(view: &mut super::ViewState, step: LoginStep) {
+    view.login_captcha = matches!(step, LoginStep::Captcha);
     let form = &mut view.login_form;
     // QR events that were already queued when the tab was left (cancel in flight) are stale.
     let qr_live = form.tab == LoginTab::Qr && !matches!(form.qr, QrState::Idle);
     match step {
+        // Busy stays on until the window ends; the QR tab keeps its scanned state.
+        LoginStep::Captcha => view.login_busy = true,
         LoginStep::QrCode { url } if qr_live => {
             form.qr = match QrCode::encode_text(&url, QrCodeEcc::Medium) {
                 Ok(code) => QrState::Code(code),
@@ -890,6 +916,7 @@ pub fn on_logged_in(ctx: &egui::Context, view: &mut super::ViewState, cmd: &Comm
     view.login_input.zeroize();
     view.login_show_token = false;
     view.login_busy = false;
+    view.login_captcha = false;
     view.login_error = None;
 }
 
@@ -904,6 +931,17 @@ mod tests {
         let mut v = ViewState::default();
         v.login_form.qr = QrState::Waiting;
         v
+    }
+
+    #[test]
+    fn the_captcha_step_keeps_the_login_busy_until_another_step_ends_it() {
+        let mut v = qr_view();
+        on_step(&mut v, LoginStep::Captcha);
+        assert!(v.login_captcha && v.login_busy);
+        on_step(&mut v, LoginStep::Failed("You closed the captcha".into()));
+        assert!(!v.login_captcha && !v.login_busy);
+        assert_eq!(v.login_error, None); // the QR tab shows it in its own square
+        assert!(matches!(v.login_form.qr, QrState::Failed(_)));
     }
 
     #[test]
