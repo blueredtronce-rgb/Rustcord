@@ -632,7 +632,7 @@ pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
     let send = !watch.demo && online && q.enrolled() && !q.completed();
     let mut sent = None;
     if send {
-        sent = watch.progress.frame(pos, playing, Instant::now());
+        sent = watch.progress.tick(pos, status.map_or(0, |s| s.played_ms), Instant::now());
     }
     // Only what the server confirmed: a send still on its way (or failed) isn't done.
     let done = q.completed() || (watch.progress.target() > 0 && watch.progress.saved() >= watch.progress.target());

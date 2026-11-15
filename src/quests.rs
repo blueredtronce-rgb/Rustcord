@@ -487,19 +487,22 @@ impl QuestState {
 
 /// UD: video progress is sent every 10-15 s of playback.
 const SEND_EVERY: u32 = 10;
-/// A hidden / minimised / suspended gap between drawn frames counts at most this.
-const MAX_FRAME_DT: Duration = Duration::from_millis(250);
+/// A gap between ticks (suspended, hung) counts at most this.
+const MAX_TICK_DT: Duration = Duration::from_secs(2);
 
-/// Progress of one quest video session. Reports only what the player really showed, never more
-/// than the real time it spent playing in drawn frames since the session started from the
-/// server's value. One request in flight; stops for good after a failed one.
+/// Progress of one quest video session. Reports only what the player really played (its own
+/// `played_ms` counter), never more than the real time between ticks in which that counter grew,
+/// since the session started from the server's value. One request in flight; stops for good
+/// after a failed one.
 #[derive(Debug)]
 pub struct VideoProgress {
-    /// Server value when the modal opened (seconds).
+    /// Server value when the session opened (seconds).
     start: f64,
-    /// Real seconds spent playing in drawn frames.
+    /// Real seconds in which the player's counter grew.
     played: f64,
-    last_frame: Option<Instant>,
+    last_tick: Option<Instant>,
+    /// The player's `played_ms` at the last tick (a new player starts at 0).
+    player_ms: u64,
     last_pos: f64,
     /// Highest timestamp sent (starts at the server value).
     last_sent: u32,
@@ -513,16 +516,19 @@ pub struct VideoProgress {
 impl VideoProgress {
     pub fn new(server_value: u32, target: u32) -> Self {
         let start = server_value.min(target);
-        Self { start: f64::from(start), played: 0.0, last_frame: None, last_pos: 0.0, last_sent: start, acked: start, target, in_flight: false, stopped: false }
+        Self { start: f64::from(start), played: 0.0, last_tick: None, player_ms: 0, last_pos: 0.0, last_sent: start, acked: start, target, in_flight: false, stopped: false }
     }
 
-    /// One drawn frame: `pos` = position of the frame on screen (s). Returns a timestamp to send.
-    pub fn frame(&mut self, pos: f64, playing: bool, now: Instant) -> Option<u32> {
-        let dt = self.last_frame.map_or(Duration::ZERO, |t| now.saturating_duration_since(t)).min(MAX_FRAME_DT);
-        self.last_frame = Some(now);
-        if playing {
+    /// One tick: `pos` = position of the picture (s), `played_ms` = the player's own counter.
+    /// The wall time since the last tick counts only if that counter grew. Returns a timestamp
+    /// to send.
+    pub fn tick(&mut self, pos: f64, played_ms: u64, now: Instant) -> Option<u32> {
+        let dt = self.last_tick.map_or(Duration::ZERO, |t| now.saturating_duration_since(t)).min(MAX_TICK_DT);
+        self.last_tick = Some(now);
+        if played_ms > self.player_ms {
             self.played += dt.as_secs_f64();
         }
+        self.player_ms = played_ms;
         self.last_pos = pos;
         let ts = self.allowed(pos);
         let due = ts >= self.last_sent + SEND_EVERY || (ts == self.target && ts > self.last_sent);
@@ -553,6 +559,16 @@ impl VideoProgress {
 
     pub fn target(&self) -> u32 {
         self.target
+    }
+
+    /// A send is on its way.
+    pub fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
+    /// A send failed: this session sends no more.
+    pub fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// The frame position, capped by real play time and the target.
@@ -736,8 +752,8 @@ mod tests {
         assert!(s.should_fetch(t0 + REFETCH));
     }
 
-    /// Drives `frame` at 30 fps from `t` for `secs`, the position advancing with play from
-    /// `pos`; returns the sends, the end time and position.
+    /// Drives `tick` at 30 fps from `t` for `secs`: +33 ms wall and +33 `played_ms` per tick, the
+    /// position advancing with play from `pos`; returns the sends, the end time and position.
     fn play(v: &mut VideoProgress, t: Instant, pos: f64, secs: f64, ok: bool) -> (Vec<u32>, Instant, f64) {
         let mut sent = Vec::new();
         let frames = (secs * 30.0).round() as u32;
@@ -745,7 +761,7 @@ mod tests {
         for _ in 0..frames {
             now += Duration::from_millis(33);
             p += 0.033;
-            if let Some(ts) = v.frame(p, true, now) {
+            if let Some(ts) = v.tick(p, v.player_ms + 33, now) {
                 sent.push(ts);
                 v.answered(ok);
             }
@@ -757,60 +773,90 @@ mod tests {
     fn video_progress_reports_only_real_play() {
         let t0 = Instant::now();
         let mut v = VideoProgress::new(0, 180);
-        v.frame(0.0, true, t0);
+        v.tick(0.0, 0, t0);
         let (sent, t, pos) = play(&mut v, t0, 0.0, 25.0, true);
         assert_eq!(sent, [10, 20]);
         // A forward seek to 170 s credits nothing beyond the real play time.
-        assert_eq!(v.frame(170.0, true, t + Duration::from_millis(33)), None);
+        let pm = v.player_ms;
+        assert_eq!(v.tick(170.0, pm + 33, t + Duration::from_millis(33)), None);
         assert!(v.allowed(170.0) <= 26);
-        // A 60 s gap (window hidden: no frames) credits at most 0.25 s.
+        // A 60 s gap with the counter +60 s (suspend, hang) credits at most 2 s.
         let before = v.played;
-        v.frame(pos, true, t + Duration::from_secs(60));
-        assert!(v.played - before <= 0.25 + 1e-9);
-        // Paused frames credit nothing.
-        let before = v.played;
+        v.tick(pos, pm + 60_033, t + Duration::from_secs(60));
+        assert!(v.played - before <= 2.0 + 1e-9);
+        // Ticks with an unchanged counter (paused) credit nothing.
+        let (before, pm) = (v.played, v.player_ms);
         for i in 1..=30 {
-            v.frame(pos, false, t + Duration::from_secs(60) + Duration::from_millis(33 * i));
+            v.tick(pos, pm, t + Duration::from_secs(60) + Duration::from_millis(33 * i));
         }
         assert_eq!(v.played, before);
 
         // Resumed from the server's 150 s: sends 160, 170, then the target, never above.
         let mut v = VideoProgress::new(150, 180);
-        v.frame(150.0, true, t0);
+        v.tick(150.0, 0, t0);
         let (sent, ..) = play(&mut v, t0, 150.0, 40.0, true);
         assert_eq!(sent, [160, 170, 180]);
         assert!(sent.windows(2).all(|w| w[1] > w[0]));
 
         // One send in flight: nothing more until it is answered.
         let mut v = VideoProgress::new(0, 180);
-        v.frame(0.0, true, t0);
+        v.tick(0.0, 0, t0);
         let mut sent = Vec::new();
         let (mut now, mut p) = (t0, 0.0);
         for _ in 0..(30 * 30) {
             now += Duration::from_millis(33);
             p += 0.033;
-            sent.extend(v.frame(p, true, now));
+            sent.extend(v.tick(p, v.player_ms + 33, now));
         }
         assert_eq!(sent, [10], "no answer yet");
+        assert!(v.in_flight());
         assert_eq!(v.saved(), 0, "only an answer counts as saved");
         v.answered(true);
         assert_eq!(v.saved(), 10);
-        assert_eq!(v.frame(p, true, now + Duration::from_millis(33)), Some(29));
+        assert_eq!(v.tick(p, v.player_ms + 33, now + Duration::from_millis(33)), Some(29));
 
         // A failed send stops the session for good; close sends nothing then.
         let mut v = VideoProgress::new(0, 180);
-        v.frame(0.0, true, t0);
+        v.tick(0.0, 0, t0);
         let (sent, ..) = play(&mut v, t0, 0.0, 25.0, false);
         assert_eq!(sent, [10]);
-        assert!(v.stopped && v.close().is_none());
+        assert!(v.stopped() && v.close().is_none());
         assert_eq!(v.saved(), 0, "a failed send is not saved");
 
         // Close sends the last whole seconds once.
         let mut v = VideoProgress::new(0, 180);
-        v.frame(0.0, true, t0);
+        v.tick(0.0, 0, t0);
         let (sent, ..) = play(&mut v, t0, 0.0, 14.0, true);
         assert_eq!(sent, [10]);
         assert_eq!(v.close(), Some(13));
         assert_eq!(v.close(), None);
+    }
+
+    /// The same session sends the same timestamps whether it is ticked at 30 fps (modal drawn)
+    /// or at 1 Hz (background), including the last partial second at the end.
+    #[test]
+    fn same_sends_at_30_fps_and_1_hz() {
+        let t0 = Instant::now();
+        let mut fast = VideoProgress::new(0, 30);
+        let mut sent = Vec::new();
+        fast.tick(0.0, 0, t0);
+        let (mut now, mut p) = (t0, 0.0);
+        while p < 29.96 {
+            now += Duration::from_millis(33);
+            p += 0.033;
+            sent.extend(fast.tick(p, fast.player_ms + 33, now));
+            fast.answered(true);
+        }
+        // Ended at the next tick: the position is the end, the counter caught up.
+        sent.extend(fast.tick(30.0, 30_000, now + Duration::from_millis(100)));
+        assert_eq!(sent, [10, 20, 30]);
+
+        let mut slow = VideoProgress::new(0, 30);
+        let mut sent = Vec::new();
+        for t in 0..=30u64 {
+            sent.extend(slow.tick(t as f64, t * 1000, t0 + Duration::from_secs(t)));
+            slow.answered(true);
+        }
+        assert_eq!(sent, [10, 20, 30]);
     }
 }
