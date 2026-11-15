@@ -5,9 +5,9 @@
 <h1 align="center">Rustcord</h1>
 
 <p align="center">
-  A lightweight, unofficial desktop client for Discord, written from scratch in Rust.<br>
+  A lightweight, unofficial desktop client for Discord that I built from scratch in Rust.<br>
   No Electron – egui + tokio, talking to the HTTP API and the Gateway directly.<br>
-  Made by <a href="https://github.com/r0sc">rosc</a>.
+  Made by me, <a href="https://github.com/r0sc">rosc</a>.
 </p>
 
 <p align="center">
@@ -19,10 +19,10 @@
   <a href="https://github.com/r0sc/Rustcord/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/r0sc/Rustcord/total"></a>
 </p>
 
-> **Beta – expect bugs.** Rustcord is a beta and may contain bugs. It was vibe-coded: almost all
-> of its code was written with AI coding tools (Claude Code), not by hand. Many features have only
-> been tested with offline demo data, not with a live account, and the Linux and macOS builds have
-> had the least testing. If something breaks, please open an
+> **Beta – expect bugs.** Rustcord is a beta and may still have bugs. I vibe-coded it: almost all
+> of the code was written with AI coding tools (Claude Code), not by hand. I've only tested many
+> features with offline demo data, not with a live account, and I've tested the Linux and macOS
+> builds the least. If something breaks, please tell me in an
 > [issue](https://github.com/r0sc/Rustcord/issues).
 
 <p align="center">
@@ -39,7 +39,7 @@
     <td><img src="docs/screenshots/plugins.png" alt="Settings → Plugins: the built-in Vencord-style plugins, 4 of 48 turned on"></td>
   </tr>
   <tr>
-    <td align="center">rosc's profile, with a local-only banner</td>
+    <td align="center">My profile, with a local-only banner</td>
     <td align="center">Settings → Plugins (Vencord-style, built in)</td>
   </tr>
   <tr>
@@ -52,15 +52,15 @@
   </tr>
 </table>
 
-<sub>The screenshots use Rustcord's offline demo data, with the signed-in user shown as rosc. The
-other people, servers and messages are made up; the live stream and the shared picture show Red
-Eclipse gameplay (see <a href="#credits">Credits</a>). <code>scripts/readme-shots.py</code> takes
-them again.</sub>
+<sub>The screenshots use Rustcord's offline demo data, signed in as me (rosc). The other people,
+servers and messages are made up; the live stream and the shared picture show Red Eclipse
+gameplay (see <a href="#credits">Credits</a>). <code>scripts/readme-shots.py</code> takes them
+again.</sub>
 
 > **Warning.** Third-party clients that log in with a user account violate Discord's Terms of
-> Service and can get the account banned. You use this at your own risk. Rustcord behaves like
-> a normal user client (no automation, nothing is sent on your behalf, all rate limits are
-> respected), but that does not remove the risk. Rustcord is not affiliated with Discord.
+> service and can get the account banned. You use this at your own risk. I made Rustcord behave
+> like a normal user client (no automation, nothing is sent on your behalf, all rate limits are
+> respected), but that doesn't remove the risk. Rustcord is not affiliated with Discord.
 
 ## Why Rustcord
 
@@ -80,6 +80,8 @@ change this app.
 — rosc ([@r0sc](https://github.com/r0sc))
 
 ## Features
+
+What's in it so far:
 
 - Login by QR code, by email/phone + password (with 2FA), or with a pasted token; the
   session token is kept in the OS credential store, logout clears it (see [Logging in](#logging-in)).
@@ -118,14 +120,13 @@ change this app.
 - Cosmetics editor with Discord's shop catalog: items you own go on your account only via
   "Apply to account"; without (full) Nitro your picks show only in this client, never sent.
 - Gradient app themes (the Nitro colour themes), free and only on this device.
-
 - Discord-web layout (own branding): server bar with folders and drag & drop, own title bar
   and window buttons, floating user panel, "new messages" bar, jump to present, message
   context menu.
 - Its own look (`docs/DESIGN.md`): steel-blue panes with ember orange only for the brand and
   the main action, one type scale, and Rustcord's own vector icon set drawn in code. Channel
   icons read like Discord's (`#` for text, a speaker for voice, megaphone, forum, media,
-  stage, rules) with lock and age-restricted variants; no icon files are copied from Discord.
+  stage, rules) with lock and age-restricted variants; I didn't copy any icon files from Discord.
 - Activities like Discord's: games with their art, party size and elapsed time, Spotify with
   album art and a progress bar, streaming, watching; detected games show the game's icon, or
   a controller when there is none. Member list, DMs, friends and profile cards show them.
@@ -147,7 +148,7 @@ change this app.
   Social, Data & Privacy, Devices, Authorized Apps, Connections, Friend Requests, Appearance,
   Accessibility, Voice & Video, Chat, Notifications, Keybinds, Language, Streamer Mode,
   Advanced, Activity Privacy and more. Synced options are written to your account's settings;
-  options whose meaning is unconfirmed are left out. Log Out and other destructive actions ask
+  I left out options whose meaning I couldn't confirm. Log Out and other destructive actions ask
   first.
 - My Account security: email and phone, Change Password, authenticator app (QR code + key,
   then backup codes) and its removal, SMS backup, View/Generate Backup Codes, security keys
@@ -235,9 +236,9 @@ page. Pick the file for your system (`<version>` is the release's version, for e
 
 The release also holds `Rustcord-<version>-macos-universal.app.tar.gz` (the macOS update
 package) and `latest.json` + `latest.json.sig` (the signed update feed), which the app fetches
-itself, and `SHA256SUMS` (see [Verifying downloads](#verifying-downloads)). The Windows setup
-is not code-signed and the macOS app is not notarized by Apple, so the first start needs one
-extra click (below). To build from source instead, see [Build](#build).
+itself, and `SHA256SUMS` (see [Verifying downloads](#verifying-downloads)). I don't code-sign the
+Windows setup and the macOS app isn't notarized by Apple, so the first start needs one extra
+click (below). To build from source instead, see [Build](#build).
 
 ## Install
 
@@ -245,8 +246,8 @@ Installed copies update themselves (see [Updates](#updates)).
 
 ### Windows
 
-Get `Rustcord-Setup-<version>.exe`. The setup is a single exe built from
-Rustcord's own code (about 23 MB with the app inside); no installer tools are involved.
+Get `Rustcord-Setup-<version>.exe`. I built the setup from Rustcord's own code: a single exe
+(about 23 MB with the app inside), no installer tools involved.
 
 Run it. It installs for your Windows user only (no administrator rights), like Discord: the
 app goes to `%LOCALAPPDATA%\Programs\Rustcord`, with a Start menu shortcut, an optional
@@ -255,7 +256,7 @@ desktop shortcut and an entry in Settings → Apps. "Open Rustcord when I sign i
 newer setup by hand also updates it in place (a running Rustcord is asked to quit first).
 `--silent` installs with the default options without a window.
 
-The setup is not code-signed, so Windows SmartScreen may say "Windows protected your PC".
+I don't code-sign the setup, so Windows SmartScreen may say "Windows protected your PC".
 Select **More info**, then **Run anyway**.
 
 While Rustcord runs, its icon sits in the notification area: click it to open the window,
@@ -313,7 +314,7 @@ to your user and stays behind (it does nothing once the app is gone).
 `Rustcord-<version>-macos-universal.dmg` runs on Apple silicon and Intel Macs with macOS 11
 or newer. Open it and drag Rustcord onto Applications.
 
-Rustcord is not notarized by Apple (that needs a paid Apple developer account), so macOS
+I haven't had Rustcord notarized by Apple (that needs a paid Apple developer account), so macOS
 blocks the first start ("Apple could not verify…"). Open Rustcord once, then go to System
 Settings → Privacy & Security and click **Open Anyway** next to the Rustcord message (since
 macOS 15, right-click → Open no longer skips the check). Or, in Terminal:
@@ -394,7 +395,7 @@ openssl pkeyutl -verify -pubin -keyform DER -inkey pub.der -rawin -in latest.jso
 
 ## Build
 
-Requirements: Rust stable (1.95+; tested with 1.99); on Windows, the MSVC build tools
+Requirements: Rust stable (1.95+; I test with 1.99); on Windows, the MSVC build tools
 (Visual Studio Build Tools with "Desktop development with C++"); on Linux, a C/C++ compiler,
 `pkg-config` and the ALSA and OpenSSL development packages (Debian/Ubuntu:
 `sudo apt install build-essential pkg-config libasound2-dev libssl-dev`); on macOS, the Xcode
@@ -535,8 +536,8 @@ Settings → Local profile: pick any image/GIF as your banner and a GIF, APNG or
 | 4 – installer, tray, activities & new look | 161 ms (GL context ready) | 174 ms | 102.3 MB (87.6 MB private) | 0 % (game detection: ~16 ms CPU per 15 s scan) |
 | 5 – Linux & macOS, quests, media viewer | 183 ms (GL context ready) | 199 ms | 96.0 MB (87.0 MB private) | 0 % (16 ms CPU in 20 s) |
 
-Measured on a Ryzen 7 5825U, Windows 11, median of 5 runs. These runs had no network images
-loaded; with a live connection, avatars and attachments add to RAM (textures are capped at a
+I measured these on a Ryzen 7 5825U with Windows 11, median of 5 runs. These runs had no network
+images loaded; with a live connection, avatars and attachments add to RAM (textures are capped at a
 12 MB budget and evicted when unused).
 
 ## Developer notes
@@ -600,10 +601,10 @@ required reviewer (and add `environment: release` to the workflow's `release` jo
 
 ## Credits
 
-Rustcord is made by rosc ([@r0sc](https://github.com/r0sc)) and vibe-coded with Claude Code.
+I'm rosc ([@r0sc](https://github.com/r0sc)). I made Rustcord and vibe-coded it with Claude Code.
 
 - The plugins do what [Vencord](https://github.com/Vendicated/Vencord)'s plugins (GPL-3.0) do;
-  they are re-implemented in Rust, and no Vencord code, keys or assets are included.
+  they're re-implemented in Rust, and no Vencord code, keys or assets are included.
 - README screenshots (`docs/screenshot-assets/`, used by `scripts/readme-shots.py`). These files
   keep their own licenses; the MIT license covers Rustcord itself.
   - The live stream, the shared picture and the profile banner show one frame of
@@ -618,7 +619,7 @@ Rustcord is made by rosc ([@r0sc](https://github.com/r0sc)) and vibe-coded with 
     JINDONG H (CC0); dan_ops –
     [Portrait of a labrador retriever](https://commons.wikimedia.org/wiki/File:Portrait_of_a_labrador_retriever.jpg)
     by Dktue (CC0). Cropped and scaled.
-  - rosc's avatar is rosc's own picture and is not part of the repository.
+  - My avatar is my own picture and is not part of the repository.
 
 ## License
 
