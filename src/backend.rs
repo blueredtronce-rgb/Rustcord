@@ -2290,7 +2290,7 @@ async fn run(
                 let client = login_client(&mut auth_client, &props);
                 let (sink, again, mfa, notice) = (sink.clone(), again.clone(), mfa.clone(), notice.clone());
                 tokio::spawn(async move {
-                    match client.login(&login, &password).await {
+                    match client.login(&login, &password, None).await {
                         Ok(LoginOutcome::Token { token, update_password }) => {
                             *lock(&notice) =
                                 update_password.then_some("Discord asks you to change your password. Do it in the official app.");
@@ -2309,7 +2309,7 @@ async fn run(
                 let ticket = lock(&mfa).take();
                 match (ticket, &auth_client) {
                     (Some(t), Some(client)) => {
-                        match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref()).await {
+                        match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref(), None).await {
                             Ok(token) => {
                                 auth_client = None;
                                 relogin(&again, token, t.remember);
@@ -2328,7 +2328,7 @@ async fn run(
             Command::SendMfaSms => {
                 let ticket = lock(&mfa).as_ref().map(|t| t.ticket.clone());
                 match (ticket, &auth_client) {
-                    (Some(ticket), Some(client)) => match client.send_mfa_sms(&ticket).await {
+                    (Some(ticket), Some(client)) => match client.send_mfa_sms(&ticket, None).await {
                         Ok(phone) => sink.send(login_step(LoginStep::SmsSent { phone })),
                         Err(e) => {
                             if !e.keep_ticket {

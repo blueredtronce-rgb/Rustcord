@@ -19,6 +19,8 @@ use std::time::Duration;
 pub const CAPTCHA_PASSWORD: &str = "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works.";
 pub const CAPTCHA_QR: &str = CAPTCHA_PASSWORD;
 pub const EXPIRED: &str = "The login expired. Enter your password again.";
+pub const CAPTCHA_CANCELLED: &str = "You closed the captcha, so Discord didn't sign you in. Try again when you're ready.";
+pub const CAPTCHA_REJECTED: &str = "Discord didn't accept the captcha. Try again, or use QR code login or the Token tab.";
 
 /// User-facing failure of a login call. Never contains the password, code, ticket or token.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,12 +28,72 @@ pub struct LoginError {
     pub message: String,
     /// The 2FA ticket is still usable (wrong code, network trouble, rate limit).
     pub keep_ticket: bool,
+    /// Discord asked for an hCaptcha the user can solve; the same request goes out again with its
+    /// answer (`CaptchaChallenge::answer`).
+    pub captcha: Option<Box<CaptchaChallenge>>,
 }
 
 impl LoginError {
     fn new(message: impl Into<String>, keep_ticket: bool) -> Self {
-        Self { message: message.into(), keep_ticket }
+        Self { message: message.into(), keep_ticket, captcha: None }
     }
+}
+
+/// The captcha of a 400 with a `captcha_key` field (Discord's "captcha handling" doc).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptchaChallenge {
+    pub sitekey: String,
+    /// Enterprise data the widget must be given before the challenge starts.
+    pub rqdata: Option<String>,
+    pub rqtoken: Option<String>,
+    pub session_id: Option<String>,
+}
+
+/// The widget's token, to be sent as headers with the request Discord refused.
+#[derive(Debug)]
+pub struct CaptchaAnswer {
+    pub key: Secret,
+    pub rqtoken: Option<String>,
+    pub session_id: Option<String>,
+}
+
+impl CaptchaChallenge {
+    pub fn answer(&self, key: Secret) -> CaptchaAnswer {
+        CaptchaAnswer { key, rqtoken: self.rqtoken.clone(), session_id: self.session_id.clone() }
+    }
+}
+
+/// hCaptcha only, with a sitekey that is safe to put into the helper's page (reCAPTCHA and
+/// anything odd fall back to the plain text).
+fn parse_captcha(v: &Value) -> Option<CaptchaChallenge> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    let sitekey = text("captcha_sitekey").filter(|k| k.len() <= 64 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))?;
+    (v.get("captcha_service").and_then(Value::as_str) == Some("hcaptcha")).then(|| CaptchaChallenge {
+        sitekey,
+        rqdata: text("captcha_rqdata"),
+        rqtoken: text("captcha_rqtoken"),
+        session_id: text("captcha_session_id"),
+    })
+}
+
+/// `X-Captcha-Key`, plus `X-Captcha-Rqtoken` and `X-Captcha-Session-Id` when Discord sent those.
+pub(crate) fn captcha_headers(a: &CaptchaAnswer) -> Vec<(&'static str, HeaderValue)> {
+    let values = [("x-captcha-key", Some(a.key.expose())), ("x-captcha-rqtoken", a.rqtoken.as_deref()), ("x-captcha-session-id", a.session_id.as_deref())];
+    values
+        .into_iter()
+        .filter_map(|(name, v)| {
+            let mut v = HeaderValue::from_str(v?).ok()?;
+            v.set_sensitive(true);
+            Some((name, v))
+        })
+        .collect()
+}
+
+/// `RUSTCORD_CAPTCHA_DEMO`: the error of a login that needs a captcha, with hCaptcha's public
+/// test sitekey (it passes without a question). Never comes from Discord.
+pub(crate) fn demo_captcha() -> LoginError {
+    let body = br#"{"captcha_key":["captcha-required"],"captcha_service":"hcaptcha","captcha_sitekey":"10000000-ffff-ffff-ffff-000000000001","captcha_rqtoken":"demo","captcha_session_id":"demo"}"#;
+    classify(400, &HeaderMap::new(), body, CAPTCHA_PASSWORD)
 }
 
 #[derive(Debug)]
@@ -165,9 +227,8 @@ impl AuthClient {
         })
     }
 
-    /// One POST, no retries. Non-2xx responses go through `classify`.
-    async fn post<B: Serialize + ?Sized, R: DeserializeOwned>(&self, path: &str, body: &B, captcha: &str) -> Result<R, LoginError> {
-        self.ensure_fingerprint().await;
+    /// The request with the stored fingerprint and cookies, and a captcha answer if there is one.
+    fn request<B: Serialize + ?Sized>(&self, path: &str, body: &B, answer: Option<&CaptchaAnswer>) -> reqwest::RequestBuilder {
         let mut req = self.http.post(format!("{API_BASE}{path}")).json(body);
         let fp = self.device.lock().unwrap().fingerprint.clone().and_then(|f| HeaderValue::from_str(&f).ok());
         if let Some(fp) = fp {
@@ -176,6 +237,22 @@ impl AuthClient {
         if let Some(c) = self.cookie_header() {
             req = req.header(COOKIE, c);
         }
+        for (name, value) in answer.map(captcha_headers).unwrap_or_default() {
+            req = req.header(name, value);
+        }
+        req
+    }
+
+    /// One POST, no retries. Non-2xx responses go through `classify`.
+    async fn post<B: Serialize + ?Sized, R: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        captcha: &str,
+        answer: Option<&CaptchaAnswer>,
+    ) -> Result<R, LoginError> {
+        self.ensure_fingerprint().await;
+        let req = self.request(path, body, answer);
         let network = |e| LoginError::new(net_err(e).to_string(), true);
         let resp = req.send().await.map_err(network)?;
         let status = resp.status().as_u16();
@@ -193,7 +270,7 @@ impl AuthClient {
     }
 
     /// POST /auth/login.
-    pub async fn login(&self, login: &str, password: &Secret) -> Result<LoginOutcome, LoginError> {
+    pub async fn login(&self, login: &str, password: &Secret, answer: Option<&CaptchaAnswer>) -> Result<LoginOutcome, LoginError> {
         let login = normalize_login(login, password)?;
         // shortcut: the serialized request body (inside reqwest) is not zeroized; reqwest owns it.
         #[derive(Serialize)]
@@ -205,7 +282,7 @@ impl AuthClient {
             gift_code_sku_id: Option<&'a str>,
         }
         let body = Body { login: &login, password: password.expose(), undelete: false, login_source: None, gift_code_sku_id: None };
-        let v: Value = self.post("/auth/login", &body, CAPTCHA_PASSWORD).await?;
+        let v: Value = self.post("/auth/login", &body, CAPTCHA_PASSWORD, answer).await?;
         parse_login(&v)
     }
 
@@ -216,6 +293,7 @@ impl AuthClient {
         code: &Secret,
         ticket: &Secret,
         login_instance_id: Option<&str>,
+        answer: Option<&CaptchaAnswer>,
     ) -> Result<Token, LoginError> {
         let code = normalize_code(method, code)?;
         #[derive(Serialize)]
@@ -233,19 +311,19 @@ impl AuthClient {
             MfaMethod::Backup => "/auth/mfa/backup",
         };
         let body = Body { code: code.expose(), ticket: ticket.expose(), login_instance_id, login_source: None, gift_code_sku_id: None };
-        let v: Value = self.post(path, &body, CAPTCHA_PASSWORD).await?;
+        let v: Value = self.post(path, &body, CAPTCHA_PASSWORD, answer).await?;
         token_field(&v, "token")
     }
 
     /// POST /auth/mfa/sms/send. Returns the masked phone number.
-    pub async fn send_mfa_sms(&self, ticket: &Secret) -> Result<String, LoginError> {
-        let v: Value = self.post("/auth/mfa/sms/send", &serde_json::json!({ "ticket": ticket.expose() }), CAPTCHA_PASSWORD).await?;
+    pub async fn send_mfa_sms(&self, ticket: &Secret, answer: Option<&CaptchaAnswer>) -> Result<String, LoginError> {
+        let v: Value = self.post("/auth/mfa/sms/send", &serde_json::json!({ "ticket": ticket.expose() }), CAPTCHA_PASSWORD, answer).await?;
         Ok(v.get("phone").and_then(Value::as_str).unwrap_or("your phone").to_owned())
     }
 
     /// POST /users/@me/remote-auth/login (QR flow). Returns `encrypted_token` (base64).
-    pub async fn remote_auth_login(&self, ticket: &Secret) -> Result<String, LoginError> {
-        let v: Value = self.post("/users/@me/remote-auth/login", &serde_json::json!({ "ticket": ticket.expose() }), CAPTCHA_QR).await?;
+    pub async fn remote_auth_login(&self, ticket: &Secret, answer: Option<&CaptchaAnswer>) -> Result<String, LoginError> {
+        let v: Value = self.post("/users/@me/remote-auth/login", &serde_json::json!({ "ticket": ticket.expose() }), CAPTCHA_QR, answer).await?;
         v.get("encrypted_token")
             .and_then(Value::as_str)
             .map(str::to_owned)
@@ -366,7 +444,11 @@ fn classify(status: u16, headers: &HeaderMap, body: &[u8], captcha: &str) -> Log
         };
     }
     if status == 400 && v.get("captcha_key").is_some() {
-        return LoginError::new(captcha, false);
+        // Only the codes are logged ("captcha-required", "invalid-response"...), never a token.
+        let codes: Vec<&str> = v["captcha_key"].as_array().map_or_else(Vec::new, |a| a.iter().filter_map(Value::as_str).collect());
+        eprintln!("rustcord: captcha asked ({})", codes.join(", "));
+        // The ticket was not used up: the same request goes out again with the answer.
+        return LoginError { message: captcha.into(), keep_ticket: true, captcha: parse_captcha(&v).map(Box::new) };
     }
     if status == 403 && v.get("suspended_user_token").is_some() {
         return LoginError::new("This account is suspended. See the official app for details.", false);
@@ -421,6 +503,9 @@ mod tests {
         let captcha = r#"{"captcha_key":["captcha-required"],"captcha_sitekey":"x","captcha_service":"hcaptcha"}"#;
         assert_eq!(err(400, captcha).message, CAPTCHA_PASSWORD);
         assert_eq!(classify(400, &HeaderMap::new(), captcha.as_bytes(), CAPTCHA_QR).message, CAPTCHA_QR);
+        let e = err(400, captcha);
+        assert!(e.keep_ticket && e.captcha.is_some());
+        assert!(err(400, r#"{"captcha_key":["captcha-required"],"captcha_service":"recaptcha"}"#).captcha.is_none());
 
         assert!(err(403, r#"{"user_id":"1","suspended_user_token":"x"}"#).message.contains("suspended"));
         assert!(err(400, r#"{"code":20013,"message":"This account is disabled"}"#).message.contains("disabled"));
@@ -436,6 +521,46 @@ mod tests {
         assert!(err(403, r#"{"code":40333,"message":"internal network error"}"#).message.contains("firewall"));
         assert!(err(403, r#"{"code":10008,"message":"Unknown Message"}"#).message.contains("blocked"));
         assert_eq!(err(502, "bad gateway").message, "Discord returned an error (HTTP 502).");
+    }
+
+    #[test]
+    fn parses_a_captcha_challenge() {
+        let full = serde_json::json!({
+            "captcha_key": ["captcha-required"], "captcha_service": "hcaptcha",
+            "captcha_sitekey": "4c672d35-0701-42b2-88c3-78380b0db560", "captcha_session_id": "sess",
+            "captcha_rqdata": "data", "captcha_rqtoken": "tok", "should_serve_invisible": false
+        });
+        let ch = parse_captcha(&full).unwrap();
+        assert_eq!(ch.sitekey, "4c672d35-0701-42b2-88c3-78380b0db560");
+        assert_eq!((ch.rqdata.as_deref(), ch.rqtoken.as_deref(), ch.session_id.as_deref()), (Some("data"), Some("tok"), Some("sess")));
+        let a = ch.answer(Secret::new("P1_x".into()));
+        assert_eq!((a.key.expose(), a.rqtoken.as_deref(), a.session_id.as_deref()), ("P1_x", Some("tok"), Some("sess")));
+
+        let minimal = serde_json::json!({"captcha_service": "hcaptcha", "captcha_sitekey": "k", "captcha_rqdata": ""});
+        assert_eq!(parse_captcha(&minimal), Some(CaptchaChallenge { sitekey: "k".into(), rqdata: None, rqtoken: None, session_id: None }));
+        let with = |k: &str, v: &str| serde_json::json!({"captcha_service": "hcaptcha", k: v});
+        assert!(parse_captcha(&serde_json::json!({"captcha_service": "recaptcha", "captcha_sitekey": "k"})).is_none());
+        assert!(parse_captcha(&serde_json::json!({"captcha_service": "hcaptcha"})).is_none());
+        assert!(parse_captcha(&with("captcha_sitekey", "</script>")).is_none());
+        assert!(parse_captcha(&with("captcha_sitekey", &"a".repeat(65))).is_none());
+        assert!(demo_captcha().captcha.is_some());
+    }
+
+    #[test]
+    fn the_answer_goes_out_as_sensitive_headers() {
+        let props = ClientProps::new(&crate::config::Settings::default());
+        let c = AuthClient::new(&props, None);
+        let full = CaptchaAnswer { key: Secret::new("tok".into()), rqtoken: Some("rq".into()), session_id: Some("sid".into()) };
+        let req = c.request("/auth/login", &serde_json::json!({}), Some(&full)).build().unwrap();
+        for (name, want) in [("x-captcha-key", "tok"), ("x-captcha-rqtoken", "rq"), ("x-captcha-session-id", "sid")] {
+            let v = req.headers().get(name).unwrap();
+            assert!(v.is_sensitive() && v == want, "{name}");
+        }
+        let key_only = CaptchaAnswer { key: Secret::new("tok".into()), rqtoken: None, session_id: None };
+        let req = c.request("/auth/login", &serde_json::json!({}), Some(&key_only)).build().unwrap();
+        assert!(req.headers().get("x-captcha-key").is_some() && req.headers().get("x-captcha-rqtoken").is_none());
+        let req = c.request("/auth/login", &serde_json::json!({}), None).build().unwrap();
+        assert!(req.headers().keys().all(|k| !k.as_str().starts_with("x-captcha")));
     }
 
     #[test]

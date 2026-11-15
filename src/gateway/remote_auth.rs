@@ -183,7 +183,7 @@ async fn flow(props: &ClientProps, auth: &AuthClient, sink: &EventSink) -> Resul
     drop((tx, rx)); // the server closes with 1000 now anyway
 
     // Exchanged right away: the ticket's lifetime is unknown. Never retried.
-    let encrypted = auth.remote_auth_login(&ticket).await.map_err(|e| End::Failed(e.message))?;
+    let encrypted = auth.remote_auth_login(&ticket, None).await.map_err(|e| End::Failed(e.message))?;
     let token = keys.decrypt_b64(&encrypted).map_err(protocol)?;
     std::str::from_utf8(&token).ok().and_then(Token::parse).ok_or_else(|| protocol("unreadable token"))
 }
