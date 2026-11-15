@@ -52,8 +52,7 @@ let http = reqwest::Client::builder()
 - UD names login, invite acceptance and friend requests as captcha endpoints, and says *any* endpoint may return one. By INFERENCE that includes `/auth/mfa/*`, `/auth/mfa/sms/send`, `/auth/authorize-ip` and `/users/@me/remote-auth/login`.
 - `error_from` already does this check (`api/mod.rs:80`). Use the same predicate in the login classifier.
 - User text:
-  - Password flow: "Discord wants a captcha for this login, and Rustcord cannot show one. Use QR code login, or wait a few minutes and try again. The Token tab also works."
-  - QR exchange: "Discord wants a captcha for this login, and Rustcord cannot show one. Wait a few minutes, then get a new code, or use the Token tab."
+  - Password flow and QR exchange (one text, `CAPTCHA_PASSWORD` / `CAPTCHA_QR`): "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works." It does not invite a quick retry: more attempts feed the same risk check. It is the fallback text for builds without a captcha window.
   - The captcha is Discord's server-side risk decision; Rustcord never solves or bypasses it. It only makes its requests look like one consistent device (§1.1 cookies, shared fingerprint, logout ending the token, §1.7).
 - Abaddon checks `captcha_service` instead. Prefer UD's `captcha_key`.
 
@@ -376,7 +375,7 @@ token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::
   - **Implemented:** the exchange uses the login screen's shared `AuthClient` (`X-Fingerprint` from `/experiments` plus the device cookies, §1.1), so it is not the weakest request of the login any more.
   - **Recommendation:** use the same throwaway client as in §0 (`default_headers`, Referer `/login`, no auth, no limiter). Send `X-Fingerprint` only with an `/experiments` fingerprint if one was fetched (INFERENCE from UD's general rule), never with the RA fingerprint.
 - Errors:
-  - captcha → §0 detection, `Failed(CAPTCHA_QR)` (wait, new code or Token tab)
+  - captcha → §0 detection, `Failed(CAPTCHA_QR)` (wait a while, or the Token tab)
   - 429 → §1.5 row 1
   - other non-captcha errors (invalid or expired ticket) have an **UNCONFIRMED** shape; expect the generic `{"code","message"}`
   - On any failure, offer a new QR. Do not retry the same ticket.

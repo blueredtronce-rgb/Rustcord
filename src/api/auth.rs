@@ -14,9 +14,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Duration;
 
-pub const CAPTCHA_PASSWORD: &str = "Discord wants a captcha for this login, and Rustcord cannot show one. Use QR code login, or wait a few minutes and try again. The Token tab also works.";
-pub const CAPTCHA_QR: &str =
-    "Discord wants a captcha for this login, and Rustcord cannot show one. Wait a few minutes, then get a new code, or use the Token tab.";
+pub const CAPTCHA_PASSWORD: &str = "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works.";
+pub const CAPTCHA_QR: &str = CAPTCHA_PASSWORD;
 pub const EXPIRED: &str = "The login expired. Enter your password again.";
 
 /// User-facing failure of a login call. Never contains the password, code, ticket or token.
