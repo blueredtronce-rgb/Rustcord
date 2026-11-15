@@ -655,6 +655,28 @@ ctx.load_texture_cached(name, id: Id, image, options) -> TextureHandle   // safe
 
 ---
 
+## Multiple viewports (the game overlay, ui/overlay)
+- `ctx.show_viewport_deferred(id, builder, cb)` must be called every root pass while the window
+  should exist; a viewport not declared in a full root pass is dropped with its window. A
+  *logic-only* root pass (minimized, in the tray) creates nothing: send
+  `ViewportCommand::RequestPaintWhileHidden` to the root until the viewport appears in
+  `ctx.input(|i| i.raw.viewports)`. Any child viewport (even a hidden one) keeps the root running
+  unpainted full passes on each event, so destroy a pane instead of hiding it.
+- A context created before eframe (`Context::default()` in `main.rs`) has `embed_viewports ==
+  true`, which turns every viewport into an egui `Window` inside the root. eframe sets it false only
+  on a context it creates itself: call `set_embed_viewports(false)`.
+- `App::clear_color` is one value for every viewport; transparent windows need `[0.0; 4]`.
+- `ctx.request_repaint*()` without an id targets the viewport being run. From another thread pass
+  `ViewportId::ROOT` (`request_repaint_of`, `request_repaint_after_for`).
+- `App::raw_input_hook` runs for every viewport's pass: check `raw.viewport_id`.
+- winit: `with_mouse_passthrough(true)` makes the window `WS_EX_LAYERED`, which shows nothing until
+  `SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)`. An undecorated window gets a DWM shadow, a
+  grey top line and the Win11 border: `SetWindowRgn` to the client rect removes them. winit
+  rewrites `GWL_EXSTYLE` on every show and hit-test change: re-add `WS_EX_TOOLWINDOW |
+  WS_EX_NOACTIVATE` and clear `WS_EX_APPWINDOW` each pass.
+
+---
+
 ## 7. Label inside `horizontal_wrapped` (inline text flow)
 
 From `Ui::horizontal_wrapped` and `Label::layout_in_ui` (`egui/src/widgets/label.rs` ~L189–228):

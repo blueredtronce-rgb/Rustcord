@@ -366,7 +366,7 @@ All ✔ and cheap:
 
 ### Game Overlay
 
-✗: needs injection. Show "Not available in Rustcord".
+✔ out-of-process overlay (Windows only), docs/OVERLAY_DESIGN.md. Rustcord's own windows over the game, no injection: voice widget and notifications; page hidden on Linux and macOS.
 
 ## 5. Order of work
 

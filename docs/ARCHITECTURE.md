@@ -143,6 +143,7 @@ cargo check
 | quests | `src/quests.rs`, `src/api/quests.rs`, `src/gateway/quests.rs`, `src/ui/quests.rs`; the Quests row in `ui/sidebar.rs`: see `docs/QUESTS_NOTES.md` |
 | media | `src/media/*` (player worker, Range reads, MP4/H.264/AAC, shared speaker output), `src/ui/viewer.rs` (inline video and gifv, the lightbox `Modal::Media`): see `docs/MEDIA_DESIGN.md` |
 | plugins | `src/plugins/*` (registry + plugins.toml, one module per area), `src/ui/user_settings/plugins.rs`; one-line hooks elsewhere guarded by `plugins::enabled`: see `docs/PLUGINS_NOTES.md` |
+| overlay | `src/ui/overlay/*`, `src/ui/user_settings/overlay.rs`: see `docs/OVERLAY_DESIGN.md` |
 | updater | `src/update/*` (engine; `state.rs` is the UI contract), `src/ui/update.rs` (screen, title-bar button, demo) and the Updates rows in `ui/user_settings/app.rs`; packaging: `rustcord-setup --update`, `install.sh --update`, `scripts/make-update-manifest.py`, release.yml: see `docs/UPDATER_DESIGN.md` |
 
 Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.rs` (resvg) →
@@ -289,6 +290,12 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   modals, the lightbox), end (toasts, image cache, hooks); `unscoped` = app - top-level sections.
   `RUSTCORD_FRAME_STATS=continuous` also repaints every frame (the cost of a full repaint).
   Off, each timer is one cached check.
+- `RUSTCORD_OVERLAY_DEMO=1` (Windows, ui/overlay): the game overlay with fake call members and a
+  notification over Rustcord's own window (it plays the game); with `RUSTCORD_SCREENSHOT=<png>`
+  each pane also saves `<stem>-overlay-voice.png` / `-overlay-toast.png` (over grey) and the run
+  ends after them. `=gated` shows the panes only while a registered game is in front (real
+  foreground detection; stderr says `overlay: voice shown|hidden`); try it with Registered
+  games = `charmap.exe`. `RUSTCORD_OPEN=voice:<channel id>` fills the call.
 - `RUSTCORD_NAV_DEMO=<comma list>` (ui/sidebar.rs `nav_demo`): navigation / social states
   offline mode can't reach, none sends a request: `folders` / `folder-open` (server bar
   folders), `mentions` (inbox mentions from cached messages), `profile` (loaded profiles; with
