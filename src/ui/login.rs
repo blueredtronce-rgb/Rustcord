@@ -238,8 +238,9 @@ fn header(ui: &mut egui::Ui, theme: &Theme, compact: bool, title: &str, subtitle
     });
 }
 
-/// The app icon, decoded once and kept in egui's temp memory (dropped again on login).
-fn app_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+/// The app icon, decoded once and kept in egui's temp memory (dropped again on login). Also
+/// the update screen's logo (update.rs).
+pub(super) fn app_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(icon_id())) {
         return Some(tex);
     }

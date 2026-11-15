@@ -34,6 +34,7 @@ pub mod server_menu;
 pub mod server_settings;
 pub mod sidebar;
 pub mod threads;
+pub mod update;
 pub mod user_settings;
 pub mod viewer;
 
@@ -353,6 +354,8 @@ pub struct RustcordApp {
     last_cache_save: Instant,
     /// Backend events were applied since the last shown pass (see `settle_after_events`).
     event_pass: bool,
+    /// A key or pointer button was pressed since start (the updater's start screen waits for none).
+    interacted: bool,
 }
 
 impl RustcordApp {
@@ -404,6 +407,7 @@ impl RustcordApp {
             frame_no: 0,
             last_cache_save: Instant::now(),
             event_pass: false,
+            interacted: false,
         }
     }
 
@@ -836,6 +840,10 @@ impl eframe::App for RustcordApp {
         // Videos shown in the last pass stay decoded, the rest are hidden (also while minimized).
         call::sync(&mut self.view, &mut self.state, &self.backend.cmd, &self.backend.video);
         dm_call::logic(&mut self.state, &self.backend.cmd, &self.settings.camera);
+        let pressed = |e: &egui::Event| matches!(e, egui::Event::PointerButton { pressed: true, .. } | egui::Event::Key { pressed: true, .. });
+        self.interacted |= ctx.input(|i| i.events.iter().any(pressed));
+        let hidden = user_settings::in_tray(ctx);
+        crate::update::sync_ui(hidden, update::busy(&self.state, &self.view, hidden), self.interacted);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -859,9 +867,15 @@ impl eframe::App for RustcordApp {
         };
         // Zoom, reduced motion, global keybinds, capture exclusion.
         user_settings::frame(&ctx, &mut cx);
+        let up = update::status();
         match cx.view.screen {
+            // The update screen covers the login and the main window alike.
+            _ if up.screen => {
+                title_bar(ui, &mut cx, &up);
+                update::screen(ui, &cx, &up);
+            }
             Screen::Login => {
-                title_bar(ui, &mut cx);
+                title_bar(ui, &mut cx, &up);
                 login::show(ui, &mut cx);
             }
             Screen::Main => {
@@ -871,7 +885,7 @@ impl eframe::App for RustcordApp {
                 // Ctrl+Enter as Enter and send the draft.
                 let accept = cx.state.incoming_call().is_some()
                     && user_settings::shortcut(cx.settings, user_settings::Bind::AcceptCall).is_some_and(|k| ctx.input_mut(|i| i.consume_shortcut(&k)));
-                main_layout(ui, &mut cx);
+                main_layout(ui, &mut cx, &up);
                 let _t = frame_stats::scope("popups");
                 profile::show_popup(&ctx, &mut cx);
                 show_modals(&ctx, &mut cx);
@@ -982,8 +996,8 @@ fn same_widgets(a: &egui::WidgetRects, b: &egui::WidgetRects) -> bool {
 }
 
 /// The 32 px title bar of the frameless window (`chrome`: drag, window buttons) with the
-/// location (main screen) or Rustcord's name (login).
-fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+/// location (main screen) or Rustcord's name (login, update screen), and the updater's button.
+fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, up: &crate::update::Status) {
     let c = cx.theme.colors.clone();
     egui::Panel::top("title_bar")
         .exact_size(TITLE_BAR_H)
@@ -991,9 +1005,17 @@ fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         .show_separator_line(false)
         .frame(egui::Frame::new().fill(cx.theme.panel_fills().frame.to_color32()))
         .show(ui, |ui| {
-            chrome::title_bar(ui, &c, |ui| match cx.view.screen {
-                Screen::Login => chrome::app_label(ui, cx.theme),
-                Screen::Main => sidebar::title_bar(ui, cx),
+            chrome::title_bar(ui, &c, |ui| {
+                if up.screen || cx.view.screen == Screen::Login {
+                    chrome::app_label(ui, cx.theme);
+                } else {
+                    sidebar::title_bar(ui, cx);
+                }
+                if !up.screen {
+                    // sidebar::title_bar shows the inbox button outside the settings layers.
+                    let inbox = cx.view.screen == Screen::Main && !cx.view.chat_hidden();
+                    update::title_button(ui, cx, up, inbox);
+                }
             })
         });
 }
@@ -1004,7 +1026,7 @@ fn title_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
 /// panel or the member list. User and server settings cover everything under the title bar.
 /// The channel list (303 px, resizable) narrows first so the page keeps ~450 px; narrow windows
 /// drop the member list and show the thread panel in the chat's place (minimum window 720 px).
-fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>, up: &crate::update::Status) {
     threads::track(cx, ui.ctx().pixels_per_point());
     call::demo(cx);
     let c = cx.theme.colors.clone();
@@ -1014,7 +1036,7 @@ fn main_layout(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let right = right_column_w(cx.view, cx.settings, cx.state, width);
     let (channels_w, max_w) = channel_list_width(width, right, cx.view.channel_list_w);
     let edge = sidebar::line(&c);
-    frame_stats::time("title", || title_bar(ui, cx));
+    frame_stats::time("title", || title_bar(ui, cx, up));
     // Full-screen layers.
     if cx.view.chat_hidden() {
         pickers::close_if_open(ui.ctx(), cx);

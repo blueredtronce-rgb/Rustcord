@@ -776,6 +776,13 @@ Glyphs inside strings lose the glyph and get a painted 14 px icon in front:
 - Keep: one bar, 32 tall, on frame.
 - The location is centred: a 16 px icon (channel icon or server tile) and the name in ui 14/600.
 - `Inbox` icon button on the right, then the window controls (chrome.rs, unchanged).
+- Update button (ui/update.rs, docs/UPDATER_DESIGN.md §15.2), only while a new version is
+  available or ready: a pill 24 tall, 8 left of `Inbox` (8 from the end where there is no
+  inbox: login, settings), radius control, padding 8. `Download` 16 in `positive`, 6 gap, label
+  13/600 in `positive_text`: "Update available" / "Update ready". Hover: `hover` fill; focus
+  ring; the tooltip names the action ("Restart Rustcord to install 0.1.1"). While a call runs,
+  "Update ready" is disabled (icon and label `text_muted`, tooltip "Installs after your call
+  ends"). Green, not ember: it is a state, not the view's primary action.
 
 ---
 
@@ -884,6 +891,15 @@ Playing                                     <- label role: "Playing" / "Listenin
   sentence case; buttons "Install" (primary) and "Cancel". Done: "Rustcord is installed" with
   "Open Rustcord".
 - **Uninstaller:** "Remove Rustcord".
+- **Update screen** (ui/update.rs, copy and states: docs/UPDATER_DESIGN.md §15.1): replaces the
+  login / main window under the 32 px title bar (Rustcord's name there, as on login). Flat
+  `guild_bar` page, a centred column, no card: logo 56; 24; title in the title role, `text`
+  ("Downloading update 0.1.1", "Installing update", "Restarting", "Update failed"); 16; a
+  320 × 4 progress bar, radius 2, track `edge` @ 50 %, fill `text` (not ember); 8; one meta
+  line `text_muted` ("7.3 MB of 12.0 MB"); 24; buttons 40 tall, ghost "Not now" left of the
+  one primary ("Install", "Continue"). A failure shows `Alert` 16 and the message in `danger`
+  (ui role) in the bar's place. Enter = the primary, Esc = "Not now" / "Continue". Static: it
+  repaints only when the updater reports progress.
 
 ---
 

@@ -261,7 +261,7 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
         }
     }
     // The tray went away while the window waited there (Linux: no tray host after all).
-    if ctx.data(|d| d.get_temp::<bool>(in_tray_id()).unwrap_or(false)) && !crate::notify::has_tray() {
+    if in_tray(ctx) && !crate::notify::has_tray() {
         show_window(ctx);
     }
     let quit = ctx.data(|d| d.get_temp::<bool>(quitting).unwrap_or(false));
@@ -286,6 +286,11 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
 /// The window waits in the tray (`to_tray` .. `show_window`).
 fn in_tray_id() -> egui::Id {
     egui::Id::unique("rc_in_tray")
+}
+
+/// The window waits in the tray (the updater's `hidden`, `RustcordApp::logic`).
+pub(in crate::ui) fn in_tray(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(in_tray_id()).unwrap_or(false))
 }
 
 /// Hides the window, taskbar button included. Minimized as well, so eframe runs only `logic`

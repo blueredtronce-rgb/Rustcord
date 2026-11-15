@@ -87,6 +87,12 @@ impl AppState {
         self.calls.start = Some(Start { channel_id, ring, video, joined: false, at: now });
     }
 
+    /// A call I started or accepted is still on its way (the voice task may not have joined
+    /// it yet); `call_steps` drops it within 15 s. The updater counts it as busy.
+    pub fn call_starting(&self) -> bool {
+        self.calls.start.is_some()
+    }
+
     /// The user declined the incoming call here (the caller sends `StopRinging`).
     pub fn decline_call(&mut self, channel_id: Id) {
         self.calls.declined.insert(channel_id);
