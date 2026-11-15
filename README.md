@@ -141,8 +141,8 @@
   notification cards. No injection into the game; borderless or windowed games only.
 
 Not included: other Nitro features, account creation, stickers picker, slash commands/bot
-components, solving captchas (when Discord asks for one, do that step in the official app),
-completing quests automatically.
+components, completing quests automatically. Rustcord never solves captchas for you
+(see *Logging in*).
 
 ## Logging in
 
@@ -156,11 +156,20 @@ The login screen has three tabs:
   code (*Send SMS* first) or one of the backup codes.
 - **Token**: paste an account token (the tab explains where to find it).
 
+If Discord asks for a captcha (it does for logins it finds unusual, and after many sign-in
+attempts), Rustcord opens a small window with Discord's own hCaptcha (Windows and macOS). You
+solve it there, then Rustcord sends the same login again with the result. Closing the window
+or *Cancel* ends the attempt. The window only talks to hCaptcha, never to Discord, and its
+temporary profile is deleted afterwards. Details and the origin it runs under:
+`docs/AUTH_NOTES.md`.
+
 Limits:
 
-- **Captchas are not supported.** If Discord asks for a captcha (this happens for logins it
-  finds unusual, and after many sign-in attempts), Rustcord stops and says so. More attempts
-  do not help; wait a while, use the token tab, or sign in once in the official app. Rustcord never tries to solve or bypass a captcha.
+- **Captchas are yours to solve.** Rustcord only shows Discord's captcha and passes your answer
+  on; it never tries to solve or bypass one. On Linux (and on a Windows without the WebView2
+  runtime) there is no captcha window: Rustcord says so, and more attempts do not help; wait a
+  while, use the token tab, or sign in once in the official app. Discord can still refuse an
+  answer that was given in this window; the QR code and token tabs do not depend on it.
 - Accounts whose only 2FA method is a security key/passkey, and Discord's "new login
   location" checks (e-mail link or SMS), need the QR code or one login in the official app.
 - Every login attempt is one click. Rate limits are shown ("Wait N s") and never retried

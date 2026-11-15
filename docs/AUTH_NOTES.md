@@ -10,7 +10,7 @@ Legend:
 - **UNCONFIRMED**: no fetched source states it.
 - **INFERENCE**: an editor's conclusion drawn from the sources, not stated by them.
 
-Captchas are covered **only as detection**. This file deliberately leaves out how to solve them, submit them, or get around them.
+Captchas: Rustcord shows Discord's own hCaptcha to the user in a window, the **user** solves it, and the login request goes out again with the widget's token (§0, "Captcha window"). Rustcord never solves, skips, automates or fakes one, and does nothing to make its requests look like a browser's beyond what §1.1 and §1.2 describe.
 
 ---
 
@@ -52,8 +52,23 @@ let http = reqwest::Client::builder()
 - UD names login, invite acceptance and friend requests as captcha endpoints, and says *any* endpoint may return one. By INFERENCE that includes `/auth/mfa/*`, `/auth/mfa/sms/send`, `/auth/authorize-ip` and `/users/@me/remote-auth/login`.
 - `error_from` already does this check (`api/mod.rs:80`). Use the same predicate in the login classifier.
 - User text:
-  - Password flow and QR exchange (one text, `CAPTCHA_PASSWORD` / `CAPTCHA_QR`): "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works." It does not invite a quick retry: more attempts feed the same risk check. It is the fallback text for builds without a captcha window.
-  - The captcha is Discord's server-side risk decision; Rustcord never solves or bypasses it. It only makes its requests look like one consistent device (§1.1 cookies, shared fingerprint, logout ending the token, §1.7).
+  - Fallback (one text, `CAPTCHA_PASSWORD` / `CAPTCHA_QR`; Linux, or a Windows without the WebView2 runtime): "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works." It does not invite a quick retry: more attempts feed the same risk check.
+  - Window closed or timed out (`CAPTCHA_CANCELLED`): "You closed the captcha, so Discord didn't sign you in. Try again when you're ready."
+  - Answer refused (`CAPTCHA_REJECTED`): "Discord didn't accept the captcha. Try again, or use QR code login or the Token tab." A refused answer is final for that attempt: another captcha 400 after an answer is never re-shown on its own.
+  - The captcha is Discord's server-side risk decision. Rustcord only makes its requests look like one consistent device (§1.1 cookies, shared fingerprint, logout ending the token, §1.7).
+
+**Captcha window (Windows and macOS; `src/captcha.rs`):**
+- **Challenge.** A 400 with `captcha_key` and `captcha_service` = `hcaptcha` and a `captcha_sitekey` of at most 64 ASCII letters, digits or `-` becomes a `CaptchaChallenge` (sitekey, `captcha_rqdata`, `captcha_rqtoken`, `captcha_session_id`). Anything else (reCAPTCHA, an odd sitekey) keeps the fallback text. `should_serve_invisible` is ignored: the visible checkbox is always shown. The captcha codes (`captcha-required`, ...) are logged, never a token. The 2FA ticket is not used up by a captcha (`keep_ticket`).
+- **Resend (UD topics/captcha-handling.mdx).** The same request goes out again with `X-Captcha-Key: <widget token>`, plus `X-Captcha-Session-Id` if the challenge had a session id and `X-Captcha-Rqtoken` if it had an rqtoken (all marked sensitive). The body fields `captcha_key` / `captcha_rqtoken` are deprecated and not sent. This applies to `/auth/login`, `/auth/mfa/{totp,sms,backup}`, `/auth/mfa/sms/send` and the QR ticket exchange, which therefore runs in the backend (`Command::QrExchange`) and no longer inside `remote_auth`.
+- **Parking.** The backend keeps the refused request (`Parked`: command, challenge, fallback text, the window task) and sends `LoginStep::Captcha`; the login card says "Finish the captcha in the window that opened." with a Cancel link. The reply (`Command::Captcha`) is `Solved` (the parked command is sent again with the answer), `Cancelled` (window closed, Cancel, 10 minute cap) or `Unavailable` (no WebView2: the fallback text). A new attempt, a login and a logout drop a parked request and close the window.
+- **Helper process.** The window is `rustcord --captcha`: its own winit window with a wry 0.57.2 webview, so a webview crash cannot take Rustcord down and its Edge processes die with it. The parent writes `{"sitekey","rqdata"}` on its stdin; the helper prints `{"token": ...}` on its stdout when the user solved the widget. The helper never sees the password, a ticket, a cookie, the fingerprint or the super-properties.
+- **The page.** Local HTML (`captcha.rs` `PAGE`) that embeds hCaptcha's standard `https://js.hcaptcha.com/1/api.js?render=explicit&onload=ready&recaptchacompat=off&host=discord.com`, renders the widget with the sitekey, and passes rqdata with `hcaptcha.setData(id, {rqdata})` before the challenge starts (what hCaptcha's Android SDK and react-native-hcaptcha do). It is served at the origin `https://discord.com/` inside the webview: on Windows through a wry custom protocol (`discord://com/` is `https://discord.com/`; every other `https://discord.*` request of that webview is answered 404 locally), on macOS by `loadHTMLString:baseURL:`.
+- **Disclosure.** The page claims the discord.com origin inside the webview, as hCaptcha's own mobile SDKs do for their app's host (Android `loadDataWithBaseURL("https://" + host, ...)`, `api.js?...&host=<host>`); hCaptcha's API refuses `localhost` and `127.0.0.1`, and the widget cannot detect a hostname inside a webview. The webview never contacts Discord, only hCaptcha (`js.hcaptcha.com`, `*.hcaptcha.com`); navigation is limited to the page and hcaptcha.com, new windows are denied, devtools are off. The `host` value is, per hCaptcha, analytics only.
+- **Profile.** The webview runs incognito with its own profile in `<cache>/captcha-webview` (about 7 MB while open), deleted before each run and about 0.2 s after the helper exits. Quitting Rustcord with the window open leaves it until the next captcha.
+- **Windows runtime.** wry's WebView2 loader would add a `vcruntime140_1.dll` import, so the Windows build links the VC++ runtime statically (`.cargo/config.toml` + `build.rs`): the exe imports no `vcruntime*.dll`.
+- **Test hook.** `RUSTCORD_CAPTCHA_DEMO=1` (`=auto`: the login screen signs in once by itself) answers a password login with a demo captcha that carries hCaptcha's public **test** sitekey `10000000-ffff-ffff-ffff-000000000001` (it passes without a question); the answer is not sent anywhere, the card says how many headers it would carry. No request leaves for Discord.
+- **UNCONFIRMED:** whether Discord accepts a token solved in this window. Its sitekey may have hCaptcha's domain allowlist on, the enterprise risk score and the `host` / origin all play in. After an answer, the logged codes (`invalid-response` and similar) show what Discord thought.
+- **Not covered:** reCAPTCHA, invisible mode, hCaptcha's info links (new windows are denied), joins and friend requests (still "do it in the official app"), Linux (a helper would need WebKitGTK linked into the app, plus package dependencies), and macOS has only been type-checked.
 - Abaddon checks `captcha_service` instead. Prefer UD's `captcha_key`.
 
 ---
@@ -191,7 +206,7 @@ Parse the body as `serde_json::Value`. Read `code` as an integer from `body["cod
 | # | Match | Meaning | Action / user text |
 |---|---|---|---|
 | 1 | status 429 | Rate limited. Body: `{"message","retry_after": float s,"global": bool,"code"?}`. Headers: `Retry-After`, `X-RateLimit-Global`, `X-RateLimit-Scope: user\|global\|shared` (UD rate-limits). Unauthenticated limits are per IP; the global limit is 50 req/s. Login bucket sizes are **UNCONFIRMED**. | Use `parse_429`. **Never auto-retry.** Show "Too many attempts. Wait N s." If `parse_429` returns None (Cloudflare limit without `Retry-After`), do not retry at all: "Blocked for now, try later." |
-| 2 | status 400 and `captcha_key` present | Captcha required | Detection only. Show the text from §0. |
+| 2 | status 400 and `captcha_key` present | Captcha required | Open the captcha window and resend with the answer (§0), or the fallback text where there is no window. |
 | 3 | status 403 and `suspended_user_token` present | Account suspended. The body is `{"user_id","suspended_user_token"}`. That token is **not** an auth token: it is only valid as `token` in the body of safety-hub and appeal endpoints. | "This account is suspended." Do not store the token. |
 | 4 | `code` 20011 / 20013 | "This account is scheduled for deletion" / "This account is disabled" (codes list). HTTP status UNCONFIRMED, so match on the code. | Ask "Restore account?". On yes, resend `/auth/login` with `"undelete": true`. |
 | 5 | `code` 70007 | "You need to verify your phone number..." Logged in with a **phone number** from a new location; Discord sends an SMS code automatically. | §1.6 phone path. |
@@ -368,6 +383,8 @@ Content-Type: application/json
 token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::parse → Command::Login path
 ```
 
+- **Implemented:** `remote_auth::run` ends at `pending_login` and hands the ticket and the per-code key (`RaKeys`) to the backend as `Command::QrExchange`; the backend does the POST (parked on a captcha like the other requests) and `RaKeys::token` decrypts the answer.
+
 - Do it **right after** `pending_login`, even though the socket closes with 1000 at the same moment. Ticket lifetime is **UNCONFIRMED**.
 - Headers:
   - Abaddon sends only `Content-Type` and `User-Agent`.
@@ -375,7 +392,7 @@ token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::
   - **Implemented:** the exchange uses the login screen's shared `AuthClient` (`X-Fingerprint` from `/experiments` plus the device cookies, §1.1), so it is not the weakest request of the login any more.
   - **Recommendation:** use the same throwaway client as in §0 (`default_headers`, Referer `/login`, no auth, no limiter). Send `X-Fingerprint` only with an `/experiments` fingerprint if one was fetched (INFERENCE from UD's general rule), never with the RA fingerprint.
 - Errors:
-  - captcha → §0 detection, `Failed(CAPTCHA_QR)` (wait a while, or the Token tab)
+  - captcha → §0: the exchange is parked and resent with the answer, or `Failed(CAPTCHA_QR)` without a window (wait a while, or the Token tab)
   - 429 → §1.5 row 1
   - other non-captcha errors (invalid or expired ticket) have an **UNCONFIRMED** shape; expect the generic `{"code","message"}`
   - On any failure, offer a new QR. Do not retry the same ticket.
@@ -431,7 +448,7 @@ token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::
 - [ ] Heartbeat with zombie detection. Local expiry timer of `timeout_ms` plus a margin.
 - [ ] Close-code mapping (§2.5). `cancel` / 4003 / 1000-without-ticket → `QrExpired`. No automatic reconnect loop.
 - [ ] Wire `StartQrLogin` (abort and replace any running task) and `CancelQrLogin` (abort) into `backend::run`.
-- [ ] Captcha on the exchange → `Failed(CAPTCHA_QR)`. Never log the ticket or the token.
+- [ ] Captcha on the exchange → parked and resent with the answer (§0), `Failed(CAPTCHA_QR)` without a window. Never log the ticket or the token.
 
 ---
 
