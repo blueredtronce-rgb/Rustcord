@@ -36,6 +36,7 @@
   window.rcSyncMotion = sync;
 })();
 </script>
+<link rel="modulepreload" href="fx.js">
 <script type="module" src="main.js"></script>
 </head>
 <body id="top">
@@ -74,7 +75,10 @@
 <section class="hero">
   <div class="wrap hero-grid">
     <h1 class="wordmark">Rustcord</h1>
-    <p class="lede">A lightweight desktop client for Discord, written from scratch in Rust. No Electron.</p>
+    <div class="hero-text">
+      <p class="lede">A lightweight desktop client for Discord, written from scratch in Rust. No Electron.</p>
+      <p class="hero-proof">First frame in 199 ms and 96 MB of memory in use, on a release build running offline with cached data. <a href="#speed">How it was measured</a></p>
+    </div>
     <div class="cta" data-dl>
       <div data-dl-mobile hidden>
         <p>Rustcord is a desktop app for Windows, Linux and macOS. Open <strong>r0sc.github.io/Rustcord</strong> on your computer to download it.</p>

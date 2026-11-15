@@ -104,14 +104,27 @@ h3 { font-size: 1.3125rem; font-weight: 600; line-height: 1.25; }
 .btn.only-narrow { display: none; }
 @media (max-width: 719.98px) { .btn.only-narrow { display: inline-flex; } }
 
-.hero { padding: clamp(40px, 6vw, 72px) 0 clamp(48px, 7vw, 88px); }
+.hero { position: relative; isolation: isolate; overflow: clip; padding: clamp(40px, 6vw, 72px) 0 clamp(48px, 7vw, 88px); }
 .hero-grid { display: grid; gap: 24px 48px; grid-template-columns: 1fr; }
 .motion .wordmark { background: linear-gradient(to bottom, var(--text) 0 46%, #feeec1 48.5%, #f68842 50%, #a42d15 51.5%, #4b5862 54%) 0 100% / 100% 250% no-repeat;
   -webkit-background-clip: text; background-clip: text; color: transparent; animation: wm-forge 1s var(--ease-in-out) .15s both; }
 @keyframes wm-forge { to { background-position: 0 0; } }
 @media (forced-colors: active) { .motion .wordmark { background: none; color: CanvasText; animation: none; } }
-.wordmark { font-size: clamp(3rem, 15.5vw, 9rem); font-stretch: 125%; font-weight: 800; line-height: .9; letter-spacing: -.015em; white-space: nowrap; margin-left: -.04em; }
+.wordmark { position: relative; justify-self: start; font-size: clamp(3rem, 15.5vw, 10rem); font-stretch: 125%; font-weight: 800; line-height: .9; letter-spacing: -.015em; white-space: nowrap; margin-left: -.04em; }
 .hero .lede { margin: 0; }
+.hero-proof { margin: 16px 0 0; font-size: .9375rem; line-height: 1.5; color: var(--muted); max-width: 46ch; }
+/* the hearth: one glow, under the wordmark's feet; --fan is the live core (fx.js), .45 is the rest state */
+.wordmark::before, .wordmark::after { content: ""; position: absolute; z-index: -2; pointer-events: none; }
+.wordmark::before { left: -18%; right: -18%; top: 10%; bottom: -95%;
+  background: radial-gradient(closest-side, rgb(246 136 66 / .42), rgb(230 104 48 / .30) 22%, rgb(164 45 21 / .17) 48%, rgb(164 45 21 / .06) 74%, rgb(164 45 21 / 0)); }
+.wordmark::after { left: 6%; right: 6%; top: 70%; bottom: -24%; opacity: var(--fan, .45); will-change: opacity;
+  background: radial-gradient(closest-side, rgb(254 238 193 / .45), rgb(246 136 66 / .30) 35%, rgb(246 136 66 / 0)); }
+.motion .wordmark::before, .motion .wordmark::after { animation: hearth-in 900ms var(--ease-out) 900ms backwards; }
+@keyframes hearth-in { from { opacity: 0; } }
+.fx-hearth { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
+.fx-sparks { position: fixed; left: 0; top: 0; z-index: 5; width: 100%; height: 100vh; height: 100lvh; pointer-events: none; visibility: hidden; }
+.fx-sparks.on { visibility: visible; }
+@media (forced-colors: active) { .wordmark::before, .wordmark::after, .fx-hearth, .fx-sparks { display: none; } }
 .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 12px; }
 .cta .meta, .dl-panel .meta { margin: 0 0 16px; }
 [data-dl-mobile] { margin-bottom: 20px; }
