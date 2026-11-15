@@ -71,10 +71,14 @@ if (boot && html.classList.contains('motion')) {
   io.observe(boot);
 }
 
+// ---- first shot: the load sweep plays when it is first seen ----
+const first = document.querySelector('.tour-item:first-child .tour-shot');
+if (first) new IntersectionObserver(([e], o) => { if (e.isIntersecting) { first.classList.add('lit'); o.disconnect(); } }, { threshold: 0.5 }).observe(first);
+
 // ---- tour ----
 const tour = document.querySelector('[data-tour]');
 if (tour && !html.classList.contains('sda')) {
-  const items = $$('.tour-item', tour), pills = $$('.tour-pills i', tour);
+  const items = $$('.tour-item', tour);
   const headerH = () => parseFloat(getComputedStyle(html).getPropertyValue('--header-h')) || 64;
   let step = -1, raf = 0;
   const setStep = s => {
@@ -84,7 +88,6 @@ if (tour && !html.classList.contains('sda')) {
       li.classList.toggle('is-shown', i <= s); li.classList.toggle('is-current', i === s);
       if (forward && i === s) { li.classList.remove('forge'); void li.offsetWidth; li.classList.add('forge'); }
     });
-    pills.forEach((p, i) => { p.classList.toggle('is-current', i === s); p.classList.toggle('is-past', i < s); });
   };
   const measure = () => {
     raf = 0; const r = tour.getBoundingClientRect(), h = headerH();

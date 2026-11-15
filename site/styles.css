@@ -85,6 +85,8 @@ h3 { font-size: 1.3125rem; font-weight: 600; line-height: 1.25; }
 .btn.is-done .icon { animation: pop var(--t-quick) var(--ease-out); }
 @keyframes pop { from { scale: .8; } to { scale: 1; } }
 .link-plain { font-weight: 600; }
+[data-dl-other] { color: var(--muted); font-weight: 400; }
+[data-dl-other]:hover { color: var(--text); }
 @media (hover: hover) {
   .motion .btn { transition: background-color var(--t-quick), translate var(--t-base) var(--ease-out), box-shadow var(--t-base) var(--ease-out), scale var(--t-press); }
   .motion .btn-primary:hover { translate: 0 -2px; box-shadow: 0 10px 24px -10px rgb(246 136 66 / .7); }
@@ -105,17 +107,20 @@ h3 { font-size: 1.3125rem; font-weight: 600; line-height: 1.25; }
 
 .hero { padding: clamp(40px, 6vw, 72px) 0 clamp(48px, 7vw, 88px); }
 .hero-grid { display: grid; gap: 24px 48px; grid-template-columns: 1fr; }
-.hero-mark { width: 48px; height: 48px; display: block; }
+.motion .wordmark { background: linear-gradient(to bottom, var(--text) 0 46%, #feeec1 48.5%, #f68842 50%, #a42d15 51.5%, #4b5862 54%) 0 100% / 100% 250% no-repeat;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: wm-forge 1s var(--ease-in-out) .15s both; }
+@keyframes wm-forge { to { background-position: 0 0; } }
+@media (forced-colors: active) { .motion .wordmark { background: none; color: CanvasText; animation: none; } }
 .wordmark { font-size: clamp(3rem, 15.5vw, 9rem); font-stretch: 125%; font-weight: 800; line-height: .9; letter-spacing: -.015em; white-space: nowrap; margin-left: -.04em; }
 .hero .lede { margin: 0; }
 .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 12px; }
 .cta .meta, .dl-panel .meta { margin: 0 0 16px; }
+[data-dl-mobile] { margin-bottom: 20px; }
 [data-dl-mobile] p { margin-bottom: 16px; }
 .hero-note { display: flex; gap: 12px; align-items: baseline; font-size: .875rem; line-height: 1.45; color: var(--muted); margin: 8px 0 0; }
 .hero-note i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--straw); translate: 0 -1px; }
 @media (min-width: 900px) {
   .hero-grid { grid-template-columns: 7fr 5fr; align-items: start; }
-  .hero-mark { width: 72px; height: 72px; grid-column: 1 / -1; }
   .wordmark { grid-column: 1 / -1; }
 }
 @media (max-width: 479.98px) { .cta-row .btn-primary { width: 100%; } }
@@ -239,7 +244,6 @@ details[open] > summary .chev { rotate: 0deg; }
 .tour figcaption h3 { margin-bottom: 8px; }
 .tour figcaption p { color: var(--muted); font-size: 1rem; margin: 0; }
 .tour-count { display: none; }
-.tour-pills { display: none; }
 .tour-shot { position: relative; overflow: hidden; isolation: isolate; aspect-ratio: 16 / 10; border-radius: 12px; background: var(--well);
   box-shadow: 0 0 0 1px var(--rule), 0 24px 64px -24px rgb(0 0 0 / .7); }
 .tour-shot img { display: block; width: 100%; height: auto; }
@@ -255,28 +259,20 @@ details[open] > summary .chev { rotate: 0deg; }
 @keyframes cap       { 0% { opacity: 0; translate: 0 8px; } 30%, 70% { opacity: 1; translate: 0 0; } 100% { opacity: 0; translate: 0 -8px; } }
 @keyframes cap-first { 0%, 70% { opacity: 1; translate: 0 0; } 100% { opacity: 0; translate: 0 -8px; } }
 @keyframes cap-last  { 0% { opacity: 0; translate: 0 8px; } 30%, 100% { opacity: 1; translate: 0 0; } }
-@keyframes pill       { 0% { scale: 1 .2; background-color: var(--pill-future); } 30%, 70% { scale: 1 1; } 100% { scale: 1 .2; background-color: var(--stage-fg); } }
-@keyframes pill-first { 0%, 70% { scale: 1 1; } 100% { scale: 1 .2; background-color: var(--stage-fg); } }
-@keyframes pill-last  { 0% { scale: 1 .2; background-color: var(--pill-future); } 30%, 100% { scale: 1 1; } }
-@keyframes heat       { 0%, 100% { opacity: 0; } 30%, 70% { opacity: 1; } }
-@keyframes heat-first { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
-@keyframes heat-last  { 0% { opacity: 0; } 30%, 100% { opacity: 1; } }
 @keyframes to-paper  { to { --stage-bg: #dae0e6; --stage-fg: #1b2127; --stage-muted: #525e68; } }
 
-.tour-pills i { width: 4px; height: 40px; border-radius: 2px; scale: 1 .2; position: relative; overflow: hidden; background: var(--pill-future); }
-.tour-pills i::before { content: ""; position: absolute; inset: 0; opacity: 0; background: linear-gradient(#a42d15, #f68842 30%, #feeec1 50%, #f68842 70%, #a42d15); }
 
-.tour-item:nth-child(1), .tour-pills i:nth-child(1) { --a: 0%;  --b: 20%; }
-.tour-item:nth-child(2), .tour-pills i:nth-child(2) { --a: 20%; --b: 40%;  --in-a: 14%; --in-b: 26%; }
-.tour-item:nth-child(3), .tour-pills i:nth-child(3) { --a: 40%; --b: 60%;  --in-a: 34%; --in-b: 46%; }
-.tour-item:nth-child(4), .tour-pills i:nth-child(4) { --a: 60%; --b: 80%;  --in-a: 54%; --in-b: 66%; }
-.tour-item:nth-child(5), .tour-pills i:nth-child(5) { --a: 80%; --b: 100%; --in-a: 74%; --in-b: 86%; }
+.tour-item:nth-child(1) { --a: 0%;  --b: 20%; }
+.tour-item:nth-child(2) { --a: 20%; --b: 40%;  --in-a: 14%; --in-b: 26%; }
+.tour-item:nth-child(3) { --a: 40%; --b: 60%;  --in-a: 34%; --in-b: 46%; }
+.tour-item:nth-child(4) { --a: 60%; --b: 80%;  --in-a: 54%; --in-b: 66%; }
+.tour-item:nth-child(5) { --a: 80%; --b: 100%; --in-a: 74%; --in-b: 86%; }
 
 /* pinned layout */
 .pin .tour { height: calc(100vh + 4 * 75vh); height: calc(100svh + 4 * 75svh); padding: 0; }
 .pin .tour-title { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .pin .tour-stage { position: sticky; top: var(--header-h); height: calc(100svh - var(--header-h)); display: grid; place-items: center;
-  background: var(--stage-bg); color: var(--stage-fg); --pill-future: color-mix(in srgb, var(--stage-muted) 55%, transparent); }
+  background: var(--stage-bg); color: var(--stage-fg); }
 .pin .tour-frame { position: relative; width: var(--win-w); }
 .pin .tour-list { position: relative; height: calc(var(--win-w) * .625 + var(--cap-h)); margin: 0; padding: 0; max-width: none; display: block; }
 .pin .tour-item { position: absolute; inset: 0; }
@@ -284,11 +280,10 @@ details[open] > summary .chev { rotate: 0deg; }
 .pin .tour-item figcaption { position: absolute; left: 0; right: 0; top: calc(var(--win-w) * .625); margin: 0; padding-top: 20px; opacity: 0; max-width: none; }
 .pin .tour-item figcaption p { color: var(--stage-muted); max-width: 60ch; }
 .pin .tour-count { display: block; position: absolute; top: 20px; right: 0; color: var(--stage-muted); font-size: .875rem; }
-.pin .tour-pills { display: flex; flex-direction: column; justify-content: center; gap: 8px; position: absolute; left: -20px; top: 0; height: calc(var(--win-w) * .625); }
-@media (max-width: 1139.98px) { .pin .tour-pills { left: -14px; } }
 
-.pin .tour-item:first-child .tour-shot::after { content: ""; position: absolute; inset: 0; z-index: 1; background: #4b5862; mix-blend-mode: color; animation: cold-off 900ms var(--ease-in-out) 250ms both; }
-.pin .tour-item:first-child .tour-shot::before { animation: seam 900ms var(--ease-in-out) 250ms both; }
+.pin.ready .tour-item:first-child .tour-shot::after { content: ""; position: absolute; inset: 0; z-index: 1; background: #4b5862; mix-blend-mode: color; }
+.pin .tour-item:first-child .tour-shot.lit::after { animation: cold-off 900ms var(--ease-in-out) both; }
+.pin .tour-item:first-child .tour-shot.lit::before { animation: seam 900ms var(--ease-in-out) both; }
 
 .pin.sda .tour { view-timeline: --tour block; view-timeline-inset: var(--header-h) 0px; }
 .pin.sda .tour-item:not(:first-child) .tour-shot img { animation: forge-in linear both; animation-timeline: --tour; animation-range: contain var(--in-a) contain var(--in-b); }
@@ -296,24 +291,13 @@ details[open] > summary .chev { rotate: 0deg; }
 .pin.sda .tour-item figcaption { animation: cap linear both; animation-timeline: --tour; animation-range: contain var(--a) contain var(--b); }
 .pin.sda .tour-item:first-child figcaption { animation-name: cap-first; }
 .pin.sda .tour-item:last-child figcaption { animation-name: cap-last; }
-.pin.sda .tour-pills i { animation: pill linear both; animation-timeline: --tour; animation-range: contain var(--a) contain var(--b); }
-.pin.sda .tour-pills i::before { animation: heat linear both; animation-timeline: --tour; animation-range: contain var(--a) contain var(--b); }
-.pin.sda .tour-pills i:first-child { animation-name: pill-first; }
-.pin.sda .tour-pills i:first-child::before { animation-name: heat-first; }
-.pin.sda .tour-pills i:last-child { animation-name: pill-last; }
-.pin.sda .tour-pills i:last-child::before { animation-name: heat-last; }
-.pin.sda .tour-stage { animation: to-paper linear both; animation-timeline: --tour; animation-range: contain 74% contain 86%; }
+.pin.sda .tour-stage { animation: to-paper linear both; animation-timeline: --tour; animation-range: contain 79% contain 81%; }
 
 .pin:not(.sda) .tour-item:not(:first-child) .tour-shot img { clip-path: inset(0 0 100% 0); transition: clip-path var(--t-forge) var(--ease-in-out); }
 .pin:not(.sda) .tour-item.is-shown .tour-shot img { clip-path: inset(0); }
 .pin:not(.sda) .tour-item.forge .tour-shot::before { animation: seam var(--t-forge) var(--ease-in-out); }
 .pin:not(.sda) .tour-item figcaption { transition: opacity var(--t-base) var(--ease-out); }
 .pin:not(.sda) .tour-item.is-current figcaption { opacity: 1; }
-.pin:not(.sda) .tour-pills i { transition: scale var(--t-base) var(--ease-out), background-color var(--t-base); }
-.pin:not(.sda) .tour-pills i.is-past { background-color: var(--stage-fg); }
-.pin:not(.sda) .tour-pills i.is-current { scale: 1 1; }
-.pin:not(.sda) .tour-pills i::before { transition: opacity var(--t-base); }
-.pin:not(.sda) .tour-pills i.is-current::before { opacity: 1; }
 .pin:not(.sda) .tour-stage { transition: --stage-bg 400ms, --stage-fg 400ms, --stage-muted 400ms; }
 .pin:not(.sda) .tour[data-step="4"] .tour-stage { --stage-bg: #dae0e6; --stage-fg: #1b2127; --stage-muted: #525e68; }
 
