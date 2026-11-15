@@ -24,6 +24,7 @@ function paint(rel, failed) {
     const btn = sc.querySelector('[data-dl-button]'), alt = sc.querySelector('[data-dl-alt]'), other = sc.querySelector('[data-dl-other]');
     const meta = sc.querySelector('[data-dl-meta]'), first = sc.querySelector('[data-dl-first]');
     btn.hidden = !!st.hidden; if (meta) meta.hidden = !!st.hidden;
+    btn.querySelector('use').setAttribute('href', os === 'unknown' ? '#i-chev' : '#i-dl'); btn.querySelector('.icon').classList.toggle('icon-dl', os !== 'unknown');
     sc.querySelector('[data-dl-mobile]').hidden = !mobile;
     if (!st.hidden) { btn.href = st.href; sc.querySelector('[data-dl-label]').textContent = st.label; set(meta, 'textContent', st.meta); }
     set(sc.querySelector('[data-dl-title]'), 'textContent', mobile ? 'Rustcord is a desktop app' : (st.title || 'Get Rustcord'));

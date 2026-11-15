@@ -30,6 +30,7 @@ test('mobile, iPadOS and unknown', () => {
   assert.equal(detectOs({ ua: UA.macIntel, platform: 'MacIntel', touch: 5 }), 'mobile');
   assert.equal(detectOs({ ua: UA.win, platform: 'Win32', mobile: true }), 'mobile');
   assert.equal(detectOs({ ua: UA.cros, platform: 'Linux x86_64' }), 'unknown');
+  assert.equal(detectOs({ ua: UA.ubuntu, platform: 'Linux aarch64' }), 'unknown');
   assert.equal(detectOs({ ua: 'curl/8', platform: '' }), 'unknown');
   assert.equal(detectOs({}), 'unknown');
   assert.equal(detectOs({ force: 'tar', ua: UA.win }), 'tar');

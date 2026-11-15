@@ -21,6 +21,7 @@ export function detectOs({ force, ua = '', platform = '', mobile = false, touch 
   if (/Android|iPhone|iPad|iPod/i.test(ua) || mobile || (/Mac/i.test(platform) && touch > 1)) return 'mobile'; // iPadOS reports Mac
   if (/Win/i.test(platform) || (!platform && /Windows/i.test(ua))) return 'windows';
   if (/Mac/i.test(platform) || (!platform && /Macintosh/i.test(ua))) return 'mac';
+  if (/aarch64|arm/i.test(platform)) return 'unknown'; // the Linux builds are x86_64 only
   if (/CrOS|Chrome OS/i.test(ua + platform)) return 'unknown'; // before Linux: CrOS says Linux
   if (/Linux|X11/i.test(platform + ' ' + ua)) return /Fedora|Red Hat|SUSE|Arch|Manjaro/i.test(ua) ? 'tar' : 'deb';
   return 'unknown';
