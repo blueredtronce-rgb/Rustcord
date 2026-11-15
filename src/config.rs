@@ -31,6 +31,10 @@ impl Paths {
     pub fn overrides_dir(&self) -> PathBuf {
         self.config_dir.join("overrides")
     }
+    /// Discord's device cookies and the logged-out fingerprint (`api::auth`); private to the user.
+    pub fn device_file(&self) -> PathBuf {
+        self.config_dir.join("device.json")
+    }
     /// Snapshot of guilds/channels/DMs for instant startup.
     pub fn snapshot_file(&self) -> PathBuf {
         self.cache_dir.join("snapshot.json")
@@ -315,6 +319,25 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// `write_atomic` for a file only its owner may read (mode 0600 on Unix; the per-user profile
+/// folder's ACL does that on Windows).
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(bytes).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    write_atomic(path, bytes)
 }
 
 #[cfg(test)]

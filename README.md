@@ -159,8 +159,8 @@ The login screen has three tabs:
 Limits:
 
 - **Captchas are not supported.** If Discord asks for a captcha (this happens for logins it
-  finds unusual), Rustcord stops and says so; use the QR code or token tab, or sign in once
-  in the official app. Rustcord never tries to solve or bypass a captcha.
+  finds unusual, and after many sign-in attempts), Rustcord stops and says so. More attempts
+  do not help; wait a while, use the token tab, or sign in once in the official app. Rustcord never tries to solve or bypass a captcha.
 - Accounts whose only 2FA method is a security key/passkey, and Discord's "new login
   location" checks (e-mail link or SMS), need the QR code or one login in the official app.
 - Every login attempt is one click. Rate limits are shown ("Wait N s") and never retried
@@ -405,6 +405,7 @@ cargo run --example export_icons
 | Local profile overrides | `…\config\overrides\` (`overrides.toml` + image copies) | `…/overrides/` | `…/overrides/` |
 | Cache (snapshot, images) | `%LOCALAPPDATA%\Rustcord\cache\` | `~/.cache/rustcord/` | `~/Library/Caches/Rustcord/` |
 | Updates (downloads, `state.toml`) | `%LOCALAPPDATA%\Rustcord\cache\update\` | `~/.cache/rustcord/update/` | `~/Library/Caches/Rustcord/update/` |
+| Discord's device cookies and the logged-out fingerprint (`device.json`, kept across restarts and logouts; owner-only on Linux/macOS) | `…\config\device.json` | `…/device.json` | `…/device.json` |
 | Login token | Windows Credential Manager (generic credential `user-token.Rustcord`) | Secret Service | Keychain |
 | Added games, saved games list | `…\config\games.json`, `…\cache\detectable.tsv` | `…/games.json`, `~/.cache/rustcord/detectable.tsv` | `…/games.json`, `~/Library/Caches/Rustcord/detectable.tsv` |
 | Installed app (setup) | `%LOCALAPPDATA%\Programs\Rustcord\` | `/usr/bin/rustcord` (.deb), `~/.local/bin/rustcord` (install.sh) | `/Applications/Rustcord.app` |

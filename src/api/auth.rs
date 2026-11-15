@@ -9,9 +9,10 @@ use super::{API_BASE, default_headers, first_nested_error, net_err, props::Clien
 use crate::auth::{Secret, Token};
 use crate::backend::MfaMethod;
 use reqwest::header::{COOKIE, HeaderMap, HeaderValue, REFERER, SET_COOKIE};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -42,7 +43,8 @@ pub enum LoginOutcome {
 }
 
 /// What Discord knows about this device before login.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 struct Device {
     /// Discord's device cookies (`__dcfduid`, `__sdcfduid`, `_cfuvid`) as one `Cookie` value; a
     /// browser sends them on every login call and keeps them across logouts.
@@ -51,6 +53,18 @@ struct Device {
 }
 
 impl Device {
+    /// Missing or unreadable file: a new device.
+    fn load(path: &Path) -> Self {
+        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    fn save(&self, path: &Path) {
+        // Never printed or logged: the values identify this device to Discord.
+        if let Ok(bytes) = serde_json::to_vec(self) {
+            let _ = crate::config::write_private(path, &bytes);
+        }
+    }
+
     /// A login request is about to go out: fetch a fingerprint first unless one is stored.
     fn needs_fingerprint(&self) -> bool {
         self.fingerprint.is_none()
@@ -68,14 +82,25 @@ impl Device {
 /// Tries per fingerprint fetch (the web client retries it twice).
 const FINGERPRINT_TRIES: u32 = 3;
 
+/// A login succeeded: the web client drops its fingerprint then. The cookies stay, like a
+/// browser's across a logout.
+pub fn forget_fingerprint(store: &Path) {
+    let mut d = Device::load(store);
+    if d.fingerprint.take().is_some() {
+        d.save(store);
+    }
+}
+
 pub struct AuthClient {
     http: reqwest::Client,
     device: Mutex<Device>,
+    /// Where the device is kept between runs (None: memory only).
+    store: Option<PathBuf>,
     fetching: tokio::sync::Mutex<()>,
 }
 
 impl AuthClient {
-    pub fn new(props: &ClientProps, cookies: Option<HeaderValue>) -> Self {
+    pub fn new(props: &ClientProps, store: Option<PathBuf>) -> Self {
         let mut h = default_headers(props);
         h.insert(REFERER, HeaderValue::from_static("https://discord.com/login"));
         let http = reqwest::Client::builder()
@@ -87,8 +112,8 @@ impl AuthClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("HTTP client (TLS backend) failed to initialise");
-        let cookies = cookies.and_then(|c| c.to_str().ok().map(str::to_owned)).unwrap_or_default();
-        Self { http, device: Mutex::new(Device { cookies, fingerprint: None }), fetching: tokio::sync::Mutex::new(()) }
+        let device = store.as_deref().map(Device::load).unwrap_or_default();
+        Self { http, device: Mutex::new(device), store, fetching: tokio::sync::Mutex::new(()) }
     }
 
     /// GET /experiments for the `X-Fingerprint` header (3 valid ones per 2 minutes per IP), only
@@ -112,17 +137,24 @@ impl AuthClient {
                 req = req.header(COOKIE, c);
             }
             let Ok(r) = req.send().await else { continue };
-            self.device.lock().unwrap().absorb(r.headers());
+            let changed = self.device.lock().unwrap().absorb(r.headers());
+            if changed {
+                self.persist();
+            }
             if !r.status().is_success() {
                 continue;
             }
             let fp = r.json::<Value>().await.ok().and_then(|v| v.get("fingerprint")?.as_str().map(str::to_owned));
             self.device.lock().unwrap().fingerprint = fp.filter(|f| HeaderValue::from_str(f).is_ok());
+            self.persist();
         }
     }
 
-    pub fn cookies(&self) -> Option<HeaderValue> {
-        self.cookie_header()
+    fn persist(&self) {
+        if let Some(path) = &self.store {
+            let d = self.device.lock().unwrap().clone();
+            d.save(path);
+        }
     }
 
     fn cookie_header(&self) -> Option<HeaderValue> {
@@ -149,7 +181,10 @@ impl AuthClient {
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         // Every response, errors included: the browser's jar takes them all.
-        self.device.lock().unwrap().absorb(&headers);
+        let changed = self.device.lock().unwrap().absorb(&headers);
+        if changed {
+            self.persist();
+        }
         let bytes = resp.bytes().await.map_err(network)?;
         if !(200..300).contains(&status) {
             return Err(classify(status, &headers, &bytes, captcha));
@@ -428,6 +463,27 @@ mod tests {
         assert!(!d.needs_fingerprint());
         d.fingerprint = None;
         assert!(d.needs_fingerprint());
+    }
+
+    #[test]
+    fn the_device_survives_a_restart_but_not_a_login() {
+        let dir = std::env::temp_dir().join(format!("rustcord-device-test-{}", std::process::id()));
+        let file = dir.join("device.json");
+        assert_eq!(Device::load(&file), Device::default());
+        let d = Device { cookies: "__dcfduid=a; _cfuvid=b".into(), fingerprint: Some("1.abc".into()) };
+        d.save(&file);
+        assert_eq!(Device::load(&file), d);
+        // A new client picks both up.
+        let props = ClientProps::new(&crate::config::Settings::default());
+        let c = AuthClient::new(&props, Some(file.clone()));
+        assert_eq!(*c.device.lock().unwrap(), d);
+        assert!(c.cookie_header().is_some());
+        // Login success: the fingerprint goes, the cookies stay.
+        forget_fingerprint(&file);
+        assert_eq!(Device::load(&file), Device { fingerprint: None, ..d });
+        std::fs::write(&file, b"not json").unwrap();
+        assert_eq!(Device::load(&file), Device::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
