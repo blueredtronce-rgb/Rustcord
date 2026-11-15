@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds dist/Rustcord-<version>-macos-universal.dmg: a universal (Apple silicon + Intel)
-# Rustcord.app, ad-hoc signed, not notarized (README, "macOS"). Runs only on macOS with the
-# Xcode command line tools (CI: .github/workflows/release.yml).
+# Rustcord.app, ad-hoc signed, not notarized (README, "macOS"), and the same bundle as
+# dist/Rustcord-<version>-macos-universal.app.tar.gz for the self-updater
+# (docs/UPDATER_DESIGN.md §2). Runs only on macOS with the Xcode command line tools
+# (CI: .github/workflows/release.yml).
 #   bash scripts/build-macos.sh
 set -euo pipefail
 
@@ -43,6 +45,14 @@ iconutil -c icns -o "$app/Contents/Resources/Rustcord.icns" "$iconset"
 codesign --force --sign - "$app"
 codesign --verify --strict --verbose=2 "$app"
 
+# The updater's package: the signed bundle alone, without AppleDouble files or extended
+# attributes; extracted again to prove the signature survives the round trip.
+appgz=$dist/Rustcord-$version-macos-universal.app.tar.gz
+COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -C "$staging" -czf "$appgz" Rustcord.app
+mkdir "$work/verify"
+tar -xzf "$appgz" -C "$work/verify"
+codesign --verify --strict --verbose=2 "$work/verify/Rustcord.app"
+
 ln -s /Applications "$staging/Applications"
 dmg=$dist/Rustcord-$version-macos-universal.dmg
 # hdiutil sometimes fails with "Resource busy" on CI runners: try three times.
@@ -51,4 +61,4 @@ for attempt in 1 2 3; do
 	[ "$attempt" = 3 ] && exit 1
 	sleep 10
 done
-ls -lh "$dmg"
+ls -lh "$dmg" "$appgz"
