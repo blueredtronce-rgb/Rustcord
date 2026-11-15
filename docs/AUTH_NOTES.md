@@ -52,8 +52,9 @@ let http = reqwest::Client::builder()
 - UD names login, invite acceptance and friend requests as captcha endpoints, and says *any* endpoint may return one. By INFERENCE that includes `/auth/mfa/*`, `/auth/mfa/sms/send`, `/auth/authorize-ip` and `/users/@me/remote-auth/login`.
 - `error_from` already does this check (`api/mod.rs:80`). Use the same predicate in the login classifier.
 - User text:
-  - Password flow: "Discord wants a captcha for this login. Use QR login, or sign in once in the official app, then try again."
-  - QR exchange: "... complete the login in the official app."
+  - Password flow: "Discord wants a captcha for this login, and Rustcord cannot show one. Use QR code login, or wait a few minutes and try again. The Token tab also works."
+  - QR exchange: "Discord wants a captcha for this login, and Rustcord cannot show one. Wait a few minutes, then get a new code, or use the Token tab."
+  - The captcha is Discord's server-side risk decision; Rustcord never solves or bypasses it. It only makes its requests look like one consistent device (§1.1 cookies, shared fingerprint, logout ending the token, §1.7).
 - Abaddon checks `captcha_service` instead. Prefer UD's `captcha_key`.
 
 ---
@@ -84,6 +85,8 @@ let http = reqwest::Client::builder()
 **Optional:**
 - `POST /auth/fingerprint` → `{fingerprint}` still exists but is **deprecated** (same rate limit).
 - Discord4KaiOS also sends `X-Context-Properties: eyJsb2NhdGlvbiI6IkxvZ2luIn0=`, which is base64 of `{"location":"Login"}`, on this call (2023 intercept).
+
+**Device cookies:** the same response sets `__dcfduid` and `__sdcfduid` (5-year device IDs) and `_cfuvid` (checked 2026-11-15 with one anonymous request). A browser sends them on every auth call and keeps them across logouts. Rustcord keeps them as one `Cookie` value in memory (`AuthClient::cookies`, hand-merged from `Set-Cookie`, no reqwest `cookies` feature), sends them on every auth call, and keeps them for the app's lifetime, across logouts. They are not persisted, so the first login after a restart still looks like a new device. Only the `/experiments` response updates them. The login screen shares one `AuthClient` (one fingerprint) between the email and QR flows; a new QR code reuses it, a logout drops it.
 
 **Failure handling:** if `/experiments` fails or has no `fingerprint`, go on without the header. UD calls the header recommended, not required (INFERENCE from "should").
 
@@ -232,6 +235,7 @@ UD's trigger: "When first logging into an account (without MFA enabled) from a n
 - Account-level `required_action` arrives in READY. Changes arrive through `USER_REQUIRED_ACTION_UPDATE`. Values include `AGREEMENTS`, `REQUIRE_VERIFIED_EMAIL`, `REQUIRE_VERIFIED_PHONE` and `REQUIRE_REVERIFIED_*`. Show them as a banner (UD resources/user.mdx; not re-fetched in this edit).
 - `user_settings.locale` and `theme` are optional bootstrap values. Gateway close `4004` means the token is invalid (already handled).
 - The official client's exact post-login call order is **UNCONFIRMED**.
+- Log out: after the gateway closes, `POST /auth/logout {"provider":null,"voip_provider":null}` ends the token at Discord (not only in the keyring). Bounded at 3 s, errors ignored: a logout always completes locally. Any other client using the same token is logged out too.
 
 ## Implementation checklist (Part 1)
 
@@ -369,9 +373,10 @@ token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::
 - Headers:
   - Abaddon sends only `Content-Type` and `User-Agent`.
   - Discordo sends its full browser set plus `Referer: https://discord.com/login` and `X-Fingerprint: <the RA fingerprint>`. That RA fingerprint is a SHA-256 value, not the `<snowflake>.<hash>` format from `/experiments`, so whether the official client does this is **UNCONFIRMED**.
+  - **Implemented:** the exchange uses the login screen's shared `AuthClient` (`X-Fingerprint` from `/experiments` plus the device cookies, §1.1), so it is not the weakest request of the login any more.
   - **Recommendation:** use the same throwaway client as in §0 (`default_headers`, Referer `/login`, no auth, no limiter). Send `X-Fingerprint` only with an `/experiments` fingerprint if one was fetched (INFERENCE from UD's general rule), never with the RA fingerprint.
 - Errors:
-  - captcha → §0 detection, `Failed("...complete the login in the official app.")`
+  - captcha → §0 detection, `Failed(CAPTCHA_QR)` (wait, new code or Token tab)
   - 429 → §1.5 row 1
   - other non-captcha errors (invalid or expired ticket) have an **UNCONFIRMED** shape; expect the generic `{"code","message"}`
   - On any failure, offer a new QR. Do not retry the same ticket.
@@ -427,7 +432,7 @@ token = String::from_utf8(oaep_decrypt(b64decode(encrypted_token)))  → Token::
 - [ ] Heartbeat with zombie detection. Local expiry timer of `timeout_ms` plus a margin.
 - [ ] Close-code mapping (§2.5). `cancel` / 4003 / 1000-without-ticket → `QrExpired`. No automatic reconnect loop.
 - [ ] Wire `StartQrLogin` (abort and replace any running task) and `CancelQrLogin` (abort) into `backend::run`.
-- [ ] Captcha on the exchange → `Failed("...complete the login in the official app.")`. Never log the ticket or the token.
+- [ ] Captcha on the exchange → `Failed(CAPTCHA_QR)`. Never log the ticket or the token.
 
 ---
 

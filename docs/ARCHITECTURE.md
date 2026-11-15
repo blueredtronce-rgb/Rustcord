@@ -103,8 +103,10 @@ cargo check
     classifier (captcha, 2FA codes, 429 …).
   - `gateway/remote_auth.rs`: QR login over `wss://remote-auth-gateway.discord.gg/?v=2`
     (RSA-OAEP key per code, heartbeat, close codes), then the ticket exchange via `AuthClient`.
-  - `backend::run` keeps the login state (auth client, 2FA ticket, QR task) and feeds every
-    resulting token into `Command::Login` (validate, keyring, gateway).
+  - `backend::run` keeps the login state (shared auth client, 2FA ticket, QR task) and feeds every
+    resulting token into `Command::Login` (validate, keyring, gateway). It also holds Discord's
+    device cookies, which survive a logout; Logout closes the gateway, then ends the token at
+    Discord (`POST /auth/logout`, bounded, errors ignored).
 - Self-updater (`src/update/`, `docs/UPDATER_DESIGN.md`): one task on the same runtime with its
   own reqwest client (no token, no Discord headers, `Rustcord/<version>` user agent) that only
   talks to github.com. UI → updater: `update::sync_ui` (hidden / busy / interacted, every
