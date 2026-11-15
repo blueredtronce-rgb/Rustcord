@@ -29,6 +29,8 @@ const QR_SIDE_COMPACT: f32 = 144.0;
 /// Quiet zone around the QR code in modules (what the QR standard asks for).
 const QR_QUIET: i32 = 4;
 const PASSWORD_LIMIT: usize = 128;
+/// hCaptcha's checkbox widget is 303 x 78 CSS pixels; the captcha webview's CSS pixels are egui points.
+const CAPTCHA_H: f32 = 78.0;
 const CODE_LIMIT: usize = 16;
 const OFFLINE_HINT: &str = "Offline mode (RUSTCORD_OFFLINE) never connects.";
 const SCAN_HINT: &str = "Open Settings in the Discord app, then Scan QR Code.";
@@ -285,7 +287,7 @@ fn centered_row(ui: &mut egui::Ui, size: Vec2, add: impl FnOnce(&mut egui::Ui)) 
 fn tabs(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let before = cx.view.login_form.tab;
     // An email/token request in flight finishes on its own tab.
-    let locked = cx.view.login_busy && before != LoginTab::Qr;
+    let locked = cx.view.login_busy && (before != LoginTab::Qr || cx.view.login_captcha.is_some());
     let options = [(LoginTab::Qr, "QR code"), (LoginTab::Email, "Email"), (LoginTab::Token, "Token")];
     ui.add_enabled_ui(!locked, |ui| segmented(ui, cx.theme, &mut cx.view.login_form.tab, &options));
     if cx.view.login_form.tab != before {
@@ -439,6 +441,7 @@ fn qr_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>, compact: bool) {
         cx.view.login_error = None;
         start_qr(cx);
     }
+    captcha_slot(ui, cx);
 
     ui.add_space(16.0);
     ui.vertical_centered(|ui| {
@@ -528,10 +531,10 @@ fn email_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     if email.changed() || password.changed() {
         cx.view.login_error = None;
     }
+    captcha_slot(ui, cx);
 
     ui.add_space(12.0);
     remember(ui, cx);
-    // Captcha guidance arrives as this error text, only when Discord asks for one.
     error_line(ui, cx);
     demo_captcha_login(cx);
 
@@ -551,11 +554,12 @@ fn email_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
 }
 
-/// Test hook `RUSTCORD_CAPTCHA_DEMO=auto`: signs in once by itself (nothing typed; the backend never
-/// sends it to Discord) so a screenshot can show the login screen with the captcha window open.
+/// Test hook `RUSTCORD_CAPTCHA_DEMO=auto|open`: signs in once by itself (nothing typed; the backend
+/// never sends it to Discord) so a screenshot can show the captcha in the card (`open`: as if its
+/// challenge were open).
 fn demo_captcha_login(cx: &mut UiCx<'_>) {
     static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if std::env::var("RUSTCORD_CAPTCHA_DEMO").is_ok_and(|v| v == "auto") && !cx.view.login_busy && !SENT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    if std::env::var("RUSTCORD_CAPTCHA_DEMO").is_ok_and(|v| v == "auto" || v == "open") && !cx.view.login_busy && !SENT.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let password = Secret::new("demo-password".into());
         cx.cmd.send(Command::LoginPassword { login: "demo@example.test".into(), password, remember: false, captcha: None });
         cx.view.login_busy = true;
@@ -611,6 +615,7 @@ fn mfa_tab(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     if input.changed() {
         cx.view.login_error = None;
     }
+    captcha_slot(ui, cx);
 
     // No "Stay signed in" here: SubmitMfa cannot carry it; the password step's choice applies.
     error_line(ui, cx);
@@ -791,18 +796,29 @@ fn remember(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
 }
 
+/// Discord's captcha right here in the card (Windows, macOS): a slot for hCaptcha's checkbox that
+/// `captcha::Inline::sync` covers with a webview, then a hint and Cancel. Nothing while none is up.
+fn captcha_slot(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
+    if cx.view.login_captcha.is_none() {
+        return;
+    }
+    ui.add_space(12.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CAPTCHA_H), Sense::hover());
+    // egui cannot clip a native child: it only shows while all of its slot is in view.
+    cx.view.login_captcha_slot = Some((rect, ui.clip_rect().contains_rect(rect)));
+    ui.add_space(8.0);
+    let (muted, text) = (cx.theme.colors.text_muted.to_color32(), cx.theme.colors.text.to_color32());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Discord wants to make sure you're a person.").color(muted));
+        let cancel = ui.add(text_button(RichText::new("Cancel").color(text)));
+        if cancel.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            cx.cmd.send(Command::Captcha(CaptchaReply::Cancelled));
+        }
+    });
+}
+
 fn error_line(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
-    if cx.view.login_captcha {
-        let muted = cx.theme.colors.text_muted.to_color32();
-        ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Finish the captcha in the window that opened.").color(muted));
-            let cancel = ui.add(text_button(RichText::new("Cancel").color(cx.theme.colors.text.to_color32())));
-            if cancel.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                cx.cmd.send(Command::Captcha(CaptchaReply::Cancelled));
-            }
-        });
-    } else if let Some(err) = &cx.view.login_error {
+    if let Some(err) = &cx.view.login_error {
         ui.add_space(12.0);
         ui.label(RichText::new(err).color(cx.theme.colors.danger.to_color32()));
     }
@@ -841,13 +857,16 @@ fn primary_button(ui: &mut egui::Ui, cx: &UiCx<'_>, label: &str, enabled: bool) 
 
 /// Progress of an email/password or QR login.
 pub fn on_step(view: &mut super::ViewState, step: LoginStep) {
-    view.login_captcha = matches!(step, LoginStep::Captcha);
+    view.login_captcha = None;
     let form = &mut view.login_form;
     // QR events that were already queued when the tab was left (cancel in flight) are stale.
     let qr_live = form.tab == LoginTab::Qr && !matches!(form.qr, QrState::Idle);
     match step {
-        // Busy stays on until the window ends; the QR tab keeps its scanned state.
-        LoginStep::Captcha => view.login_busy = true,
+        // Busy stays on until the captcha ends; the QR tab keeps its scanned state.
+        LoginStep::Captcha { sitekey, rqdata } => {
+            view.login_captcha = Some((sitekey, rqdata));
+            view.login_busy = true;
+        }
         LoginStep::QrCode { url } if qr_live => {
             form.qr = match QrCode::encode_text(&url, QrCodeEcc::Medium) {
                 Ok(code) => QrState::Code(code),
@@ -916,7 +935,7 @@ pub fn on_logged_in(ctx: &egui::Context, view: &mut super::ViewState, cmd: &Comm
     view.login_input.zeroize();
     view.login_show_token = false;
     view.login_busy = false;
-    view.login_captcha = false;
+    view.login_captcha = None;
     view.login_error = None;
 }
 
@@ -936,10 +955,10 @@ mod tests {
     #[test]
     fn the_captcha_step_keeps_the_login_busy_until_another_step_ends_it() {
         let mut v = qr_view();
-        on_step(&mut v, LoginStep::Captcha);
-        assert!(v.login_captcha && v.login_busy);
-        on_step(&mut v, LoginStep::Failed("You closed the captcha".into()));
-        assert!(!v.login_captcha && !v.login_busy);
+        on_step(&mut v, LoginStep::Captcha { sitekey: "k".into(), rqdata: None });
+        assert!(v.login_captcha == Some(("k".into(), None)) && v.login_busy);
+        on_step(&mut v, LoginStep::Failed("The captcha wasn't finished".into()));
+        assert!(v.login_captcha.is_none() && !v.login_busy);
         assert_eq!(v.login_error, None); // the QR tab shows it in its own square
         assert!(matches!(v.login_form.qr, QrState::Failed(_)));
     }

@@ -36,7 +36,8 @@ pub enum Command {
     SendMfaSms { captcha: Option<CaptchaAnswer> },
     /// Backend only: buy the token for an approved QR login's ticket.
     QrExchange { ticket: Secret, keys: Arc<RaKeys>, remember: bool, captcha: Option<CaptchaAnswer> },
-    /// The captcha window's result (`LoginStep::Captcha`), or the UI's Cancel (`Cancelled`).
+    /// How the captcha in the login card ended (`LoginStep::Captcha`): the widget's token, the card's
+    /// Cancel or the 10-minute cap, or no webview.
     Captcha(CaptchaReply),
     /// Start a QR-code (remote auth) login; replaces a running one.
     StartQrLogin { remember: bool },
@@ -985,8 +986,9 @@ pub enum MfaMethod {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoginStep {
-    /// Discord asked for a captcha and its window is open; the login waits for the user.
-    Captcha,
+    /// Discord asked for a captcha: the login card shows hCaptcha's widget for this sitekey (and
+    /// rqdata) and the login waits for the user.
+    Captcha { sitekey: String, rqdata: Option<String> },
     /// Password accepted; a second factor is needed (methods the account allows).
     MfaRequired { methods: Vec<MfaMethod> },
     /// SMS code sent to this (masked) phone number.
@@ -2081,12 +2083,15 @@ struct MfaTicket {
     remember: bool,
 }
 
+/// A captcha nobody answers is given up after this (the parked request holds the password).
+const CAPTCHA_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// A login request that waits for the user to solve Discord's captcha; its answer goes with the same
-/// request again. The task is the captcha window (aborting it closes the window).
+/// request again. The task is the 10-minute cap.
 struct Parked {
     cmd: Command,
     challenge: CaptchaChallenge,
-    /// What to show when the window cannot be opened.
+    /// What to show when the card cannot show the captcha (no webview).
     fallback: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -2109,8 +2114,8 @@ fn set_answer(cmd: &mut Command, answer: CaptchaAnswer) {
     }
 }
 
-/// A login request failed. A captcha the user can solve opens the window and parks `retry` (the same
-/// request); an answered one that Discord still refuses is final: the next try is the user's click.
+/// A login request failed. A captcha the user can solve goes to the login card and parks `retry` (the
+/// same request); an answered one that Discord still refuses is final: the next try is the user's click.
 fn fail_or_park(slot: &ParkedSlot, again: &tmpsc::WeakUnboundedSender<Command>, sink: &EventSink, e: LoginError, retry: Command, answered: bool) {
     let challenge = match e.captcha {
         Some(ch) if crate::captcha::supported() => *ch,
@@ -2119,17 +2124,18 @@ fn fail_or_park(slot: &ParkedSlot, again: &tmpsc::WeakUnboundedSender<Command>, 
     if answered {
         return sink.send(login_step(LoginStep::Failed(CAPTCHA_REJECTED.into())));
     }
-    let (again, shown) = (again.clone(), challenge.clone());
+    let again = again.clone();
     let task = tokio::spawn(async move {
-        let reply = crate::captcha::solve(&shown).await;
+        tokio::time::sleep(CAPTCHA_TIMEOUT).await;
         if let Some(tx) = again.upgrade() {
-            let _ = tx.send(Command::Captcha(reply));
+            let _ = tx.send(Command::Captcha(CaptchaReply::Cancelled));
         }
     });
+    let step = LoginStep::Captcha { sitekey: challenge.sitekey.clone(), rqdata: challenge.rqdata.clone() };
     if let Some(old) = lock(slot).replace(Parked { cmd: retry, challenge, fallback: e.message, task }) {
         old.task.abort();
     }
-    sink.send(login_step(LoginStep::Captcha));
+    sink.send(login_step(step));
 }
 
 /// A finished email/QR login re-enters the normal token path (validate, keyring, gateway).
@@ -2280,7 +2286,7 @@ async fn run(
     // Shared with the spawned password login, which may finish while other commands run.
     let mfa: Arc<std::sync::Mutex<Option<MfaTicket>>> = Default::default();
     let mut qr: Option<tokio::task::JoinHandle<()>> = None;
-    // A login request waiting for the captcha window; shared with the tasks that run the requests.
+    // A login request waiting for the captcha in the card; shared with the tasks that run the requests.
     let parked: ParkedSlot = Default::default();
     // Shown as a toast once the password login's token is accepted.
     let notice: Arc<std::sync::Mutex<Option<&'static str>>> = Default::default();

@@ -19,7 +19,7 @@ use std::time::Duration;
 pub const CAPTCHA_PASSWORD: &str = "Discord asks for a captcha after many sign-in attempts, and Rustcord cannot show one. Waiting a while helps. The Token tab also works.";
 pub const CAPTCHA_QR: &str = CAPTCHA_PASSWORD;
 pub const EXPIRED: &str = "The login expired. Enter your password again.";
-pub const CAPTCHA_CANCELLED: &str = "You closed the captcha, so Discord didn't sign you in. Try again when you're ready.";
+pub const CAPTCHA_CANCELLED: &str = "The captcha wasn't finished, so Discord didn't sign you in. Try again when you're ready.";
 pub const CAPTCHA_REJECTED: &str = "Discord didn't accept the captcha. Try again, or use QR code login or the Token tab.";
 
 /// User-facing failure of a login call. Never contains the password, code, ticket or token.
@@ -63,7 +63,7 @@ impl CaptchaChallenge {
     }
 }
 
-/// hCaptcha only, with a sitekey that is safe to put into the helper's page (reCAPTCHA and
+/// hCaptcha only, with a sitekey that is safe to put into the captcha page (reCAPTCHA and
 /// anything odd fall back to the plain text).
 fn parse_captcha(v: &Value) -> Option<CaptchaChallenge> {
     let text = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);

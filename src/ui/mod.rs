@@ -56,7 +56,7 @@ pub const GUILD_BAR_W: f32 = 72.0;
 pub const MEMBER_LIST_MIN_WINDOW_W: f32 = 1000.0;
 const MEMBER_LIST_W: f32 = 264.0;
 /// Title bar above all columns.
-const TITLE_BAR_H: f32 = 32.0;
+pub(crate) const TITLE_BAR_H: f32 = 32.0;
 /// Channel list width: default, and the range its resize handle allows (the sidebar, server
 /// bar included, is 375 px and 264..=432 px wide).
 const CHANNEL_LIST_W: f32 = 303.0;
@@ -111,8 +111,11 @@ pub struct ViewState {
     pub login_remember: bool,
     pub login_busy: bool,
     pub login_error: Option<String>,
-    /// Discord's captcha window is open and the login waits for it (`LoginStep::Captcha`).
-    pub login_captcha: bool,
+    /// Discord's captcha the login card shows (`LoginStep::Captcha`: sitekey, rqdata); the login waits for it.
+    pub login_captcha: Option<(String, Option<String>)>,
+    /// Where the card drew it this pass (screen points) and whether all of it is in view;
+    /// `captcha::Inline::sync` takes it.
+    pub login_captcha_slot: Option<(egui::Rect, bool)>,
     /// Composer drafts per channel.
     pub drafts: HashMap<Id, String>,
     /// (channel, message, ping author)
@@ -250,7 +253,8 @@ impl Default for ViewState {
             login_remember: true,
             login_busy: false,
             login_error: None,
-            login_captcha: false,
+            login_captcha: None,
+            login_captcha_slot: None,
             drafts: HashMap::new(),
             reply_to: None,
             editing: None,
@@ -362,6 +366,8 @@ pub struct RustcordApp {
     interacted: bool,
     /// The in-game overlay (Windows; a stub elsewhere): `overlay/live.rs`.
     overlay: overlay::Overlay,
+    /// Discord's captcha inside the login card (Windows, macOS; a stub elsewhere): `src/captcha.rs`.
+    captcha: crate::captcha::Inline,
 }
 
 impl RustcordApp {
@@ -412,6 +418,7 @@ impl RustcordApp {
             started,
             frame_no: 0,
             overlay: Default::default(),
+            captcha: Default::default(),
             last_cache_save: Instant::now(),
             event_pass: false,
             interacted: false,
@@ -881,11 +888,11 @@ impl eframe::App for RustcordApp {
         crate::update::sync_ui(hidden, update::busy(&self.state, &self.view, hidden), self.interacted);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // macOS: the native traffic lights, centred in the title bar row (ui/chrome.rs).
         #[cfg(target_os = "macos")]
-        _frame.set_traffic_lights_position(&ctx, egui::Rangef::new(0.0, TITLE_BAR_H), 12.0);
+        frame.set_traffic_lights_position(&ctx, egui::Rangef::new(0.0, TITLE_BAR_H), 12.0);
         if self.view.theme_dirty {
             self.view.theme_dirty = false;
             self.theme_applier.apply(&ctx, &self.theme);
@@ -930,6 +937,8 @@ impl eframe::App for RustcordApp {
             }
         }
 
+        // The captcha webview follows the login card's slot (a native child of this window).
+        self.captcha.sync(&ctx, frame, &mut self.view, &self.theme, &self.backend.cmd);
         frame_stats::time("end", || {
             self.show_toasts(&ctx);
             self.images.end_frame(&ctx);
