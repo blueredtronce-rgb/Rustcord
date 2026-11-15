@@ -246,7 +246,7 @@ pub fn plate_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, tex
 /// their glyphs keep their contrast on bright art.
 pub fn buttons_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, buttons_left: f32, strong: bool) -> Shape {
     let (x0, x1) = (buttons_left - 32.0, buttons_left - 8.0);
-    let peak = if strong { 1.0 } else { 0.75 };
+    let peak = if strong { 1.0 } else { 0.5 };
     scrim(row, corners.into(), bg, [x0, x1], |x| peak * egui::remap_clamp(x, x0..=x1, 0.0..=1.0))
 }
 
@@ -292,23 +292,23 @@ fn h_gradient(rect: Rect, radius: CornerRadius, left: Color32, right: Color32) -
     mesh
 }
 
-/// My nameplate as the background of the whole user panel (`rect`, `radius` corners), like
-/// Discord's, as a shape for a slot over the panel's fill: the 16:3 art cover-cropped, animated
-/// while `animate`. Dark themes: under a light veil of the panel colour `veil` (20 %, for the
-/// buttons on the right) and the rows' scrim behind the name and status (`plate_scrim`). Light
-/// themes: faded in after the text (`text_end`), at 42 % so the dark buttons on it keep ≥ 3:1.
-/// Noop while the art is not loaded (plain fill).
+/// My nameplate as the background of the whole account row (`rect`, `radius` corners), like
+/// Discord's, as a shape for a slot over the panel's fill: the 16:3 art cover-cropped edge to
+/// edge, animated while `animate`, under a light veil of the panel colour `veil` (20 %) and two
+/// scrims that only protect the text: behind the name and status (80 %, clear a little after
+/// `text_end`) and behind the buttons (`buttons_scrim`, drawn by the caller). The rest of the art
+/// stays as it is, in dark and light themes alike. Noop while the art is not loaded (plain fill).
 #[allow(clippy::too_many_arguments, reason = "the panel's geometry and state")]
 pub fn nameplate_cover(ui: &egui::Ui, images: &mut ImageCache, rect: Rect, np: &Nameplate, animate: bool, radius: CornerRadius, veil: Color32, text_end: f32) -> Shape {
     let Some(url) = cdn::nameplate_url(&np.asset, animate) else { return Shape::Noop };
     let Some(tex) = images.get(ui.ctx(), &url, px(ui.ctx(), rect.width()), animate) else { return Shape::Noop };
     let uv = super::profile::cover_uv(tex.size, rect.size());
-    if !ui.visuals().dark_mode {
-        return faded_tex(tex, rect, uv, radius, text_end, 0.42);
-    }
     let art = RectShape::filled(rect, radius, Color32::WHITE).with_texture(tex.id, uv);
     let light = RectShape::filled(rect, radius, veil.gamma_multiply(0.2));
-    Shape::Vec(vec![art.into(), light.into(), plate_scrim(rect, radius, veil, text_end, false)])
+    // Unlike a list row's `plate_scrim` (60 % of its width) only the text's own extent is covered.
+    let (x0, x1) = (text_end + 8.0, text_end + 48.0);
+    let text = scrim(rect, radius, veil, [x0, x1], |x| 0.8 * (1.0 - egui::remap_clamp(x, x0..=x1, 0.0..=1.0)));
+    Shape::Vec(vec![art.into(), light.into(), text])
 }
 
 // ---------------------------------------------------------------------------

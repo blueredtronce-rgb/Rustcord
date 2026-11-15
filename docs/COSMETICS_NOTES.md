@@ -275,6 +275,8 @@ re-checked against [UD]/[MOB] in `docs/GUILD_CARD_NOTES.md`, which wins over thi
 3. Static at rest. Animated on hover or when the row is selected.
 4. Muted or unfocused rows: image opacity 0.1 and no gradient.
 
+**User panel** (`cosmetics::nameplate_cover`): the art covers the whole account row edge to edge (cover-fit 16:3, clipped to the panel's corners; under the voice section only the lower ones), under a 20 % veil of the panel colour, an 80 % scrim behind the name and status that clears 48 px after the text ends, and a 50 % scrim behind the buttons (`buttons_scrim`). Dark and light themes alike. Earlier the scrim covered 60 % of the width (and light themes faded the art in only after the text at 42 %), so the art seemed to fill only the right side.
+
 **Where** (placements `account`, `channel`, `member_list`, `preview`): user panel account row, DM list rows, member list rows. **Not** in messages.
 
 **Set (owned or Nitro):**
