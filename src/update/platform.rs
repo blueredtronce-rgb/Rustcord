@@ -33,6 +33,7 @@ pub struct Install {
 }
 
 /// How the new version gets started.
+#[allow(clippy::large_enum_variant)] // one per update; boxing buys nothing
 pub enum Relaunch {
     /// It already runs and waits for this one's instance lock (macOS `open`).
     Started,
