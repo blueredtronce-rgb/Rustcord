@@ -101,7 +101,7 @@ impl Table {
     }
 
     /// `from_json` keeping the executables of the `os` values `keep`.
-    fn from_json_for(bytes: &[u8], keep: &'static [&'static str]) -> Result<Table, String> {
+    pub(super) fn from_json_for(bytes: &[u8], keep: &'static [&'static str]) -> Result<Table, String> {
         struct Build(&'static [&'static str]);
         impl<'de> Visitor<'de> for Build {
             type Value = Table;

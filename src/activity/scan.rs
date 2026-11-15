@@ -299,7 +299,8 @@ mod tests {
     fn picks_added_games_first_and_keeps_the_shown_one() {
         let json = r#"[{"id":"1","name":"Factorio","executables":[{"name":"factorio.exe","os":"win32"}]},
                         {"id":"2","name":"Celeste","executables":[{"name":"celeste/celeste.exe","os":"win32"}]}]"#;
-        let t = Table::from_json(json.as_bytes()).unwrap();
+        // Windows entries on every OS: on macOS `from_json` keeps only darwin ones.
+        let t = Table::from_json_for(json.as_bytes(), &["win32"]).unwrap();
         let procs: Vec<(u32, String)> = [(1, "explorer.exe"), (2, "factorio.exe"), (3, "celeste.exe"), (4, "mygame.exe")].map(|(p, n)| (p, n.to_owned())).to_vec();
         let paths = |pid: u32| match pid {
             2 => Some(("c:/games/factorio/bin/factorio.exe".to_owned(), 300)),
