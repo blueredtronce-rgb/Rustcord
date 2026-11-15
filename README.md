@@ -58,7 +58,7 @@ gameplay (see <a href="#credits">Credits</a>). <code>scripts/readme-shots.py</co
 again.</sub>
 
 > **Warning.** Third-party clients that log in with a user account violate Discord's Terms of
-> service and can get the account banned. You use this at your own risk. I made Rustcord behave
+> Service and can get the account banned. You use this at your own risk. I made Rustcord behave
 > like a normal user client (no automation, nothing is sent on your behalf, all rate limits are
 > respected), but that doesn't remove the risk. Rustcord is not affiliated with Discord.
 
