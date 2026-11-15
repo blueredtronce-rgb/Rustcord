@@ -1,34 +1,36 @@
 //! The Quests page (DM home, the row under Friends), its cards, and the quest video and claim
 //! modals (docs/QUESTS_NOTES.md §4). Accept, claim and "Show code" go out on a click only; video
-//! progress only while the quest video really plays in the video modal
-//! (`crate::quests::VideoProgress`). No polling: the page fetches when it opens (at most every
-//! 10 min); gateway events keep it current.
+//! progress only while the quest video the user started really plays in Rustcord's player
+//! (`crate::quests::VideoProgress`). That session outlives its modal: it plays on in the
+//! background (a "Quest video" section in the user panel, `logic` ticks it while minimized too)
+//! until it ends, the quest is done or the user stops it. No polling: the page fetches when it
+//! opens (at most every 10 min); gateway events keep it current.
 //!
 //! OWNERSHIP: quests engineer.
 
 use super::icons::{self, Icon};
 use super::messages::{Btn, Pal, button, focus_ring, paint_radio};
 use super::{Modal, UiCx, ViewState, semibold};
-use crate::backend::{Command, ConnState};
+use crate::backend::{Command, CommandSender, ConnState};
+use crate::media::{Fail, State};
 use crate::model::Id;
-use crate::quests::{Load, Phase, Quest, QuestCommand, TaskKind, VideoProgress};
+use crate::quests::{Load, Phase, Quest, QuestCommand, TaskKind, VIDEO_OFFLINE, VideoProgress};
 use chrono::{DateTime, Datelike, Utc};
 use egui::{Align, Color32, CornerRadius, FontId, Layout, Margin, Rect, RichText, Sense, Shape, Vec2, pos2, vec2};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Module UI state (`ViewState::quests_ui`).
 #[derive(Default)]
 pub struct QuestsUi {
     /// The DM home shows the Quests page instead of Friends.
     pub open: bool,
-    /// The video modal's session.
+    /// The one quest video session (its modal may be closed: it plays on in the background).
     watch: Option<Watch>,
     /// The claim modal's pick.
     claim_pick: Option<u8>,
 }
 
-/// One quest video session (`Modal::QuestVideo`); dropped when the modal closes, which stops
-/// the player.
+/// One quest video session, started by the user; dropped by `stop_watch`, which stops the player.
 struct Watch {
     quest_id: Id,
     progress: VideoProgress,
@@ -43,12 +45,18 @@ struct Watch {
     demo: bool,
     /// Test hook `watch-play`: plays the fixture clip from the disk cache, muted (still `demo`).
     demo_play: bool,
+    /// The progress position (s): the picture's, never past what really played (`logic`).
+    pos: f64,
+    /// Playing and not buffering.
+    playing: bool,
+    /// The user paused it in the modal.
+    paused: bool,
 }
 
 impl Watch {
     fn new(q: &Quest, player: Option<crate::media::Player>) -> Watch {
         let (start, target) = (q.video_value(), q.task().map_or(0, |(_, t)| t.target));
-        Watch { quest_id: q.id, progress: VideoProgress::new(start, target), start, demo: player.is_none(), player, texture: None, muted: false, demo_play: false }
+        Watch { quest_id: q.id, progress: VideoProgress::new(start, target), start, demo: player.is_none(), player, texture: None, muted: false, demo_play: false, pos: f64::from(start), playing: false, paused: false }
     }
 }
 
@@ -356,7 +364,8 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, q: &Quest, phase: Phase
             match phase {
                 Phase::InProgress | Phase::Claimable => {
                     ui.add_space(12.0);
-                    progress_row(ui, pal, q, phase == Phase::Claimable || q.completed());
+                    let live = cx.view.quests_ui.watch.as_ref().filter(|w| w.quest_id == q.id).map(|w| w.pos as u32);
+                    progress_row(ui, pal, q, phase == Phase::Claimable || q.completed(), live);
                 }
                 Phase::Claimed => {
                     ui.add_space(12.0);
@@ -377,7 +386,7 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, q: &Quest, phase: Phase
                 icon_text(ui, Icon::Info, pal.danger, n, FontId::proportional(pal.meta()), pal.danger, 3, pal.surface);
             }
             let used = ui.min_rect().height();
-            let action = card_button(q, phase, kind, can_play, cx.state.quests.codes.contains_key(&q.id));
+            let action = card_button(q, phase, kind, can_play, cx.state.quests.codes.contains_key(&q.id), watching_quest(cx.view, q.id));
             let tail = if action.is_some() { 12.0 + 32.0 } else { 0.0 };
             natural = hero_h + 28.0 + used + tail + 16.0;
             ui.add_space((min_h - natural).max(0.0));
@@ -407,11 +416,11 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, q: &Quest, phase: Phase
 }
 
 /// The card's one button for its phase (QUESTS_NOTES §4.3 table).
-fn card_button(q: &Quest, phase: Phase, kind: Option<TaskKind>, can_play: bool, has_code: bool) -> Option<(&'static str, Click)> {
+fn card_button(q: &Quest, phase: Phase, kind: Option<TaskKind>, can_play: bool, has_code: bool, watching: bool) -> Option<(&'static str, Click)> {
     match phase {
         Phase::Available if kind.is_some_and(|k| k != TaskKind::Other) => Some(("Accept quest", Click::Accept)),
         Phase::InProgress if kind == Some(TaskKind::Video) && can_play && !q.completed() => {
-            Some((if q.video_value() == 0 { "Watch video" } else { "Continue watching" }, Click::Watch))
+            Some((if watching { "Open video" } else if q.video_value() == 0 { "Watch video" } else { "Continue watching" }, Click::Watch))
         }
         Phase::Claimable => Some(("Claim reward", Click::Claim)),
         Phase::Claimed if !has_code && q.config.rewards_config.rewards.first().is_some_and(|r| r.kind == 1) => Some(("Show code", Click::ShowCode)),
@@ -420,9 +429,10 @@ fn card_button(q: &Quest, phase: Phase, kind: Option<TaskKind>, can_play: bool, 
 }
 
 /// Progress bar (4 tall, `edge` @ 50 % track, `text` fill) and "1 of 3 min"; done: `positive`
-/// with a Check and "Completed".
-fn progress_row(ui: &mut egui::Ui, pal: &Pal, q: &Quest, done: bool) {
+/// with a Check and "Completed". `live`: the playing session's seconds (shown if past the server's).
+fn progress_row(ui: &mut egui::Ui, pal: &Pal, q: &Quest, done: bool, live: Option<u32>) {
     let (v, t) = q.progress();
+    let v = v.max(live.unwrap_or(0).min(t));
     let (v, t) = if done { (t.max(1), t.max(1)) } else { (v, t) };
     if done {
         icon_text(ui, Icon::Check, pal.tk.positive, "Completed", FontId::proportional(pal.ui()), pal.text, 1, pal.surface);
@@ -549,6 +559,109 @@ fn text_block(ui: &mut egui::Ui, text: &str, font: FontId, color: Color32, rows:
     ui.painter().galley(r.min, g, color);
 }
 
+/// Height of the user panel's "Quest video" section, its hairline not included.
+pub const PANEL_H: f32 = 56.0;
+
+/// A quest video session exists (its modal may be closed): the user panel shows its section.
+pub fn watching(view: &ViewState) -> bool {
+    view.quests_ui.watch.is_some()
+}
+
+fn watching_quest(view: &ViewState, id: Id) -> bool {
+    view.quests_ui.watch.as_ref().is_some_and(|w| w.quest_id == id)
+}
+
+/// Quest players keep playing while not drawn (the user started them; `logic` reports them).
+fn video_opts(s: &crate::config::Settings) -> crate::media::Opts {
+    crate::media::Opts { output: s.voice_output.clone(), background: true, ..Default::default() }
+}
+
+/// Starts `q`'s session and shows its modal; one quest video at a time, so a running one stops
+/// first (its last seconds are sent).
+fn start_watch(view: &mut ViewState, cmd: &CommandSender, q: &Quest, player: Option<crate::media::Player>) {
+    stop_watch(view, cmd);
+    view.quests_ui.watch = Some(Watch::new(q, player));
+    view.modal = Some(Modal::QuestVideo { quest_id: q.id });
+}
+
+/// Ends the session: the last whole seconds go out (not for the demo), its modal closes.
+fn stop_watch(view: &mut ViewState, cmd: &CommandSender) {
+    if let Some(mut w) = view.quests_ui.watch.take()
+        && !w.demo
+        && let Some(ts) = w.progress.close()
+    {
+        cmd.send(Command::Quests(QuestCommand::VideoProgress { quest_id: w.quest_id, timestamp: ts }));
+    }
+    if matches!(view.modal, Some(Modal::QuestVideo { .. })) {
+        view.modal = None;
+    }
+}
+
+/// Whether a session goes on: playing, or loading, or paused but not by the user (between
+/// open and the queued Play). It ends when done, when a send failed, when the user paused and
+/// left, or when the player is over (an answer still on its way counts first).
+fn keeps_playing(state: Option<State>, user_paused: bool, done: bool, stopped: bool, in_flight: bool) -> bool {
+    match state {
+        _ if done || stopped || user_paused => false,
+        Some(State::Loading | State::Paused | State::Playing) => true,
+        Some(State::Ended | State::Freed) => in_flight,
+        _ => false,
+    }
+}
+
+/// Drives the session on every app pass, drawn or not (minimized, in the tray): the player's
+/// state, the progress position, the ticks that send progress, and the end. Foreground and
+/// background are the same code and the same sends (docs/QUESTS_NOTES.md §3).
+pub fn logic(ctx: &egui::Context, state: &mut crate::state::AppState, view: &mut ViewState, cmd: &CommandSender) {
+    let modal = matches!(view.modal, Some(Modal::QuestVideo { .. }));
+    let Some(id) = view.quests_ui.watch.as_ref().map(|w| w.quest_id) else { return };
+    let Some(q) = state.quests.quest(id) else { return stop_watch(view, cmd) };
+    let (completed, enrolled, target) = (q.completed(), q.enrolled(), q.task().map_or(0, |(_, t)| t.target));
+    let online = state.conn == ConnState::Connected && !crate::config::offline_mode();
+    let Some(w) = view.quests_ui.watch.as_mut() else { return };
+    if w.demo_play && w.player.is_none() {
+        // The clip `make_fixture.py media` seeds; `demo` keeps sending off.
+        let opts = crate::media::Opts { muted: true, looped: true, background: true, ..Default::default() };
+        let p = crate::media::Player::open(ctx, "https://cdn.discordapp.com/attachments/1/3/demo.mp4", opts);
+        p.play();
+        w.player = Some(p);
+    }
+    let status = w.player.as_ref().map(|p| p.status());
+    match status.map(|s| s.state) {
+        Some(State::Failed(Fail::Network)) => _ = state.quests.notices.insert(id, VIDEO_OFFLINE.into()),
+        Some(State::Failed(_)) => _ = state.quests.no_video.insert(id),
+        // Paused and hidden for a long time: the worker ended; Play opens it again.
+        Some(State::Freed) if modal => (w.player, w.texture) = (None, None),
+        _ => {}
+    }
+    // The picture's position, never past what really played since the session's start.
+    (w.pos, w.playing) = match status {
+        Some(st) => ((st.position_ms as f64 / 1000.0).min(f64::from(w.start) + st.played_ms as f64 / 1000.0), st.state == State::Playing && !st.buffering),
+        None => (f64::from(w.progress.saved()), false),
+    };
+    if !modal {
+        w.texture = None;
+    }
+    if !w.demo
+        && online
+        && enrolled
+        && !completed
+        && let Some(st) = status
+        && let Some(ts) = w.progress.tick(w.pos, st.played_ms, Instant::now())
+    {
+        cmd.send(Command::Quests(QuestCommand::VideoProgress { quest_id: id, timestamp: ts }));
+    }
+    // Only what the server confirmed counts as done.
+    let done = completed || (target > 0 && w.progress.saved() >= target);
+    let st = status.map(|s| s.state);
+    if !modal && !keeps_playing(st, w.paused, done, w.progress.stopped(), w.progress.in_flight()) {
+        return stop_watch(view, cmd);
+    }
+    if matches!(st, Some(State::Loading | State::Playing)) || (st == Some(State::Paused) && !w.paused) {
+        ctx.request_repaint_after_for(Duration::from_secs(1), egui::ViewportId::ROOT);
+    }
+}
+
 fn on_click(ctx: &egui::Context, cx: &mut UiCx<'_>, q: &Quest, c: Click) {
     let qs = &mut cx.state.quests;
     qs.notices.remove(&q.id);
@@ -568,14 +681,17 @@ fn on_click(ctx: &egui::Context, cx: &mut UiCx<'_>, q: &Quest, c: Click) {
             }
         },
         Click::Watch => {
+            // Its video already plays: just show it.
+            if watching_quest(cx.view, q.id) {
+                cx.view.modal = Some(Modal::QuestVideo { quest_id: q.id });
+                return;
+            }
             let Some(url) = q.video_url() else { return };
             // Opens playing, resumed at the server's value; no seeking control after that.
-            let opts = crate::media::Opts { output: cx.settings.voice_output.clone(), ..Default::default() };
-            let player = crate::media::Player::open(ctx, &url, opts);
+            let player = crate::media::Player::open(ctx, &url, video_opts(cx.settings));
             player.seek(u64::from(q.video_value()) * 1000);
             player.play();
-            cx.view.quests_ui.watch = Some(Watch::new(q, Some(player)));
-            cx.view.modal = Some(Modal::QuestVideo { quest_id: q.id });
+            start_watch(cx.view, cx.cmd, q, Some(player));
         }
         Click::Copy => {
             if let Some(code) = qs.codes.get(&q.id) {
@@ -588,53 +704,34 @@ fn on_click(ctx: &egui::Context, cx: &mut UiCx<'_>, q: &Quest, c: Click) {
 
 // ----- modals ---------------------------------------------------------------------------------------
 
-/// `Modal::QuestVideo`: the quest video (wide 640), a display-only progress bar, Close, and
-/// "Claim reward" once done. Closing (button, ×, Esc, scrim) may send the last seconds.
+/// `Modal::QuestVideo`: the quest video (wide 640), a display-only progress bar, "Stop video",
+/// Close, and "Claim reward" once done. Closing (button, ×, Esc, scrim) only hides it: the
+/// session plays on (`logic`) unless the user paused it.
 pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
-    let Some(q) = cx.state.quests.quest(quest_id).cloned() else { return close_video(cx) };
-    if cx.view.quests_ui.watch.as_ref().is_none_or(|w| w.quest_id != quest_id) {
-        return close_video(cx);
+    let Some(q) = cx.state.quests.quest(quest_id).cloned() else { return stop_watch(cx.view, cx.cmd) };
+    if !watching_quest(cx.view, quest_id) {
+        cx.view.modal = None;
+        return;
     }
-    let online = cx.state.conn == ConnState::Connected && !crate::config::offline_mode();
     let task = q.task().map(|(_, t)| t.clone()).unwrap_or_default();
     let title = task.messages.video_title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| q.config.messages.quest_name.clone());
     let notice = cx.state.quests.notices.get(&quest_id).cloned();
     let theme = &*cx.theme;
     let watch = cx.view.quests_ui.watch.as_mut().expect("checked above");
-    if watch.demo_play && watch.player.is_none() {
-        // The clip `make_fixture.py media` seeds; `demo` keeps sending off.
-        let p = crate::media::Player::open(ctx, "https://cdn.discordapp.com/attachments/1/3/demo.mp4", crate::media::Opts { muted: true, ..Default::default() });
-        p.play();
-        watch.player = Some(p);
-    }
     let pal = Pal::new(theme);
+    // Drawn: conversion and publishing of its pictures run while this modal paints.
     let status = watch.player.as_ref().map(|p| {
         p.drawn();
         p.status()
     });
-    let failed = matches!(status, Some(crate::media::Status { state: crate::media::State::Failed(_), .. }));
-    if failed {
-        cx.state.quests.no_video.insert(quest_id);
-    }
-    if status.is_some_and(|s| s.state == crate::media::State::Freed) {
-        // Paused and hidden for a long time: the worker ended; Play opens it again.
-        (watch.player, watch.texture) = (None, None);
-    }
-    // The frame on screen, never past what really played since the session's start.
-    let (pos, duration, playing) = match status {
-        Some(st) => {
-            let pos = (st.position_ms as f64 / 1000.0).min(f64::from(watch.start) + st.played_ms as f64 / 1000.0);
-            let dur = if st.duration_ms > 0 { st.duration_ms as f64 / 1000.0 } else { f64::from(task.target) };
-            (pos, dur, st.state == crate::media::State::Playing && !st.buffering)
-        }
-        None => (f64::from(watch.progress.saved()), f64::from(task.target), false),
+    let state = status.map(|s| s.state);
+    let failed = matches!(state, Some(State::Failed(f)) if f != Fail::Network);
+    let offline = state == Some(State::Failed(Fail::Network));
+    let (pos, playing) = (watch.pos, watch.playing);
+    let duration = match status {
+        Some(st) if st.duration_ms > 0 => st.duration_ms as f64 / 1000.0,
+        _ => f64::from(task.target),
     };
-    let send = !watch.demo && online && q.enrolled() && !q.completed();
-    let mut sent = None;
-    if send {
-        sent = watch.progress.tick(pos, status.map_or(0, |s| s.played_ms), Instant::now());
-    }
-    // Only what the server confirmed: a send still on its way (or failed) isn't done.
     let done = q.completed() || (watch.progress.target() > 0 && watch.progress.saved() >= watch.progress.target());
     let mut reopen = false;
     let resp = super::dialog(ctx, theme, "rc_quest_video", 640.0, &title, |ui| {
@@ -658,8 +755,16 @@ pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
             let (icon, tip) = if playing { (Icon::Pause, "Pause") } else { (Icon::Play, "Play") };
             if ui.add_enabled_ui(enabled, |ui| super::messages::vector_button(ui, &pal, icon, tip, 32.0, false, pal.text)).inner.clicked() {
                 match &watch.player {
-                    Some(p) if playing => p.pause(),
-                    Some(p) => p.play(),
+                    Some(p) if playing => {
+                        p.pause();
+                        watch.paused = true;
+                    }
+                    // Lost its connection: Play opens it again.
+                    Some(_) if offline => reopen = true,
+                    Some(p) => {
+                        p.play();
+                        watch.paused = false;
+                    }
                     None => reopen = true,
                 }
             }
@@ -668,10 +773,7 @@ pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (icon, tip) = if watch.muted { (Icon::VoiceOff, "Unmute") } else { (Icon::Voice, "Mute") };
                     if super::messages::vector_button(ui, &pal, icon, tip, 32.0, false, pal.text).clicked() {
-                        watch.muted = !watch.muted;
-                        if let Some(p) = &watch.player {
-                            p.set_volume(if watch.muted { 0.0 } else { 1.0 });
-                        }
+                        set_muted(watch, !watch.muted);
                     }
                 });
             }
@@ -686,19 +788,24 @@ pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
         let line = match &notice {
             Some(n) => n.as_str(),
             None if done => "Done. Claim your reward.",
-            None => "Progress counts while the video plays in this window.",
+            None => "Progress counts while the video plays, also after you close this.",
         };
         ui.label(RichText::new(line).size(pal.meta()).color(if notice.is_some() { pal.danger } else { pal.muted }));
         ui.add_space(8.0);
+        let stoppable = !done && watch.player.is_some();
         super::dialog_footer(ui, |ui| {
             if done && button(ui, &pal, Btn::Primary, "Claim reward", !cx.state.quests.busy.contains(&quest_id)).clicked() {
-                return Some(true);
+                return Some(Act::Claim);
             }
-            button(ui, &pal, Btn::Ghost, "Close", true).clicked().then_some(false)
+            if button(ui, &pal, Btn::Ghost, "Close", true).clicked() {
+                return Some(Act::Close);
+            }
+            (stoppable && button(ui, &pal, Btn::Ghost, "Stop video", true).clicked()).then_some(Act::Stop)
         })
     });
     if reopen && let Some(url) = q.video_url() {
-        let opts = crate::media::Opts { output: cx.settings.voice_output.clone(), ..Default::default() };
+        let opts = video_opts(cx.settings);
+        cx.state.quests.notices.remove(&quest_id);
         let w = cx.view.quests_ui.watch.as_mut().expect("checked above");
         let p = crate::media::Player::open(ctx, &url, opts);
         // The new player's `played_ms` counts on from the seconds already saved.
@@ -706,19 +813,96 @@ pub fn video_modal(ctx: &egui::Context, cx: &mut UiCx<'_>, quest_id: Id) {
         p.seek(u64::from(w.start) * 1000);
         p.set_volume(if w.muted { 0.0 } else { 1.0 });
         p.play();
-        w.player = Some(p);
-    }
-    if let Some(ts) = sent {
-        cx.cmd.send(Command::Quests(QuestCommand::VideoProgress { quest_id, timestamp: ts }));
+        (w.player, w.paused) = (Some(p), false);
     }
     match resp.inner {
-        Some(true) => {
-            close_video(cx);
+        Some(Act::Claim) => {
+            stop_watch(cx.view, cx.cmd);
             on_click(ctx, cx, &q, Click::Claim);
         }
-        Some(false) => close_video(cx),
-        None if resp.should_close() => close_video(cx),
+        Some(Act::Stop) => stop_watch(cx.view, cx.cmd),
+        // Hidden only: the next `logic` pass ends a session that is not playing.
+        Some(Act::Close) => {
+            cx.view.modal = None;
+            ctx.request_repaint();
+        }
+        None if resp.should_close() => {
+            cx.view.modal = None;
+            ctx.request_repaint();
+        }
         None => {}
+    }
+}
+
+/// What the video modal's footer asked for.
+enum Act {
+    Claim,
+    Close,
+    Stop,
+}
+
+/// Sound on or off for the session (the panel and the modal share it): volume 0, the stream runs on.
+fn set_muted(w: &mut Watch, muted: bool) {
+    w.muted = muted;
+    if let Some(p) = &w.player {
+        p.set_volume(if muted { 0.0 } else { 1.0 });
+    }
+}
+
+/// The "Quest video" section of the floating user panel (`sidebar::user_panel`), in `rect`
+/// (`PANEL_H` tall): the label, the quest's name (opens the video), Mute and Stop, and a live
+/// progress bar.
+pub fn panel(ui: &mut egui::Ui, cx: &mut UiCx<'_>, rect: Rect) {
+    let Some(w) = cx.view.quests_ui.watch.as_ref() else { return };
+    let Some(q) = cx.state.quests.quest(w.quest_id) else { return };
+    let (name, target) = (q.config.messages.quest_name.clone(), q.task().map_or(0, |(_, t)| t.target));
+    let (pos, muted, has_audio) = (w.pos, w.muted, w.player.as_ref().is_some_and(|p| p.status().has_audio));
+    let done = q.completed() || (target > 0 && w.progress.saved() >= target);
+    let (c, tk) = (cx.theme.colors.clone(), cx.theme.tokens());
+    let size = cx.theme.font.size;
+    let row = Rect::from_min_size(rect.min + Vec2::splat(12.0), vec2(rect.width() - 24.0, 32.0));
+    let base = c.surface.to_color32();
+    let radius = cx.theme.layout.corner_radius;
+    let button = |ui: &mut egui::Ui, at: Rect, id: &str, icon: Icon, tip: &str| {
+        let resp = ui.interact(at, ui.make_persistent_id(id), Sense::click());
+        let bg = if resp.hovered() || resp.has_focus() { base.blend(c.text.to_color32().gamma_multiply(0.08)) } else { base };
+        ui.painter().rect_filled(at, CornerRadius::from(radius), bg);
+        icons::paint(ui.painter(), icon, at.shrink(6.0), c.text_muted.to_color32(), bg);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
+        resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    };
+    let stop = Rect::from_min_size(pos2(row.right() - 32.0, row.top()), Vec2::splat(32.0));
+    let mut left = stop.left();
+    let mut toggle_mute = false;
+    if has_audio {
+        let at = stop.translate(vec2(-36.0, 0.0));
+        left = at.left();
+        let (icon, tip) = if muted { (Icon::VoiceOff, "Unmute") } else { (Icon::Voice, "Mute") };
+        toggle_mute = button(ui, at, "quest_video_mute", icon, tip);
+    }
+    let stop_clicked = button(ui, stop, "quest_video_stop", Icon::Close, "Stop video");
+    let max_w = left - 8.0 - row.left();
+    let link_rect = Rect::from_min_max(pos2(row.left(), row.center().y), pos2(row.left() + max_w, row.bottom()));
+    let link = ui.interact(link_rect, ui.make_persistent_id("quest_video_open"), Sense::click());
+    let link_color = if link.hovered() { c.text } else { c.text_muted }.to_color32();
+    let top_g = super::one_line(ui, "Quest video", semibold(size - 2.0), tk.positive_text, max_w);
+    let sub_g = super::one_line(ui, name.as_str(), FontId::proportional(size - 3.0), link_color, max_w);
+    let top = row.center().y - (top_g.size().y + sub_g.size().y) / 2.0;
+    let sub_y = top + top_g.size().y;
+    ui.painter().galley(pos2(row.left(), top), top_g, tk.positive_text);
+    ui.painter().galley(pos2(row.left(), sub_y), sub_g, link_color);
+    link.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, &name));
+    let open = link.on_hover_text("Open the video").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    let pal = Pal::new(cx.theme);
+    let bar = Rect::from_min_size(pos2(row.left(), row.bottom() + 4.0), vec2(row.width(), 3.0));
+    paint_bar(ui.painter(), &pal, bar, if target == 0 { 0.0 } else { (pos.min(f64::from(target)) / f64::from(target)) as f32 }, done);
+    if toggle_mute && let Some(w) = cx.view.quests_ui.watch.as_mut() {
+        set_muted(w, !muted);
+    }
+    if stop_clicked {
+        stop_watch(cx.view, cx.cmd);
+    } else if open && let Some(id) = cx.view.quests_ui.watch.as_ref().map(|w| w.quest_id) {
+        cx.view.modal = Some(Modal::QuestVideo { quest_id: id });
     }
 }
 
@@ -744,19 +928,6 @@ fn paint_frame(ui: &egui::Ui, watch: &mut Watch, rect: Rect) -> bool {
     let img = Rect::from_center_size(rect.center(), size * scale);
     ui.painter().image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     true
-}
-
-/// Ends the video session: the last whole seconds go out (not for the demo), the modal closes.
-fn close_video(cx: &mut UiCx<'_>) {
-    if let Some(mut w) = cx.view.quests_ui.watch.take()
-        && !w.demo
-        && let Some(ts) = w.progress.close()
-    {
-        cx.cmd.send(Command::Quests(QuestCommand::VideoProgress { quest_id: w.quest_id, timestamp: ts }));
-    }
-    if matches!(cx.view.modal, Some(Modal::QuestVideo { .. })) {
-        cx.view.modal = None;
-    }
 }
 
 /// A video progress answer (ui/mod.rs drain): the session may send its next one, or stops.
@@ -875,10 +1046,11 @@ fn day(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 // ----- test hooks ------------------------------------------------------------------------------------
 
-/// `RUSTCORD_OPEN=quests[:blocked|empty|error|loading|watch|claim]` (ui/mod.rs): the page with
+/// `RUSTCORD_OPEN=quests[:blocked|empty|error|loading|watch|watch-play|bg|claim]` (ui/mod.rs): the page with
 /// `DEMO_JSON` (Orbs 1240, a code shown, a captcha notice), the blocked banner, the empty / failed
-/// / loading states, the video modal (a still frame at 1:12 of 3:00, nothing sent) or the claim
-/// modal. Sends nothing. False for other tokens.
+/// / loading states, the video modal (a still frame at 1:12 of 3:00, nothing sent), `watch-play`
+/// (the fixture clip plays in it), `bg` (the same without the modal: the user panel's section
+/// and the card's "Open video") or the claim modal. Sends nothing. False for other tokens.
 pub fn demo(state: &mut crate::state::AppState, view: &mut ViewState, token: &str) -> bool {
     let Some(rest) = token.strip_prefix("quests") else { return false };
     let what = rest.trim_start_matches(':');
@@ -906,11 +1078,12 @@ pub fn demo(state: &mut crate::state::AppState, view: &mut ViewState, token: &st
             view.quests_ui.watch = Some(Watch::new(q.quest(Id(101)).expect("demo quest 101"), None));
             view.modal = Some(Modal::QuestVideo { quest_id: Id(101) });
         }
-        "watch-play" => {
+        "watch-play" | "bg" => {
             let mut w = Watch::new(q.quest(Id(101)).expect("demo quest 101"), None);
             (w.start, w.muted, w.demo_play) = (0, true, true);
             view.quests_ui.watch = Some(w);
-            view.modal = Some(Modal::QuestVideo { quest_id: Id(101) });
+            // `bg`: the page with the panel section, the video plays on without its modal.
+            view.modal = (what == "watch-play").then_some(Modal::QuestVideo { quest_id: Id(101) });
         }
         "claim" => view.modal = Some(Modal::QuestClaim { quest_id: Id(106) }),
         _ => {}
@@ -994,11 +1167,68 @@ mod tests {
         assert!((uv.width() - 0.888_889).abs() < 1e-3 && uv.height() == 1.0);
     }
 
+    #[test]
+    fn keeps_playing_rules() {
+        use State::*;
+        // (state, user paused, done, stopped, in flight) -> goes on
+        let rows = [
+            (Some(Playing), false, false, false, false, true),
+            (Some(Loading), false, false, false, false, true),
+            (Some(Paused), false, false, false, false, true),
+            (Some(Paused), true, false, false, false, false),
+            (Some(Ended), false, false, false, false, false),
+            (Some(Ended), false, false, false, true, true),
+            (Some(Freed), false, false, false, false, false),
+            (Some(Failed(Fail::Network)), false, false, false, false, false),
+            (None, false, false, false, false, false),
+            (Some(Playing), false, true, false, false, false),
+            (Some(Playing), false, false, true, false, false),
+        ];
+        for (state, paused, done, stopped, in_flight, want) in rows {
+            assert_eq!(keeps_playing(state, paused, done, stopped, in_flight), want, "{state:?} paused={paused} done={done} stopped={stopped} in_flight={in_flight}");
+        }
+    }
+
+    /// One quest video at a time: starting another stops the running one and sends its last
+    /// seconds; "Watch" on the one that plays only reopens its modal.
+    #[test]
+    fn one_quest_video_at_a_time() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cmd = crate::backend::CommandSender(tx);
+        let mut state = crate::state::AppState::default();
+        let mut view = ViewState::default();
+        demo(&mut state, &mut view, "quests");
+        let (q101, q103) = (state.quests.quest(Id(101)).unwrap().clone(), state.quests.quest(Id(103)).unwrap().clone());
+        start_watch(&mut view, &cmd, &q101, None);
+        let t0 = Instant::now();
+        let w = view.quests_ui.watch.as_mut().unwrap();
+        w.demo = false;
+        assert_eq!(w.progress.tick(72.0, 0, t0), None);
+        assert_eq!(w.progress.tick(73.9, 1900, t0 + Duration::from_millis(1900)), None);
+        assert!(rx.try_recv().is_err(), "nothing sent yet");
+        start_watch(&mut view, &cmd, &q103, None);
+        assert!(matches!(rx.try_recv(), Ok(Command::Quests(QuestCommand::VideoProgress { quest_id: Id(101), timestamp: 73 }))));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(view.quests_ui.watch.as_ref().map(|w| w.quest_id), Some(Id(103)));
+        assert!(matches!(view.modal, Some(Modal::QuestVideo { quest_id: Id(103) })));
+        // Watch on the playing quest: the modal only.
+        view.modal = None;
+        let (mut images, mut theme) = (super::super::images::ImageCache::new(cmd.clone()), crate::theme::Theme::ember_dark());
+        let (mut settings, mut overrides) = (Default::default(), Default::default());
+        let ctx = egui::Context::default();
+        let mut cx = UiCx { state: &mut state, view: &mut view, images: &mut images, theme: &mut theme, settings: &mut settings, cmd: &cmd, overrides: &mut overrides };
+        on_click(&ctx, &mut cx, &q103, Click::Watch);
+        assert!(matches!(view.modal, Some(Modal::QuestVideo { quest_id: Id(103) })));
+        assert!(rx.try_recv().is_err() && view.quests_ui.watch.as_ref().is_some_and(|w| w.player.is_none()));
+        drop((images, view));
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    }
+
     /// Runs the page and modals for every demo token over a few passes: nothing reaches the
     /// backend but image loads.
     #[test]
     fn demo_hooks_send_nothing() {
-        for token in ["quests", "quests:blocked", "quests:empty", "quests:error", "quests:loading", "quests:watch", "quests:claim"] {
+        for token in ["quests", "quests:blocked", "quests:empty", "quests:error", "quests:loading", "quests:watch", "quests:watch-play", "quests:bg", "quests:claim"] {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cmd = crate::backend::CommandSender(tx);
             let mut state = crate::state::AppState::default();

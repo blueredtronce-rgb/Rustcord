@@ -21,7 +21,9 @@ pub const LOCATION_QUEST_HOME: u8 = 11;
 /// The page fetches again at most this often (no polling: gateway events carry the changes).
 pub const REFETCH: Duration = Duration::from_secs(10 * 60);
 /// Card notice after a failed video progress send (the watch session stops).
-pub const VIDEO_FAILED: &str = "Progress stopped saving. Close the video and try again later.";
+pub const VIDEO_FAILED: &str = "Progress stopped saving. Try the video again later.";
+/// Card notice when the player lost its connection (the session ends once its window is closed).
+pub const VIDEO_OFFLINE: &str = "The video stopped: no connection. Continue watching when you're back online.";
 
 /// Feature flags (UD Quest Feature).
 const FEATURE_FORCE_HLS: u32 = 18;

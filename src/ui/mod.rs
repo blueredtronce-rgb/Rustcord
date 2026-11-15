@@ -732,7 +732,7 @@ impl RustcordApp {
                     "confirm" if let Some(g) = self.state.selected_guild => server_menu::ask_leave(&mut self.view, &self.state, g),
                     "profile" if let Some(me) = &self.state.me => {
                         // Where the user panel avatar opens it: 8 px above the floating panel.
-                        let top = ctx.content_rect().bottom() - 8.0 - sidebar::user_panel_height(&self.state, &self.theme);
+                        let top = ctx.content_rect().bottom() - 8.0 - sidebar::user_panel_height(&self.state, &self.view, &self.theme);
                         self.view.open_profile_above(me.id, self.state.selected_guild, egui::pos2(8.0, top - 8.0));
                     }
                     s if let Some(id) = s.strip_prefix("voice:").and_then(|id| id.parse().ok()) => {
@@ -844,6 +844,8 @@ impl eframe::App for RustcordApp {
             crate::plugins::idle::logic(ctx, &self.state, &self.backend.cmd);
             // My detected game in op 3 (while shared), batched app-icon requests.
             crate::activity::logic(&mut self.state, &self.backend.cmd);
+            // A quest video the user started plays on and reports progress, also minimized.
+            quests::logic(ctx, &mut self.state, &mut self.view, &self.backend.cmd);
         }
         self.maybe_save_cache(false);
         // My id and Nitro (local cosmetics apply only without it).

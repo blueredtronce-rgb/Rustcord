@@ -41,13 +41,13 @@ fn demo(name: &str) -> Option<Status> {
 
 /// No restart now (`crate::update::sync_ui`'s `busy`): in or joining a voice channel or call, a
 /// call I just started, or a call ringing me; while the window waits in the tray (`hidden`) also
-/// an unsent draft, which a restart would lose. Visible, the user sees the draft and the
+/// an unsent draft, which a restart would lose, or a quest video that plays on. Visible, the user sees the draft and the
 /// title-bar button.
 pub(super) fn busy(state: &AppState, view: &ViewState, hidden: bool) -> bool {
     state.voice.channel_id.is_some()
         || state.call_starting()
         || state.incoming_call().is_some()
-        || (hidden && view.drafts.values().any(|d| !d.trim().is_empty()))
+        || (hidden && (view.drafts.values().any(|d| !d.trim().is_empty()) || super::quests::watching(view)))
 }
 
 /// Megabytes as the update screen writes them: 1 MB = 1 000 000 bytes, one decimal.

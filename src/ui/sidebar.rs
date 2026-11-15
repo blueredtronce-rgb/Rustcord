@@ -12,7 +12,7 @@
 use super::images::{ImageCache, initial, initial_colors, paint_initial};
 use super::icons::{self, Icon};
 use super::messages::{MenuIcon, Pal, icon_button, menu_item, menu_setup};
-use super::{UiCx, bold, one_line, presence_color, rgb, server_menu, threads};
+use super::{UiCx, ViewState, bold, one_line, presence_color, rgb, server_menu, threads};
 use crate::api::cdn;
 use crate::backend::{AccountCommand, Command, ConnState};
 use crate::config::AnimateMode;
@@ -1618,16 +1618,22 @@ fn panel_r(theme: &Theme) -> u8 {
 }
 
 /// Height of the floating user panel: the account row (two text lines grow with the font
-/// size), plus the voice section and a hairline while in a call.
+/// size), plus the voice section and a hairline while in a call, and the quest video section
+/// and its hairline while a quest video plays.
 fn user_panel_h(cx: &UiCx<'_>) -> f32 {
-    user_panel_height(cx.state, cx.theme)
+    user_panel_height(cx.state, cx.view, cx.theme)
+}
+
+/// The "Quest video" section with its hairline, or nothing.
+fn quest_h(view: &ViewState) -> f32 {
+    if super::quests::watching(view) { super::quests::PANEL_H + 1.0 } else { 0.0 }
 }
 
 /// `user_panel_h` without a `UiCx` (startup hooks).
-pub(super) fn user_panel_height(state: &AppState, theme: &Theme) -> f32 {
+pub(super) fn user_panel_height(state: &AppState, view: &ViewState, theme: &Theme) -> f32 {
     let buttons = if state.voice.connected { VOICE_BUTTONS_H } else { 0.0 };
     let voice = if state.voice.channel_id.is_some() { VOICE_PANEL_H + buttons + 1.0 } else { 0.0 };
-    account_h(theme) + voice
+    account_h(theme) + voice + quest_h(view)
 }
 
 fn account_h(theme: &Theme) -> f32 {
@@ -1654,13 +1660,18 @@ pub fn user_panel(ctx: &egui::Context, cx: &mut UiCx<'_>, width: f32) {
     egui::Area::new(egui::Id::unique("user_panel")).order(egui::Order::Middle).fixed_pos(pos).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(width - 2.0 * PANEL_MARGIN, h), Sense::hover());
         ui.painter().rect_filled(rect, panel_r(cx.theme), user_panel_fill(&c));
-        let voice_h = h - account_h(cx.theme);
+        let quest_h = quest_h(cx.view);
+        let voice_h = h - account_h(cx.theme) - quest_h;
+        if quest_h > 0.0 {
+            super::quests::panel(ui, cx, rect.with_max_y(rect.top() + quest_h - 1.0));
+            ui.painter().hline(rect.x_range(), rect.top() + quest_h - 0.5, line(&c));
+        }
         if voice_h > 0.0 {
-            let split = rect.top() + voice_h;
-            voice_panel(ui, cx, rect.with_max_y(split - 1.0));
+            let split = rect.top() + quest_h + voice_h;
+            voice_panel(ui, cx, rect.with_min_y(rect.top() + quest_h).with_max_y(split - 1.0));
             ui.painter().hline(rect.x_range(), split - 0.5, line(&c));
         }
-        account_row(ui, cx, rect.with_min_y(rect.top() + voice_h), rect.left_top());
+        account_row(ui, cx, rect.with_min_y(rect.top() + quest_h + voice_h), rect.left_top());
         // Last: the outline stays over the nameplate's edge. Light and high contrast only: there
         // `surface` sits close to the panes under it; on dark themes the fill step is the edge.
         if cx.theme.tokens().mode != crate::theme::Mode::Dark {
