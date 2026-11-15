@@ -23,11 +23,14 @@ mod voice;
 #[cfg(windows)]
 mod winreg;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Flags: `--minimized` (sign-in autostart: start hidden in the tray), `--quit` (asks the running
 /// Rustcord to quit and waits for it; the installer uses it before replacing files),
-/// `--clear-login` (removes the saved login from the keyring and exits; `install.sh --uninstall --purge`).
+/// `--clear-login` (removes the saved login from the keyring and exits; `install.sh --uninstall --purge`),
+/// `--after-update` (started by the updater: waits up to 30 s for the previous
+/// version to release the instance lock instead of handing off to it, then cleans up its
+/// leftovers; docs/UPDATER_DESIGN.md §10).
 fn main() -> eframe::Result {
     let started = Instant::now();
     trace_startup("main", started);
@@ -44,7 +47,9 @@ fn main() -> eframe::Result {
     // Screenshot runs skip it (and the tray): they must never touch another window.
     let test_run = std::env::var_os("RUSTCORD_SCREENSHOT").is_some();
     let quit = std::env::args().any(|a| a == "--quit");
-    if !test_run && !notify::claim_instance() {
+    let after_update = std::env::args().any(|a| a == "--after-update");
+    let claim_wait = if after_update { Duration::from_secs(30) } else { Duration::ZERO };
+    if !test_run && !notify::claim_instance_within(claim_wait) {
         notify::signal_running(quit);
         return Ok(());
     }

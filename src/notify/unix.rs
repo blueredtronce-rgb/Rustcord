@@ -136,4 +136,21 @@ mod tests {
         assert_eq!(got, [TrayAction::Show, TrayAction::Quit]);
         std::fs::remove_file(&path).unwrap();
     }
+
+    /// `--after-update`: the new copy waits while the old one still listens, then takes over.
+    #[test]
+    fn claim_waits_for_the_old_instance() {
+        let path = std::env::temp_dir().join(format!("rc-instance-wait-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let old = UnixListener::bind(&path).unwrap();
+        assert!(!super::super::retry_for(Duration::ZERO, || claim(&path, |_| {})), "the old one still answers");
+        let quits = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(old);
+        });
+        assert!(super::super::retry_for(Duration::from_secs(10), || claim(&path, |_| {})));
+        quits.join().unwrap();
+        assert!(UnixStream::connect(&path).is_ok(), "the new one listens");
+        std::fs::remove_file(&path).unwrap();
+    }
 }

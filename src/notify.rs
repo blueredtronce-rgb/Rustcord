@@ -213,6 +213,25 @@ pub fn claim_instance() -> bool {
     }
 }
 
+/// `claim_instance`, retried every 100 ms until it succeeds or `wait` has passed (ZERO: one
+/// try). `--after-update`: the previous version is still on its way out.
+pub fn claim_instance_within(wait: Duration) -> bool {
+    retry_for(wait, claim_instance)
+}
+
+fn retry_for(wait: Duration, mut attempt: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + wait;
+    loop {
+        if attempt() {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Asks the Rustcord that holds this data dir to come to the front, or to quit (`quit`; then
 /// waits until it has exited, at most 20 s). False when none answered within 5 s.
 pub fn signal_running(quit: bool) -> bool {
@@ -698,6 +717,24 @@ mod tests {
         // A test run's RUSTCORD_HOME never meets the user's Rustcord.
         assert_ne!(user, instance_name(Path::new(r"C:\Temp\fx4\shot\config")));
         assert_ne!(instance_name(Path::new(r"C:\a\config")), instance_name(Path::new(r"C:\b\config")));
+    }
+
+    #[test]
+    fn retry_for_tries_until_the_deadline() {
+        let mut tries = 0;
+        assert!(!retry_for(Duration::ZERO, || {
+            tries += 1;
+            false
+        }));
+        assert_eq!(tries, 1, "ZERO: one try");
+        let mut tries = 0;
+        assert!(retry_for(Duration::from_secs(5), || {
+            tries += 1;
+            tries == 3
+        }));
+        let started = Instant::now();
+        assert!(!retry_for(Duration::from_millis(250), || false));
+        assert!(started.elapsed() >= Duration::from_millis(250) && started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
