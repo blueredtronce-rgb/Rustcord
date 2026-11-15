@@ -58,6 +58,7 @@ directly as a **user** client. Not a port of the official client.
   (`async-io` + `blocking`, never its `tokio` default), zbus 5.19 (`async-io` + `blocking-api`,
   the one keyring builds), winit 0.30.13 (`x11`, to force X11); macOS tray-icon =0.26.1,
   objc2-user-notifications 0.3.2, objc2 0.6, block2 0.6, objc2-foundation / objc2-app-kit 0.3.2.
+  Updater (approved, already in the tree): ed25519-dalek 2.2, semver 1.0.
 - These crate versions are newer than your training data. **Check real APIs in the downloaded
   sources** under `~/.cargo/registry/src/index.crates.io-*/`
   (e.g. `egui-0.37.0\src`, `reqwest-0.13.*`, `tokio-tungstenite-0.30.0`, `toml-1.*`) instead of
@@ -104,6 +105,15 @@ cargo check
     (RSA-OAEP key per code, heartbeat, close codes), then the ticket exchange via `AuthClient`.
   - `backend::run` keeps the login state (auth client, 2FA ticket, QR task) and feeds every
     resulting token into `Command::Login` (validate, keyring, gateway).
+- Self-updater (`src/update/`, `docs/UPDATER_DESIGN.md`): one task on the same runtime with its
+  own reqwest client (no token, no Discord headers, `Rustcord/<version>` user agent) that only
+  talks to github.com. UI → updater: `update::sync_ui` (hidden / busy / interacted, every
+  `logic` pass) and the button fns, as events over an mpsc channel; updater → UI:
+  `update::status()` (a `Status` behind a mutex, read once per pass via `ui::update::status`)
+  and `request_repaint_after(1 ms)` when it changes. `machine.rs` decides without I/O, `feed.rs`
+  fetches and verifies (signature before parsing), `store.rs` keeps `<cache>/update/state.toml`,
+  `platform.rs` installs (Windows setup `--update`, Linux `install.sh --update` or pkexec,
+  macOS bundle swap). `update::start` runs before the first frame without network.
 
 ## Module ownership (one implementer per row; don't edit other rows' files)
 | Owner | Files |
@@ -129,6 +139,7 @@ cargo check
 | quests | `src/quests.rs`, `src/api/quests.rs`, `src/gateway/quests.rs`, `src/ui/quests.rs`; the Quests row in `ui/sidebar.rs`: see `docs/QUESTS_NOTES.md` |
 | media | `src/media/*` (player worker, Range reads, MP4/H.264/AAC, shared speaker output), `src/ui/viewer.rs` (inline video and gifv, the lightbox `Modal::Media`): see `docs/MEDIA_DESIGN.md` |
 | plugins | `src/plugins/*` (registry + plugins.toml, one module per area), `src/ui/user_settings/plugins.rs`; one-line hooks elsewhere guarded by `plugins::enabled`: see `docs/PLUGINS_NOTES.md` |
+| updater | `src/update/*` (engine; `state.rs` is the UI contract), `src/ui/update.rs` (screen, title-bar button, demo) and the Updates rows in `ui/user_settings/app.rs`; packaging: `rustcord-setup --update`, `install.sh --update`, `scripts/make-update-manifest.py`, release.yml: see `docs/UPDATER_DESIGN.md` |
 
 Assets & build: `assets/logo.svg` / `logo-small.svg` → `examples/export_icons.rs` (resvg) →
 `assets/icons/*.png` + `assets/rustcord.ico`, and the flat one-colour `assets/logo-mono.svg` →
@@ -191,6 +202,26 @@ login hint and README).
   (`--quit` gets its own `RUSTCORD_HOME`, `--purge` skips the keyring); `--uninstall --purge`
   must leave `<scratch>` gone. Packaging: `scripts/build-linux.sh`, `scripts/build-macos.sh`,
   CI `.github/workflows/release.yml` (manual or `v*` tags only).
+- Updater (`src/update`, `docs/UPDATER_DESIGN.md`): off in debug builds and whenever a
+  `RUSTCORD_*` variable other than `RUSTCORD_HOME` is set (`RUSTCORD_HOME` alone: notice only).
+  Test mode, only together: `RUSTCORD_UPDATE_FEED=<http(s)://127.0.0.1|[::1]|localhost[:port]/…/latest.json>`
+  (signature at `<url>.sig`, packages next to it; no user info, query or fragment),
+  `RUSTCORD_UPDATE_PUBKEY=<base64 of the 32-byte Ed25519 key>`, `RUSTCORD_UPDATE_FROM=<X.Y.Z>`
+  (pretend to be that version; not passed on to the restarted copy), plus `RUSTCORD_HOME`,
+  `RUSTCORD_SETUP_TEST`, `RUSTCORD_SETUP_PREFIX`, `RUSTCORD_OFFLINE` (an end-to-end run must
+  not read the saved login or reach Discord), `RUSTCORD_TRACE_STARTUP` and the screenshot hooks
+  (`RUSTCORD_SCREENSHOT`, `_FRAME`, `RUSTCORD_WINDOW_SIZE`) (Test mode also accepts the setup's
+  "RustcordSetupTest" Apps entry on Windows, and with `RUSTCORD_SETUP_TEST=1` the tarball install
+  under `$RUSTCORD_SETUP_PREFIX/.local/bin/rustcord` on Linux). State and downloads:
+  `<cache>/update/` (`state.toml`, the staged package). `--after-update` (set by the updater):
+  wait up to 30 s for the old copy's instance lock instead of handing off to it, then delete its
+  leftovers (`rustcord.exe.old`, macOS `.Rustcord-old-*`). Windows and Linux start the new
+  version after the event loop ended (`update::relaunch` in main.rs; Linux `exec`s, so a systemd
+  unit keeps the PID), only when the updater asked for the quit, never during a call.
+- `RUSTCORD_UPDATE_DEMO=checking|uptodate|available|ready|download|install|restart|error|deb|manual`
+  (`ui/update.rs`): a fake updater state for screenshots, no network: the update screen
+  (download, install, restart, error, deb, manual), the title-bar button (available, ready),
+  the Updates rows with `RUSTCORD_OPEN=settings:windows` (checking, uptodate).
 - `RUSTCORD_LOGIN_TAB=qr|email|token|mfa`: start on the login screen with that tab, ignoring
   any stored token (`mfa` = the 2FA form with all methods, no network). Use with an empty
   `RUSTCORD_HOME`; `qr` connects to the remote-auth gateway (never scan such a code in tests).
