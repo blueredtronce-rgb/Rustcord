@@ -17,7 +17,9 @@ directly as a **user** client. Not a port of the official client.
   each wake one pass; `RustcordApp::settle_after_events` adds one more pass only if the event
   pass moved a widget (hover, the chat's stick-to-bottom and area sizes use the previous pass's
   rects). UI code that must show a state change on the next pass without moving a widget
-  requests its own repaint.
+  requests its own repaint. Every wake from another thread names `ViewportId::ROOT`
+  (`request_repaint_of`, `request_repaint_after_for`): a bare `request_repaint*` targets the
+  viewport being run, which is an overlay window while one repaints (docs/OVERLAY_DESIGN.md §2).
 - Windows first; cross-platform where it costs nothing (`#[cfg(windows)]` for Win32-only code
   with a no-op fallback).
 

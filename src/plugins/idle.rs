@@ -59,7 +59,7 @@ fn watch_return(ctx: &egui::Context, timeout: Duration) {
                 // Before the wake-up, so the frame it brings may start the next watcher.
                 WATCHING.store(false, Ordering::Relaxed);
                 if back {
-                    woken.request_repaint();
+                    woken.request_repaint_of(egui::ViewportId::ROOT);
                 }
                 return;
             }

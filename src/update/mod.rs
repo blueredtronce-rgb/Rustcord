@@ -252,7 +252,7 @@ fn publish(status: &Status) {
         *shared = status.clone();
         drop(shared);
         if let Some(ctx) = CTX.get() {
-            ctx.request_repaint_after(Duration::from_millis(1));
+            ctx.request_repaint_after_for(Duration::from_millis(1), egui::ViewportId::ROOT);
         }
     }
 }
@@ -395,7 +395,7 @@ impl Task {
                 QUIT_FOR_UPDATE.store(true, Ordering::Relaxed);
                 crate::notify::request_quit();
                 if let Some(ctx) = CTX.get() {
-                    ctx.request_repaint();
+                    ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
         }

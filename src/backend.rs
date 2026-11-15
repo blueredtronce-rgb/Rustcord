@@ -1070,7 +1070,7 @@ impl EventSink {
     /// burst of these costs one pass.
     pub fn send_after(&self, ev: BackendEvent, delay: Duration) {
         if self.tx.send(ev).is_ok() {
-            self.ctx.request_repaint_after(delay);
+            self.ctx.request_repaint_after_for(delay, egui::ViewportId::ROOT);
         }
     }
 }

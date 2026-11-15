@@ -263,7 +263,7 @@ fn worker(url: &str, opts: &Opts, sh: &Arc<Shared>, rx: &mpsc::Receiver<Ctl>, fr
         Ok(Err(f)) => State::Failed(f),
         Err(_) => State::Failed(Fail::Unsupported),
     });
-    ctx.request_repaint();
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
 }
 
 fn run(url: &str, opts: &Opts, sh: &Shared, rx: &mpsc::Receiver<Ctl>, frames: &VideoFrames, vkey: &VideoKey, ctx: &egui::Context) -> Result<(), Fail> {
@@ -272,7 +272,7 @@ fn run(url: &str, opts: &Opts, sh: &Shared, rx: &mpsc::Receiver<Ctl>, frames: &V
     e.r = Some(r);
     e.seek(0);
     sh.set(State::Paused);
-    ctx.request_repaint();
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
     loop {
         let msg = if e.playing || e.show_one {
             match rx.try_recv() {
@@ -300,7 +300,7 @@ fn run(url: &str, opts: &Opts, sh: &Shared, rx: &mpsc::Receiver<Ctl>, frames: &V
             None => {}
         }
         if msg.is_some() {
-            ctx.request_repaint();
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
     }
 }

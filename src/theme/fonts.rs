@@ -205,7 +205,7 @@ fn spawn_fetch(ctx: egui::Context, list: Vec<(u16, String)>, dir: PathBuf) -> bo
         gg.generation += 1;
         if gg.on {
             reapply(&ctx, &gg);
-            ctx.request_repaint();
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
     };
     std::thread::Builder::new().name("rc-fonts".into()).spawn(run).is_ok()

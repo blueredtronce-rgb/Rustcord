@@ -407,7 +407,7 @@ impl FrameWriter {
         }
         // One paint per frame: egui answers a zero-delay request with two (a 30 fps video
         // painted 60 times a second); a pending earlier wake absorbs this one.
-        self.ctx.request_repaint_after(Duration::from_millis(1));
+        self.ctx.request_repaint_after_for(Duration::from_millis(1), egui::ViewportId::ROOT);
         true
     }
 }

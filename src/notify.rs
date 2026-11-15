@@ -136,7 +136,7 @@ fn push(action: TrayAction) {
 /// A repaint, so `App::logic` runs (also while the window is hidden).
 fn wake() {
     if let Some(ctx) = WAKE.get() {
-        ctx.request_repaint();
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
     }
 }
 

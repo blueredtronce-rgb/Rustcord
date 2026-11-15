@@ -801,7 +801,7 @@ fn add_jobs(ctx: &egui::Context, tray: &mut Tray, ch: Id, jobs: Vec<Job>, limit:
                 Job::Pasted(img) => from_paste(&ctx, &img, limit),
             };
             INBOX.lock().unwrap_or_else(|e| e.into_inner()).push((ch, file));
-            ctx.request_repaint();
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         });
     }
 }

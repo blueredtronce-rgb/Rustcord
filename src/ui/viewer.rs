@@ -718,7 +718,7 @@ fn save(ctx: &egui::Context, cx: &mut UiCx<'_>, item: &MediaItem) {
     let started = net::spawn(async move {
         let r = net::save(url, path).await;
         let _ = tx.send(Done::Saved(n, r));
-        ctx2.request_repaint();
+        ctx2.request_repaint_of(egui::ViewportId::ROOT);
     });
     if !started {
         cx.view.toast(format!("Could not save {name}. Check your connection, then try again."), true);
@@ -735,7 +735,7 @@ fn copy_image(ctx: &egui::Context, cx: &mut UiCx<'_>, item: &MediaItem) {
             Err(e) => Err(e),
         };
         let _ = tx.send(Done::Copied(r));
-        ctx2.request_repaint();
+        ctx2.request_repaint_of(egui::ViewportId::ROOT);
     });
 }
 
