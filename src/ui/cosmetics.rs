@@ -241,7 +241,7 @@ pub fn plate_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, tex
 }
 
 /// The scrim behind the user panel's buttons on my nameplate (`row`: the panel, `buttons_left`:
-/// the leftmost button's left edge): `bg` (the panel colour) at 75 % (`strong`, High Contrast:
+/// the leftmost button's left edge): `bg` (the panel colour) at 50 % (`strong`, High Contrast:
 /// opaque) from 8 px before the buttons to the right edge, faded in over the 24 px before, so
 /// their glyphs keep their contrast on bright art.
 pub fn buttons_scrim(row: Rect, corners: impl Into<CornerRadius>, bg: Color32, buttons_left: f32, strong: bool) -> Shape {
