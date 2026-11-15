@@ -13,6 +13,8 @@
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-f74c00?logo=rust&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078d6">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+  <a href="https://github.com/r0sc/Rustcord/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/r0sc/Rustcord?label=release"></a>
+  <a href="https://github.com/r0sc/Rustcord/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/r0sc/Rustcord/total"></a>
 </p>
 
 <p align="center">
@@ -94,7 +96,8 @@
   activity" is on (synced with your account, like in the official app); your added games stay
   on this PC.
 - Tray icon (notification area on Windows, system tray on Linux, menu bar on macOS), close to
-  tray, open at login, and an installer for each system (see [Install](#install)).
+  tray, open at login, and an installer for each system that keeps Rustcord up to date (see
+  [Install](#install) and [Updates](#updates)).
 - File uploads (button, drag & drop, paste), emoji and GIF pickers, `@ # :` autocomplete,
   typing indicator, online status + custom status, pins, search, mark unread.
 - Threads (sidebar rows, thread panel, create), forum/media channels (posts, tags, new post).
@@ -165,10 +168,27 @@ checked (OS credential store, see below). The password and 2FA code are never wr
 disk or logs, are not shown in error messages, and Rustcord wipes its own copies from
 memory after sending them. The QR login uses a new RSA key per code that only lives in memory.
 
+## Download
+
+The newest version is on the [latest release](https://github.com/r0sc/Rustcord/releases/latest)
+page. Pick the file for your system (`<version>` is the release's version, for example `0.1.0`):
+
+| System | File |
+|---|---|
+| [Windows, 64-bit](https://github.com/r0sc/Rustcord/releases/latest) | `Rustcord-Setup-<version>.exe` |
+| [Debian, Ubuntu, Mint and relatives, 64-bit x86](https://github.com/r0sc/Rustcord/releases/latest) | `rustcord_<version>_amd64.deb` |
+| [Any Linux, 64-bit x86, glibc 2.35+](https://github.com/r0sc/Rustcord/releases/latest) | `rustcord-<version>-linux-x86_64.tar.gz` |
+| [macOS 11+, Apple silicon and Intel](https://github.com/r0sc/Rustcord/releases/latest) | `Rustcord-<version>-macos-universal.dmg` |
+
+The release also holds `Rustcord-<version>-macos-universal.app.tar.gz` (the macOS update
+package) and `latest.json` + `latest.json.sig` (the signed update feed), which the app fetches
+itself, and `SHA256SUMS` (see [Verifying downloads](#verifying-downloads)). The Windows setup
+is not code-signed and the macOS app is not notarized by Apple, so the first start needs one
+extra click (below). To build from source instead, see [Build](#build).
+
 ## Install
 
-Get the package for your system from this repository's Releases page once one is published,
-or build it yourself (see [Build](#build)).
+Installed copies update themselves (see [Updates](#updates)).
 
 ### Windows
 
@@ -178,9 +198,9 @@ Rustcord's own code (about 23 MB with the app inside); no installer tools are in
 Run it. It installs for your Windows user only (no administrator rights), like Discord: the
 app goes to `%LOCALAPPDATA%\Programs\Rustcord`, with a Start menu shortcut, an optional
 desktop shortcut and an entry in Settings → Apps. "Open Rustcord when I sign in to Windows"
-(on by default) starts it hidden in the notification area. Running the setup again updates
-Rustcord in place; a running Rustcord is asked to quit first. `--silent` installs with the
-default options without a window.
+(on by default) starts it hidden in the notification area. Rustcord updates itself; running a
+newer setup by hand also updates it in place (a running Rustcord is asked to quit first).
+`--silent` installs with the default options without a window.
 
 The setup is not code-signed, so Windows SmartScreen may say "Windows protected your PC".
 Select **More info**, then **Run anyway**.
@@ -218,10 +238,11 @@ Two packages for 64-bit x86 with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
   ```
 
   It puts the app in `~/.local/bin/rustcord`, its app menu entry and icons in
-  `~/.local/share`, and the login start in `~/.config/autostart/rustcord.desktop`. Running it
-  again updates Rustcord in place and keeps your login start choice; a running Rustcord is asked
-  to quit first. The tarball uses the system's libraries: ALSA, OpenSSL 3, OpenGL, X11 and
-  libxkbcommon-x11 (install.sh says when that one is missing).
+  `~/.local/share`, and the login start in `~/.config/autostart/rustcord.desktop`. Rustcord
+  updates itself; running a newer `install.sh` by hand also updates it in place and keeps your
+  login start choice (a running Rustcord is asked to quit first). The tarball uses the system's
+  libraries: ALSA, OpenSSL 3, OpenGL, X11 and libxkbcommon-x11 (install.sh says when that one is
+  missing).
 
 "Open Rustcord when I log in" is on by default (Rustcord turns it on at its first start;
 Settings → Linux settings turns it off). It starts hidden in the system tray. Rustcord runs on
@@ -243,14 +264,80 @@ Rustcord is not notarized by Apple (that needs a paid Apple developer account), 
 blocks the first start ("Apple could not verify…"). Open Rustcord once, then go to System
 Settings → Privacy & Security and click **Open Anyway** next to the Rustcord message (since
 macOS 15, right-click → Open no longer skips the check). Or, in Terminal:
-`xattr -dr com.apple.quarantine /Applications/Rustcord.app`. The app is only ad-hoc signed,
-so macOS asks again for the microphone and the keychain after each update.
+`xattr -dr com.apple.quarantine /Applications/Rustcord.app`. On macOS 14 and older,
+right-click Rustcord in Applications → **Open** → **Open** also works. The app is only ad-hoc signed,
+so macOS may ask again for the microphone and the keychain (the saved login) after each update.
 
 Closing the window keeps Rustcord in the menu bar; quit it from the menu bar icon or with
 Cmd+Q. "Open Rustcord when I log in" is on by default (a login item in
 `~/Library/LaunchAgents/io.github.r0sc.rustcord.plist`; macOS shows a notice when it is
 added). To uninstall, turn that off in Settings → macOS settings, quit Rustcord and move it
 from Applications to the Trash.
+
+### Updates
+
+Installed copies keep themselves up to date from this repository's releases:
+
+- Rustcord checks for a new version in the background when it starts and every 6 hours while
+  it runs, also while it waits in the tray. The start never waits for the network.
+- A new version found right after the start, before you click or type anything, is installed
+  at once behind an update screen ("Downloading update", "Installing update", "Restarting"),
+  and Rustcord restarts into it.
+- Otherwise it downloads in the background and an **Update ready** button appears in the title
+  bar: click it to restart into the new version now. If you don't, the next start installs it
+  behind the same update screen before the main window.
+- Once Rustcord has waited hidden in the tray for 10 minutes (for example after the start at
+  sign-in), it installs a downloaded update quietly and restarts hidden, but never during a
+  voice or video call or a screen share: it waits until the call ends. On macOS it waits for
+  the next start or a click instead, because macOS may ask for permissions again (see below).
+- A failed update never blocks Rustcord: the update screen says in one line what went wrong and
+  Rustcord continues with the version you have. A version that failed to install is not tried
+  again on its own; the title-bar button (**Update ready**, or **Update available** when it
+  has to be downloaded again) still offers it.
+- Settings → Windows settings (Linux settings, macOS settings) → Updates has **Install updates
+  automatically** (on by default), the current version and **Check for updates**. With
+  automatic installs off, Rustcord still checks; the title-bar button then says **Update
+  available** and downloads and installs on click.
+- `.deb` installs (`/usr/bin/rustcord`) download the new package, but installing it asks for
+  your password: **Install** runs `apt-get install` through `pkexec`, the system's password
+  dialog. Without `pkexec`, Rustcord shows where it saved the `.deb`.
+- On macOS the app updates itself only where it may write: `/Applications` (as an
+  administrator) or `~/Applications`. After an update macOS may ask once more for keychain
+  access and the microphone, because the app is only ad-hoc signed.
+- Copies that weren't installed by the setup, `install.sh`, the `.deb` or the dmg (a copied exe,
+  a build from source, a copy started with `RUSTCORD_HOME`) only show **Update available**,
+  which opens the release page. Development builds never update.
+
+Updates are signed: the release workflow signs the feed with an Ed25519 key that only this
+repository's release job holds, and the app checks the signature with the public key built
+into it before it trusts anything in the feed (details in [Verifying downloads](#verifying-downloads)).
+
+Privacy: the check downloads `latest.json` and `latest.json.sig` from github.com (and a package
+from GitHub's download servers when there is one), so GitHub sees your IP address and
+`Rustcord/<version>` (the user agent) every 6 hours. Nothing else is sent; no Discord token,
+cookie, header or other personal data is involved.
+
+To stop automatic updates, turn off **Install updates automatically**: Rustcord then downloads
+and installs nothing until you click **Update available**. The check itself has no switch.
+
+### Verifying downloads
+
+Every release has `SHA256SUMS` with the SHA-256 of each file in it: compare with
+`Get-FileHash Rustcord-Setup-<version>.exe` (PowerShell), `sha256sum -c SHA256SUMS
+--ignore-missing` (Linux) or `shasum -a 256 <file>` (macOS).
+
+The update feed `latest.json` names the newest version and, per system, the package's URL,
+SHA-256 and size. It is signed with Ed25519 (`latest.json.sig`, base64); the public key is
+[`assets/update-signing.pub`](assets/update-signing.pub), built into the app. Rustcord checks
+the signature before it reads anything in the file, accepts only newer versions from this
+repository's release downloads, and checks the size and SHA-256 before it uses a download. To
+check the signature yourself with OpenSSL 3 (bash):
+
+```bash
+{ printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; base64 -d update-signing.pub; } > pub.der
+base64 -d latest.json.sig > latest.json.sig.bin
+openssl pkeyutl -verify -pubin -keyform DER -inkey pub.der -rawin -in latest.json -sigfile latest.json.sig.bin
+```
 
 ## Build
 
@@ -288,14 +375,14 @@ The Linux and macOS packages:
 
 ```bash
 bash scripts/build-linux.sh   # on Linux (needs dpkg-deb): dist/rustcord_<version>_amd64.deb and dist/rustcord-<version>-linux-x86_64.tar.gz
-bash scripts/build-macos.sh   # on a Mac: dist/Rustcord-<version>-macos-universal.dmg (both architectures, ad-hoc signed)
+bash scripts/build-macos.sh   # on a Mac: dist/Rustcord-<version>-macos-universal.dmg and .app.tar.gz (both architectures, ad-hoc signed)
 ```
 
 `.github/workflows/release.yml` builds all three on GitHub. It never runs on pushes or pull
 requests: start it under Actions → release → Run workflow (packages as workflow artifacts;
 "check_only" runs only fmt, clippy and the tests), or push a tag `v<version>` matching
-`Cargo.toml`'s version, which also creates a draft release with the packages and
-`SHA256SUMS` to publish by hand.
+`Cargo.toml`'s version, which also creates a draft release with the packages, the signed update
+feed and `SHA256SUMS` to publish by hand (see [Releasing](#releasing)).
 
 To regenerate the icons after editing `assets/logo.svg` / `assets/logo-small.svg` (the same
 R-bubble, larger for <= 32 px; `assets/logo-mono.svg` is the flat one-colour mark without the
@@ -314,6 +401,7 @@ cargo run --example export_icons
 | Themes (`*.toml`) | `…\config\themes\` | `…/themes/` | `…/themes/` |
 | Local profile overrides | `…\config\overrides\` (`overrides.toml` + image copies) | `…/overrides/` | `…/overrides/` |
 | Cache (snapshot, images) | `%LOCALAPPDATA%\Rustcord\cache\` | `~/.cache/rustcord/` | `~/Library/Caches/Rustcord/` |
+| Updates (downloads, `state.toml`) | `%LOCALAPPDATA%\Rustcord\cache\update\` | `~/.cache/rustcord/update/` | `~/Library/Caches/Rustcord/update/` |
 | Login token | Windows Credential Manager (generic credential `user-token.Rustcord`) | Secret Service | Keychain |
 | Added games, saved games list | `…\config\games.json`, `…\cache\detectable.tsv` | `…/games.json`, `~/.cache/rustcord/detectable.tsv` | `…/games.json`, `~/Library/Caches/Rustcord/detectable.tsv` |
 | Installed app (setup) | `%LOCALAPPDATA%\Programs\Rustcord\` | `/usr/bin/rustcord` (.deb), `~/.local/bin/rustcord` (install.sh) | `/Applications/Rustcord.app` |
@@ -334,6 +422,7 @@ send_read_acks = true         # mark viewed channels read on your account (syncs
 show_member_list = true
 animate_others = "hover"      # "always" | "hover" – animated avatars/emoji of others
 minimize_to_tray = true       # × hides the window to the notification area (Quit is in the tray menu)
+auto_update = true            # install updates automatically (the check runs either way)
 # client_build_number = 0     # optional: sent in the client properties
 # system_locale = "en-US"
 ```
@@ -410,6 +499,48 @@ loaded; with a live connection, avatars and attachments add to RAM (textures are
   `docs/SOCIAL_UI_DESIGN.md` – backend contracts and UI hook-up per feature block.
 - `docs/MEDIA_DESIGN.md` – the inline video player and the media viewer; `docs/QUESTS_NOTES.md` –
   quests, the video progress rule and why play and stream quests aren't advanced.
+- `docs/UPDATER_DESIGN.md` – the self-updater: feed, signature, install per system, test hooks.
+
+### Releasing
+
+1. Set `version` in `Cargo.toml` (plain `X.Y.Z`, higher than the last release), run
+   `cargo build` so `Cargo.lock` follows (CI builds with `--locked`), and commit both.
+2. Tag it with the same version and push the commit and the tag:
+   `git tag v0.1.1 && git push origin main v0.1.1`.
+3. The release workflow builds the three systems, writes `latest.json` with
+   `scripts/make-update-manifest.py`, signs it with the repository secret
+   `RUSTCORD_UPDATE_SIGNING_KEY`, verifies the signature against `assets/update-signing.pub`
+   (a missing or wrong key fails the run), adds `SHA256SUMS` and creates a **draft** release.
+4. Check the draft: the four packages from [Download](#download), the `.app.tar.gz`,
+   `latest.json` (its `version` and the four URLs point at this tag), `latest.json.sig` and
+   `SHA256SUMS`. Then publish it. Installed copies pick it up within 6 hours
+   (`releases/latest` ignores drafts and prereleases, so only a published release counts).
+
+The signing key, made once with OpenSSL 3:
+
+```bash
+openssl genpkey -algorithm ed25519 -out update-signing.pem
+openssl pkey -in update-signing.pem -pubout -outform DER | tail -c 32 | base64 > assets/update-signing.pub
+```
+
+Commit `assets/update-signing.pub`. Paste the whole `update-signing.pem` into the secret
+`RUSTCORD_UPDATE_SIGNING_KEY` (Settings → Secrets and variables → Actions), keep an offline
+backup, and delete the file: whoever has the private key can ship code to every installed copy.
+
+Key rotation: release one version whose `assets/update-signing.pub` holds the new key, still
+signed with the old key; sign every release after it with the new key. Copies older than that
+release trust only the old key, so they must update through it.
+
+Lost key (no backup): installed copies can no longer update themselves, since they accept
+only feeds signed with the key they carry. Make a new key as above, commit its public half,
+store the private half as the secret and release; then tell users (release notes, README) to
+install that release once by hand. From there on updates work again. A leaked key: do the
+same, delete the old secret, and check the repository's access; the app only downloads from
+this repository's release downloads, so the key alone is not enough to ship code.
+
+Recommended hardening (GitHub settings): move the secret into an environment `release` with a
+required reviewer (and add `environment: release` to the workflow's `release` job), and protect
+`v*` tags so only you can push them.
 
 ## License
 
