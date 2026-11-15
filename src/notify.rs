@@ -38,6 +38,8 @@ mod unix;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     Show,
+    /// A click on one of Rustcord's notifications (Windows, Linux; macOS reports `Show`).
+    Notification,
     ToggleMute,
     ToggleDeafen,
     Quit,
@@ -420,7 +422,8 @@ mod imp {
         match msg {
             // Version 4: the event in the low word of lParam, the click point in wParam.
             WM_TRAY => match (lparam & 0xffff) as u32 {
-                NIN_SELECT | NIN_KEYSELECT | NIN_BALLOONUSERCLICK => push(TrayAction::Show),
+                NIN_SELECT | NIN_KEYSELECT => push(TrayAction::Show),
+                NIN_BALLOONUSERCLICK => push(TrayAction::Notification),
                 WM_CONTEXTMENU => menu(hwnd, (wparam & 0xffff) as i16 as i32, ((wparam >> 16) & 0xffff) as i16 as i32),
                 _ => {}
             },

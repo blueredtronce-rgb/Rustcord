@@ -156,7 +156,7 @@ fn clicks(conn: &zbus::blocking::Connection) {
         if let Ok((id, _action)) = msg.body().deserialize::<(u32, String)>()
             && SENT.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
         {
-            push(TrayAction::Show);
+            push(TrayAction::Notification);
         }
     }
 }

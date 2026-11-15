@@ -269,8 +269,10 @@ fn caret_timeout(ctx: &egui::Context) {
 
 /// The window's tray life, every pass (`RustcordApp::logic`), also while it is hidden: tray
 /// menu clicks, closing to the tray (× and Alt+F4) unless quitting, `--minimized` at startup;
-/// and the mute state for the tray menu's check marks.
-pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &CommandSender, settings: &mut Settings) {
+/// and the mute state for the tray menu's check marks. True when one of Rustcord's notifications
+/// was clicked (the window is shown then too).
+pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &CommandSender, settings: &mut Settings) -> bool {
+    let mut clicked = false;
     let quitting = egui::Id::unique("rc_quitting");
     let started = egui::Id::unique("rc_started");
     if !ctx.data(|d| d.get_temp::<bool>(started).unwrap_or(false)) {
@@ -283,6 +285,10 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
     for action in crate::notify::take_actions() {
         match action {
             TrayAction::Show => show_window(ctx),
+            TrayAction::Notification => {
+                show_window(ctx);
+                clicked = true;
+            }
             TrayAction::ToggleMute | TrayAction::ToggleDeafen => toggle_voice(view, cmd, action == TrayAction::ToggleMute),
             TrayAction::Quit => {
                 ctx.data_mut(|d| d.insert_temp(quitting, true));
@@ -311,6 +317,7 @@ pub(in crate::ui) fn logic(ctx: &egui::Context, view: &mut ViewState, cmd: &Comm
     // Linux, macOS: push to talk from this window's keys (no global key state there).
     #[cfg(not(windows))]
     crate::voice::audio::set_ptt_held(view.window_focused && settings.push_to_talk && ctx.input(|i| super::voice::key_held(i, settings.push_to_talk_key)));
+    clicked
 }
 
 /// The window waits in the tray (`to_tray` .. `show_window`).
