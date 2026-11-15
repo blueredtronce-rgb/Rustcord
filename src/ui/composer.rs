@@ -9,7 +9,8 @@
 //! Test hooks (`RUSTCORD_MSG_DEMO`, see `messages::demo`): `attach` (tray with sample files and
 //! an error), `upload` (an upload in flight), `typing` (two people typing), `gif` (GIF tab with
 //! placeholder categories and results), `ac` / `ac-channel` / `ac-emoji` (`@` / `#` / `:`
-//! autocomplete open), `cooldown` (send cooldown), `drop` (the drag-and-drop overlay).
+//! autocomplete open), `cooldown` (send cooldown), `drop` (the drag-and-drop overlay), `online` (no
+//! "Offline" chip, for README screenshots).
 //! OWNERSHIP: composer engineer.
 
 use super::autocomplete::{self, Row};
@@ -182,7 +183,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id, chat_top: f32, panel: 
     let (kind, guild_id) = cx.state.channels.get(&ch).map_or((0, None), |c| (c.kind, c.guild_id));
     let hint = format!("Message {}{}", channel_prefix(kind), cx.state.channel_name(ch));
     // While (re)connecting, sends still go out over REST.
-    let offline = cx.state.conn == ConnState::Offline;
+    let offline = cx.state.conn == ConnState::Offline && !demo("online");
     let wait_ms = slowmode_wait(cx, ch).max(cooldown_ms(cx, ch, Instant::now()));
     let can_attach = cx.state.channels.get(&ch).is_some_and(|c| c.guild_id.is_none()) || cx.state.channel_permissions(ch) & perm::ATTACH_FILES != 0;
     let now = ctx.input(|i| i.time);

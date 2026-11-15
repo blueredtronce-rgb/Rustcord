@@ -1101,7 +1101,8 @@ fn new_messages_bar(ui: &mut egui::Ui, cx: &mut UiCx<'_>, lc: &Lcx, memo: &mut M
 /// divider above the 3 newest messages), `older` (scrolled up: jump-to-present bar), `emoji`
 /// (the composer's emoji picker), `pins` (pins popout listing cached messages), `search` /
 /// `indexing` (results panel with cached hits / its indexing state) and `detached` (the older
-/// half of the history shown as a jump window: "Jump to present" bar, highlighted target).
+/// half of the history shown as a jump window: "Jump to present" bar, highlighted target) and
+/// `online` (the composer without its "Offline" chip; README screenshots).
 pub(super) fn demo(flag: &str) -> bool {
     static FLAGS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FLAGS.get_or_init(|| std::env::var("RUSTCORD_MSG_DEMO").unwrap_or_default()).split(',').any(|f| f.trim() == flag)

@@ -269,7 +269,7 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
 - `RUSTCORD_POINTER=<x>x<y>`: keep the pointer at that point (logical px) for hover states and
   tooltips in screenshots; with `RUSTCORD_CLICK=left|right` it also clicks there once (frames
   10-11), e.g. to open a context menu.
-- `RUSTCORD_MSG_DEMO=<comma list>` (ui/messages.rs): message-view states offline mode can't
+- `RUSTCORD_MSG_DEMO=<comma list>` (ui/messages.rs; `online` hides the composer's Offline chip): message-view states offline mode can't
   reach, on the newest message of the open channel: `hover` (hover toolbar), `reply` (composer
   reply bar), `edit` (inline edit), `picker` (reaction picker), `delete` (confirmation), `menu`
   (its "…" context menu), plus `failed` (a failed send with Retry/Dismiss), `start` (the
@@ -347,7 +347,8 @@ started there (I'm connected, the DM open, its other members rung: dimmed, pulsi
   `RUSTCORD_OPEN=voice:<id>,channel:<id>` (the call view): `people` (cached users in the call:
   speaking, muted, deafened + live, camera), `video` (synthetic camera / stream frames, my camera
   on, the stream watched), `share` (I share my screen), `focus`, `chat`, `connecting`, `picker`
-  (screen share picker, sample sources). No request; with `settings:voice`, `video` shows the
+  (screen share picker, sample sources), `stream:<picture>` (with `people`: the watched stream shows that
+  local PNG / JPEG; README screenshots). No request; with `settings:voice`, `video` shows the
   camera preview.
 
 ## egui 0.37 gotchas (see docs/EGUI_0_37_NOTES.md for the full list)

@@ -735,7 +735,9 @@ fn controls(ui: &mut egui::Ui, cx: &mut UiCx<'_>, bar: Rect) {
 /// users join: one speaking, one muted, one deafened and live, one with the camera on),
 /// `video` (their camera as a 4:3 test picture, my camera on, the live stream watched),
 /// `share` (I share my screen), `focus` (the first tile expanded), `chat` (text chat open),
-/// `connecting` (still joining), `picker` (the screen share picker with sample sources).
+/// `connecting` (still joining), `picker` (the screen share picker with sample sources),
+/// `stream:<picture>` (with `people`: the third user's stream, watched, showing that local PNG /
+/// JPEG instead of `video`'s test desktop; README screenshots).
 pub(super) fn demo(cx: &mut UiCx<'_>) {
     static FLAGS: OnceLock<String> = OnceLock::new();
     let flags = FLAGS.get_or_init(|| std::env::var("RUSTCORD_CALL_DEMO").unwrap_or_default());
@@ -799,6 +801,21 @@ pub(super) fn demo(cx: &mut UiCx<'_>) {
                 cx.view.call_ui.share = ShareForm::default();
                 screen_share::demo_pick(&mut cx.view.call_ui.share, ScreenSource::Monitor(1));
                 cx.view.modal = Some(Modal::ScreenShare);
+            }
+            s if s.starts_with("stream:") => {
+                let path = &s["stream:".len()..];
+                let (Some(&streamer), Ok(img)) = (others.get(2), image::open(path)) else {
+                    eprintln!("rustcord: RUSTCORD_CALL_DEMO stream picture {path}: needs `people` and a readable PNG / JPEG");
+                    continue;
+                };
+                let img = img.to_rgba8();
+                let (w, h) = img.dimensions();
+                let key = stream_key(guild_id, ch, streamer);
+                cx.state.voice.video.remote.insert(VideoKey::Stream(key.clone()), (w, h));
+                if let Some(writer) = frames.writer(VideoKey::Stream(key.clone())) {
+                    writer.write(w, h, |px| px.copy_from_slice(img.as_raw()));
+                }
+                cx.view.call_ui.watching.insert(key, Some(Instant::now()));
             }
             _ => {}
         }
