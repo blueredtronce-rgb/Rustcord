@@ -9,7 +9,7 @@
 //!   Voice & Video, Clips, Chat, Notifications, Keybinds, Language, Windows Settings, Streamer
 //!   Mode, Advanced. Activity Settings: Activity Privacy, Registered Games, Game Overlay.
 //!   Rustcord: Plugins, Local Profile, Theme Editor.
-//! - What Rustcord can't do (billing, overlay, clip recording, Family Center linking) is a Discord-like empty state (`empty_state`) above the page's synced rows.
+//! - What Rustcord can't do (billing, clip recording, Family Center linking) is a Discord-like empty state (`empty_state`) above the page's synced rows.
 //!
 //! Where options live: Discord's settings proto for synced ones (synced.rs, one table per page),
 //! REST lists (lists.rs: devices, authorized apps, consents), `config::Settings` for this
@@ -29,6 +29,8 @@ mod games;
 mod keybinds;
 mod lists;
 pub mod local_profile;
+#[cfg(windows)]
+mod overlay;
 mod plugins;
 mod status;
 mod synced;
@@ -120,7 +122,8 @@ impl Page {
                 Page::Advanced,
             ],
         ),
-        ("Activity settings", &[Page::ActivityPrivacy, Page::RegisteredGames, Page::GameOverlay]),
+        // The overlay is Windows only (ui/overlay): elsewhere the page is in no group, so nav, search and `from_name` skip it.
+        ("Activity settings", if cfg!(windows) { &[Page::ActivityPrivacy, Page::RegisteredGames, Page::GameOverlay] } else { &[Page::ActivityPrivacy, Page::RegisteredGames] }),
         ("Rustcord", &[Page::Plugins, Page::LocalProfile, Page::ThemeEditor]),
     ];
 
@@ -158,7 +161,7 @@ impl Page {
             Page::Advanced => ("Advanced", "advanced", "developer mode copy id hardware acceleration"),
             Page::ActivityPrivacy => ("Activity privacy", "activity", "activity status game join"),
             Page::RegisteredGames => ("Registered games", "games", "games detection"),
-            Page::GameOverlay => ("Game overlay", "overlay", "overlay"),
+            Page::GameOverlay => ("Game overlay", "overlay", "overlay in-game voice widget notifications corner position avatar names"),
             Page::Plugins => ("Plugins", "plugins", "vencord"),
             Page::LocalProfile => ("Local profile", "local-profile", "local banner avatar this device"),
             Page::ThemeEditor => ("Theme editor", "theme-editor", "customize theme colours colors import export"),
@@ -185,6 +188,7 @@ impl Page {
             Page::Notifications => &["Desktop notifications", "Flash the taskbar"],
             Page::VoiceVideo => &["Input mode", "Voice activity", "Push to talk", "Input sensitivity", "Microphone and sound", "Mute", "Deafen", "Video", "Camera"],
             Page::Advanced => &["Hardware acceleration"],
+            Page::GameOverlay => &["Enable in-game overlay", "Position", "Avatar size", "Show names", "Show users"],
             Page::ThemeEditor => &[
                 "Base", "Dark", "Light", "Gradient", "Background", "Sidebar", "Server bar", "Surface", "Text", "Muted text", "Accent", "Text on accent", "Message hover",
                 "Mention highlight", "Links", "Danger", "Code background", "UI font", "Monospace font", "Font size", "Corner radius", "Gradient angle", "Panel opacity",
@@ -431,7 +435,10 @@ fn page(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
         Page::FamilyCenter => empty_state(ui, cx, "👪", "Set up in the mobile app", "Linking a teen's account happens in the Discord mobile app.", None),
         Page::Billing => empty_state(ui, cx, "💳", "Managed on discord.com", "Nitro, boosts, subscriptions, gifts and payments.", Some("premium")),
         Page::RegisteredGames => games::show(ui, cx),
-        Page::GameOverlay => empty_state(ui, cx, "🖥", "No in-game overlay", "An overlay needs code injected into games.", None),
+        #[cfg(windows)]
+        Page::GameOverlay => changed |= overlay::show(ui, cx),
+        #[cfg(not(windows))]
+        Page::GameOverlay => {}
         Page::Clips => empty_state(ui, cx, "🎬", "No clip recording", "Rustcord doesn't record clips. The switch below is about clips others record.", None),
         Page::LocalProfile => local_profile::show(ui, cx),
         Page::Plugins => plugins::show(ui, cx),
@@ -783,7 +790,9 @@ mod tests {
     #[test]
     fn pages_have_names_and_search_finds_options() {
         let all: Vec<Page> = Page::GROUPS.iter().flat_map(|g| g.1.iter().copied()).collect();
-        assert_eq!(all.len(), 28, "every page is in exactly one group");
+        // The game overlay page is Windows only.
+        assert_eq!(all.len(), 27 + usize::from(cfg!(windows)), "every page is in exactly one group");
+        assert_eq!(Page::from_name("overlay").is_some(), cfg!(windows));
         for p in &all {
             assert_eq!(Page::from_name(p.info().1), Some(*p));
         }
