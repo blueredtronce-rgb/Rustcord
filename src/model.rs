@@ -1709,10 +1709,15 @@ pub struct GuildProfile {
     pub premium_tier: u8,
 }
 
-/// A guild profile's trait chip ("Rust", with a unicode emoji; custom emoji are not allowed).
+/// A guild profile's trait chip ("Rust" with its emoji): a unicode emoji (`emoji_name` is the
+/// emoji, or its shortcode name like "speaking_head") or a custom one (`emoji_id`, `emoji_name`
+/// its name).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct GuildTrait {
+    pub emoji_id: Option<Id>,
+    #[serde(deserialize_with = "null_default")]
+    pub emoji_animated: bool,
     pub emoji_name: Option<String>,
     #[serde(deserialize_with = "null_default")]
     pub label: String,

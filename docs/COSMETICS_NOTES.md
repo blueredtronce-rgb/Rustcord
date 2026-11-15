@@ -187,7 +187,7 @@ show = pg.identity_enabled == true && pg.identity_guild_id.is_some() && pg.tag.i
 **Click → tag card** (built: `ui/guild_card.rs`; endpoints, join / apply and the button rules
 re-checked against [UD]/[MOB] in `docs/GUILD_CARD_NOTES.md`, which wins over this draft):
 - `GET /guilds/{id}/profile`. Works for members, or when the guild is discoverable/public. A 403 otherwise means: show tag and badge only.
-- Response (draft [UD discovery], not re-checked): `{id, name, icon_hash, member_count, online_count, description, tag, badge (int 0–40 = badge kind), badge_color_primary, badge_color_secondary, badge_hash, traits[{emoji_name,label,position}], visibility, custom_banner_hash, premium_tier, premium_subscription_count, game_application_ids[]}`.
+- Response (draft [UD discovery], not re-checked): `{id, name, icon_hash, member_count, online_count, description, tag, badge (int 0–40 = badge kind), badge_color_primary, badge_color_secondary, badge_hash, traits[{emoji_id,emoji_name,emoji_animated,label,position}], visibility, custom_banner_hash, premium_tier, premium_subscription_count, game_application_ids[]}`.
 - Images:
   - Banner: `discovery-splashes/{id}/{custom_banner_hash}.png?size=480` [UD reference row confirmed].
   - Icon: `icons/{id}/{icon_hash}.png?size=128`.

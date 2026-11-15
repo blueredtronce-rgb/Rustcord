@@ -85,6 +85,24 @@ submitted → Application sent; `visibility == 3` → Apply to join; DISCOVERABL
 loaded otherwise → "This server only takes new members by invite."; private or loading → none.
 A public (visibility 1) server that is not discoverable shows no join button.
 
+## 5b. Trait chips and placement
+
+- A trait chip is 24 px tall: emoji (16 px), 4 px, the label on ONE line, 8 px padding; chips
+  flow left to right with 6 px gaps and a chip that does not fit starts the next row whole
+  (`guild_card::trait_chips`). A label wider than the card is cut with "..." (full text on
+  hover); the old `horizontal_wrapped` + wrapping labels broke text one letter per line.
+- Emoji: `emoji_id` set = the custom emoji image (`cdn::emoji_url`, still frame even when
+  `emoji_animated`: shortcut). Else `emoji_name` is the unicode emoji, or its shortcode name
+  ("speaking_head", "detective", ":mag:": `trait_unicode`, via the `emojis` crate and
+  `emoji::by_shortcode`). Anything unknown, or an emoji the fonts cannot draw (some flags), is
+  dropped: the chip shows the label alone, never the name as a word. UNCONFIRMED: whether the
+  API sends shortcode names for unicode traits; it was seen with such names.
+- The card opens beside the tag chip (right, else left, else under / over; egui keeps it in
+  the window), over the profile popout that holds the tag like Discord's.
+- Demo: `RUSTCORD_NAV_DEMO=profile,tag-card:join` shows a custom emoji (not loaded offline:
+  seed `emojis/1565443437363201030.webp?size=64&quality=lossless` into the image cache for it),
+  unicode emoji, shortcodes, an unknown name and a long label.
+
 ## 6. Server marks (rail tooltip, server header, tag card)
 
 - Discord shows one mark before a server's name: verified, else partnered, else the boost

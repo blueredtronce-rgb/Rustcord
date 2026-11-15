@@ -85,6 +85,10 @@ pub fn tag_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pg: &PrimaryGuild, size:
         .open_memory(toggle.then_some(egui::SetOpenCommand::Toggle))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .width(super::guild_card::WIDTH)
+        // Beside the tag where there is room (Discord's spot; the profile popout holding the tag stays
+        // readable above and below it), else the other side, else under / over it.
+        .align(egui::RectAlign::RIGHT_START)
+        .align_alternatives(&[egui::RectAlign::LEFT_START, egui::RectAlign::RIGHT_END, egui::RectAlign::LEFT_END, egui::RectAlign::BOTTOM_START, egui::RectAlign::TOP_START])
         .gap(8.0)
         .frame(egui::Frame::popup(ui.style()).inner_margin(0))
         .show(|ui| super::guild_card::show(ui, cx, pg));

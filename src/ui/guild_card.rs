@@ -11,6 +11,7 @@ use super::icons;
 use super::messages::{Btn, Pal, button};
 use super::{Modal, UiCx, cosmetics, semibold};
 use crate::api::cdn;
+use super::images::ImageCache;
 use crate::backend::{AccountCommand, Command};
 use crate::model::{GuildProfile, GuildTrait, Id, PrimaryGuild};
 use crate::state::account::{GuildProfileEntry, OpState};
@@ -141,7 +142,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pg: &PrimaryGuild) {
             cosmetics::tag_chip(ui, cx.images, &chip, row.left_center(), pal.size, pal.text);
         }
         match (&result, profile) {
-            (_, Some(p)) => details(ui, &pal, cx.theme, p),
+            (_, Some(p)) => details(ui, cx.images, &pal, cx.theme, p),
             (Some(Ok(None)), None) if !member => {
                 ui.add(egui::Label::new(RichText::new("This server keeps its profile private. Ask a member for an invite.").size(pal.ui()).color(pal.text)).wrap());
             }
@@ -162,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pg: &PrimaryGuild) {
 }
 
 /// Counts, description and trait chips of a loaded profile.
-fn details(ui: &mut egui::Ui, pal: &Pal, theme: &crate::theme::Theme, p: &GuildProfile) {
+fn details(ui: &mut egui::Ui, images: &mut ImageCache, pal: &Pal, theme: &crate::theme::Theme, p: &GuildProfile) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let online = super::presence_color(crate::model::Presence::Online, &theme.colors);
@@ -180,19 +181,84 @@ fn details(ui: &mut egui::Ui, pal: &Pal, theme: &crate::theme::Theme, p: &GuildP
     let mut traits: Vec<&GuildTrait> = p.traits.iter().filter(|t| !t.label.trim().is_empty()).collect();
     traits.sort_by_key(|t| t.position);
     if !traits.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            let radius = (pal.radius / 2).max(2);
-            for t in traits {
-                let text = match t.emoji_name.as_deref().filter(|e| !e.is_empty()) {
-                    Some(e) => format!("{e} {}", t.label),
-                    None => t.label.clone(),
-                };
-                Frame::new().fill(pal.tk.hover).corner_radius(radius).inner_margin(Margin::symmetric(8, 3)).show(ui, |ui| {
-                    ui.label(RichText::new(text).font(FontId::new(pal.meta(), crate::theme::medium_family())).color(pal.text));
-                });
+        trait_chips(ui, images, pal, &traits);
+    }
+}
+
+const CHIP_H: f32 = 24.0;
+const CHIP_GAP: f32 = 6.0;
+const CHIP_PAD: f32 = 8.0;
+const CHIP_ICON: f32 = 16.0;
+
+/// The unicode emoji of a trait's `emoji_name`: the emoji itself or its shortcode ("speaking_head",
+/// "detective", ":mag:"); None for anything else, which is dropped rather than printed as a word.
+fn trait_unicode(name: &str) -> Option<&'static str> {
+    let n = name.trim().trim_matches(':');
+    emojis::get(n).or_else(|| crate::emoji::by_shortcode(n)).map(emojis::Emoji::as_str)
+}
+
+/// Trait chips as Discord draws them: emoji (custom image or unicode), then the label on one
+/// line; chips flow left to right and a chip that does not fit starts the next row whole, a
+/// label wider than the card is cut with "…" (full text on hover). Animated custom emoji stay
+/// still (shortcut: a card is glanced at, not watched).
+fn trait_chips(ui: &mut egui::Ui, images: &mut ImageCache, pal: &Pal, traits: &[&GuildTrait]) {
+    let avail = ui.available_width();
+    let font = FontId::new(pal.meta(), crate::theme::medium_family());
+    let radius = (pal.radius / 2).max(2);
+    enum Mark {
+        Image(egui::load::SizedTexture),
+        Glyph(std::sync::Arc<egui::Galley>),
+    }
+    // Measure first: every chip's mark, label and width, then the rows.
+    let mut chips = Vec::with_capacity(traits.len());
+    for t in traits {
+        let mark = match (t.emoji_id, t.emoji_name.as_deref()) {
+            (Some(id), _) => images.get(ui.ctx(), &cdn::emoji_url(id, false, 48), 48, false).map(Mark::Image),
+            (None, Some(n)) => trait_unicode(n)
+                .filter(|e| super::messages::has_emoji_glyph(ui, e) && super::pickers::drawable(ui.ctx(), e))
+                .map(|e| Mark::Glyph(ui.painter().layout_no_wrap(e.to_owned(), FontId::proportional(CHIP_ICON - 2.0), pal.text))),
+            _ => None,
+        };
+        let lead = if mark.is_some() { CHIP_ICON + 4.0 } else { 0.0 };
+        let mut job = egui::text::LayoutJob::single_section(t.label.trim().to_owned(), egui::TextFormat::simple(font.clone(), pal.text));
+        job.wrap = egui::text::TextWrapping { max_width: (avail - 2.0 * CHIP_PAD - lead).max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+        let label = ui.painter().layout_job(job);
+        let w = 2.0 * CHIP_PAD + lead + label.size().x;
+        chips.push((mark, label, w, &t.label));
+    }
+    let (mut x, mut y) = (0.0, 0.0);
+    let spots: Vec<(f32, f32)> = chips
+        .iter()
+        .map(|(_, _, w, _)| {
+            if x > 0.0 && x + w > avail {
+                (x, y) = (0.0, y + CHIP_H + CHIP_GAP);
             }
-        });
+            let at = (x, y);
+            x += w + CHIP_GAP;
+            at
+        })
+        .collect();
+    let (area, _) = ui.allocate_exact_size(vec2(avail, y + CHIP_H), Sense::hover());
+    for ((mark, label, w, full), (x, y)) in chips.into_iter().zip(spots) {
+        let chip = Rect::from_min_size(area.min + vec2(x, y), vec2(w, CHIP_H));
+        ui.painter().rect_filled(chip, radius, pal.tk.hover);
+        let mut at = chip.left() + CHIP_PAD;
+        match mark {
+            Some(Mark::Image(tex)) => {
+                egui::Image::from_texture(tex).paint_at(ui, Rect::from_center_size(pos2(at + CHIP_ICON / 2.0, chip.center().y), Vec2::splat(CHIP_ICON)));
+                at += CHIP_ICON + 4.0;
+            }
+            Some(Mark::Glyph(g)) => {
+                ui.painter().galley(pos2(at + (CHIP_ICON - g.size().x) / 2.0, chip.center().y - g.size().y / 2.0), g, pal.text);
+                at += CHIP_ICON + 4.0;
+            }
+            None => {}
+        }
+        let (size, elided) = (label.size(), label.elided);
+        ui.painter().galley(pos2(at, chip.center().y - size.y / 2.0), label, pal.text);
+        if elided {
+            ui.interact(chip, ui.make_persistent_id(("trait", x as i32, y as i32)), Sense::hover()).on_hover_text(full);
+        }
     }
 }
 
@@ -316,7 +382,9 @@ pub(super) fn demo(cx: &mut UiCx<'_>, user_id: Id) {
             u.primary_guild = Some(Box::new(pg));
         }
         let features = |f: &[&str]| -> Vec<String> { f.iter().map(|s| (*s).to_owned()).collect() };
-        let trait_ = |e: &str, l: &str, position| GuildTrait { emoji_name: Some(e.into()), label: l.into(), position };
+        let trait_ = |e: &str, l: &str, position| GuildTrait { emoji_name: Some(e.into()), label: l.into(), position, ..Default::default() };
+        // A custom emoji (id, name), unicode emoji, shortcode names and labels past the card width.
+        let custom = GuildTrait { emoji_id: Some(Id(1565443437363201030)), emoji_name: Some("crab_dance".into()), label: "Crab dance".into(), position: 3, ..Default::default() };
         let mut p = GuildProfile {
             id: g,
             name,
@@ -325,7 +393,18 @@ pub(super) fn demo(cx: &mut UiCx<'_>, user_id: Id) {
             description: Some("Building small, fast tools in Rust. Weekly code reviews and a friendly help channel.".into()),
             brand_color_primary: Some("#3d6f8e".into()),
             tag: Some("CRAB".into()),
-            traits: vec![trait_("🦀", "Rust", 0), trait_("🛠", "Tools", 1), trait_("🌙", "Late nights", 2)],
+            traits: vec![
+                trait_("🦀", "Rust", 0),
+                trait_("🛠", "Tools", 1),
+                trait_("🌙", "Late nights", 2),
+                custom,
+                trait_("speaking_head", "Community", 4),
+                trait_("detective", "Federal", 5),
+                trait_("mag", "Investigation", 6),
+                trait_("united_nations", "Agency", 7),
+                trait_("nope_not_an_emoji", "No emoji", 8),
+                trait_("🤝", "A very long trait label that cannot fit on one line of the card at all", 9),
+            ],
             features: features(&["COMMUNITY", "DISCOVERABLE"]),
             visibility: 1,
             premium_subscription_count: 9,
@@ -383,6 +462,16 @@ mod tests {
         assert_eq!(cta(false, None, Some(&OpState::Pending), Some(&apply)), Cta::Sending);
         assert_eq!(cta(false, None, Some(&OpState::Done(None)), Some(&apply)), Cta::Applied);
         assert_eq!(cta(false, None, Some(&OpState::Done(Some(Id(1)))), Some(&apply)), Cta::Opening, "approved at once");
+    }
+
+    #[test]
+    fn trait_emoji_names_become_emoji() {
+        assert_eq!(trait_unicode("🦀"), Some("🦀"));
+        assert_eq!(trait_unicode("speaking_head"), emojis::get_by_shortcode("speaking_head").map(emojis::Emoji::as_str));
+        assert_eq!((trait_unicode(":mag:"), trait_unicode("detective").is_some(), trait_unicode("united_nations").is_some()), (trait_unicode("mag"), true, true));
+        assert_eq!((trait_unicode("crab_dance"), trait_unicode("")), (None, None), "unknown names are dropped");
+        let t: GuildTrait = serde_json::from_str(r#"{"emoji_id":"55","emoji_name":"crab","emoji_animated":null,"label":"x"}"#).unwrap();
+        assert_eq!((t.emoji_id, t.emoji_animated), (Some(Id(55)), false));
     }
 
     #[test]
