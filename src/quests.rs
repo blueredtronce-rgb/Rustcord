@@ -12,7 +12,7 @@ use crate::model::{Id, null_default};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,8 @@ pub const REFETCH: Duration = Duration::from_secs(10 * 60);
 pub const VIDEO_FAILED: &str = "Progress stopped saving. Try the video again later.";
 /// Card notice when the player lost its connection (the session ends once its window is closed).
 pub const VIDEO_OFFLINE: &str = "The video stopped: no connection. Continue watching when you're back online.";
+/// The ids of quests whose "Quest complete" notification is done, in the cache dir (one per line).
+pub const NOTIFIED_FILE: &str = "quests-notified.txt";
 
 /// Feature flags (UD Quest Feature).
 const FEATURE_FORCE_HLS: u32 = 18;
@@ -391,11 +393,17 @@ pub struct QuestState {
     pub codes: HashMap<Id, Arc<Secret>>,
     /// Quests whose video failed in the player: their card falls back to the official-app row.
     pub no_video: HashSet<Id>,
+    /// An event changed the list since the last notification check (`ui::quests::completed`).
+    pub changed: bool,
+    /// Quests whose "Quest complete" notification is done (or suppressed); None until read from
+    /// `NOTIFIED_FILE`.
+    pub notified: Option<BTreeSet<Id>>,
 }
 
 impl QuestState {
     /// Applies an answer or dispatch; returns (quest, ok) for the answer to a video send.
     pub fn apply(&mut self, ev: QuestEvent) -> Option<(Id, bool)> {
+        self.changed = true;
         match ev {
             QuestEvent::Loaded(Ok(page)) => {
                 let excluded: HashSet<Id> = page.excluded_quests.iter().map(|e| e.id).collect();
@@ -483,6 +491,13 @@ impl QuestState {
     pub fn quest(&self, id: Id) -> Option<&Quest> {
         self.quests.iter().find(|q| q.id == id)
     }
+}
+
+/// Listed quests whose reward now waits (Claimable) and that `notified` doesn't hold; adds them.
+/// Prunes `notified` to the listed quests first.
+pub fn newly_claimable(quests: &[Quest], notified: &mut BTreeSet<Id>, now: DateTime<Utc>) -> Vec<Id> {
+    notified.retain(|id| quests.iter().any(|q| q.id == *id));
+    quests.iter().filter(|q| q.phase(now) == Phase::Claimable && notified.insert(q.id)).map(|q| q.id).collect()
 }
 
 // ----- video progress (QUESTS_NOTES §3) -----------------------------------------------------------
@@ -738,6 +753,33 @@ mod tests {
         s.apply(QuestEvent::Orbs(1240));
         s.apply(QuestEvent::Blocked(Some("2026-11-20T00:00:00+00:00".into())));
         assert_eq!((s.orbs, s.blocked_until.is_some()), (Some(1240), true));
+    }
+
+    #[test]
+    fn notify_once() {
+        let now = at("2026-11-14T00:00:00+00:00");
+        let mut s = QuestState::default();
+        assert!(!s.changed);
+        s.apply(QuestEvent::Loaded(Ok(serde_json::from_str(crate::ui::quests::DEMO_JSON).unwrap())));
+        assert!(s.changed, "events mark the list as changed");
+        let mut set = BTreeSet::new();
+        assert_eq!(newly_claimable(&s.quests, &mut set, now), [Id(104)]);
+        assert!(newly_claimable(&s.quests, &mut set, now).is_empty(), "told once");
+        // 101 completes: told once more.
+        let done = QuestUserStatus {
+            quest_id: Id(101),
+            enrolled_at: Some("2026-11-10T10:00:00+00:00".into()),
+            completed_at: Some("2026-11-14T00:00:00+00:00".into()),
+            ..Default::default()
+        };
+        s.apply(QuestEvent::VideoSaved(Box::new(done)));
+        assert_eq!(newly_claimable(&s.quests, &mut set, now), [Id(101)]);
+        assert!(newly_claimable(&s.quests, &mut set, now).is_empty());
+        // A claimed quest (106) never shows up; a quest that left the list is pruned.
+        assert!(!set.contains(&Id(106)));
+        set.insert(Id(999));
+        newly_claimable(&s.quests, &mut set, now);
+        assert!(!set.contains(&Id(999)));
     }
 
     #[test]

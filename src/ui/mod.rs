@@ -462,6 +462,7 @@ impl RustcordApp {
                             let author = n.author_id.filter(|_| !self.settings.streamer.hides_personal());
                             if !self.overlay.notify(&self.state, &self.settings, title, body, author) {
                                 crate::notify::show(title, body);
+                                self.view.quests_ui.notified_last = false;
                             }
                         }
                         if !self.view.window_focused && self.settings.flash_taskbar {
@@ -790,7 +791,7 @@ impl RustcordApp {
                         self.state.select_channel(Id(id));
                     }
                     s if dm_call::demo(&mut self.state, s) => {}
-                    // quests.rs `demo`: quests[:blocked|empty|error|loading|watch|claim].
+                    // quests.rs `demo`: quests[:blocked|empty|error|loading|watch|watch-play|bg|complete|claim].
                     s if quests::demo(&mut self.state, &mut self.view, s) => {}
                     _ => {}
                 }
@@ -837,8 +838,11 @@ impl eframe::App for RustcordApp {
         self.view.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         self.drain_events(ctx);
         // Tray menu clicks, closing to the tray, `--minimized` (also while hidden in the tray).
-        user_settings::logic(ctx, &mut self.view, &self.backend.cmd, &mut self.settings);
+        let clicked = user_settings::logic(ctx, &mut self.view, &self.backend.cmd, &mut self.settings);
         if self.view.screen == Screen::Main {
+            if clicked {
+                quests::notification_clicked(&mut self.state, &mut self.view);
+            }
             self.selection_effects(ctx);
             // Plugins (CustomIdle): auto-idle, also while minimized.
             crate::plugins::idle::logic(ctx, &self.state, &self.backend.cmd);
@@ -846,6 +850,15 @@ impl eframe::App for RustcordApp {
             crate::activity::logic(&mut self.state, &self.backend.cmd);
             // A quest video the user started plays on and reports progress, also minimized.
             quests::logic(ctx, &mut self.state, &mut self.view, &self.backend.cmd);
+            // Like messages: not in Do Not Disturb, only with desktop notifications on, and the
+            // overlay shows it in a game.
+            let dnd_off = self.state.chat.my_status != Some(crate::model::UserStatus::Dnd);
+            for body in quests::completed(&mut self.state, &self.view) {
+                if dnd_off && self.settings.notification("", "").is_some() && !self.overlay.notify(&self.state, &self.settings, "Quest complete", &body, None) {
+                    crate::notify::show("Quest complete", &body);
+                    self.view.quests_ui.notified_last = true;
+                }
+            }
         }
         self.maybe_save_cache(false);
         // My id and Nitro (local cosmetics apply only without it).

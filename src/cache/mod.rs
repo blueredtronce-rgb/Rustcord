@@ -66,4 +66,5 @@ pub fn clear_all() {
     let paths = crate::config::paths();
     let _ = std::fs::remove_file(paths.snapshot_file());
     let _ = std::fs::remove_dir_all(paths.images_dir());
+    let _ = std::fs::remove_file(paths.cache_dir.join(crate::quests::NOTIFIED_FILE));
 }

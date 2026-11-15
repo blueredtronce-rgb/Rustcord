@@ -28,6 +28,8 @@ pub struct QuestsUi {
     watch: Option<Watch>,
     /// The claim modal's pick.
     claim_pick: Option<u8>,
+    /// The last desktop notification shown was a quest's: a click on it opens the Quests page.
+    pub notified_last: bool,
 }
 
 /// One quest video session, started by the user; dropped by `stop_watch`, which stops the player.
@@ -567,6 +569,49 @@ pub fn watching(view: &ViewState) -> bool {
     view.quests_ui.watch.is_some()
 }
 
+/// Quest complete: the notification bodies to show now (`RustcordApp::logic`). A quest whose
+/// reward just became claimable, once ever (`NOTIFIED_FILE`); the first look after an update or
+/// a login only records what already waits. Nothing while the user is looking at the Quests
+/// page or the video; those quests count as told. File I/O: never call it from tests.
+pub fn completed(state: &mut crate::state::AppState, view: &ViewState) -> Vec<String> {
+    if !matches!(state.quests.load, Load::Loaded(_)) || !std::mem::take(&mut state.quests.changed) {
+        return Vec::new();
+    }
+    let looking = view.window_focused
+        && !view.chat_hidden()
+        && ((view.quests_ui.open && super::friends::is_open(state)) || matches!(view.modal, Some(Modal::QuestVideo { .. })));
+    let path = crate::config::paths().cache_dir.join(crate::quests::NOTIFIED_FILE);
+    let qs = &mut state.quests;
+    let (mut set, seed) = match qs.notified.take() {
+        Some(s) => (s, false),
+        None => match std::fs::read_to_string(&path) {
+            Ok(text) => (text.lines().filter_map(|l| l.trim().parse::<u64>().ok()).map(Id).collect(), false),
+            Err(_) => (Default::default(), true),
+        },
+    };
+    let before = set.clone();
+    let new = crate::quests::newly_claimable(&qs.quests, &mut set, Utc::now());
+    if seed || set != before {
+        let text: String = set.iter().map(|id| format!("{}\n", id.0)).collect();
+        let _ = crate::config::write_atomic(&path, text.as_bytes());
+    }
+    qs.notified = Some(set);
+    if seed || looking {
+        return Vec::new();
+    }
+    new.into_iter().filter_map(|id| qs.quest(id)).map(|q| format!("{}: claim your reward.", q.config.messages.quest_name)).collect()
+}
+
+/// A notification was clicked: if the last one was a quest's, show the Quests page.
+pub fn notification_clicked(state: &mut crate::state::AppState, view: &mut ViewState) {
+    if std::mem::take(&mut view.quests_ui.notified_last) {
+        super::friends::open(state);
+        view.quests_ui.open = true;
+        view.settings_open = false;
+        view.server_settings = None;
+    }
+}
+
 fn watching_quest(view: &ViewState, id: Id) -> bool {
     view.quests_ui.watch.as_ref().is_some_and(|w| w.quest_id == id)
 }
@@ -1046,11 +1091,13 @@ fn day(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 // ----- test hooks ------------------------------------------------------------------------------------
 
-/// `RUSTCORD_OPEN=quests[:blocked|empty|error|loading|watch|watch-play|bg|claim]` (ui/mod.rs): the page with
+/// `RUSTCORD_OPEN=quests[:blocked|empty|error|loading|watch|watch-play|bg|complete|claim]` (ui/mod.rs): the page with
 /// `DEMO_JSON` (Orbs 1240, a code shown, a captcha notice), the blocked banner, the empty / failed
 /// / loading states, the video modal (a still frame at 1:12 of 3:00, nothing sent), `watch-play`
 /// (the fixture clip plays in it), `bg` (the same without the modal: the user panel's section
-/// and the card's "Open video") or the claim modal. Sends nothing. False for other tokens.
+/// and the card's "Open video"), `complete` (the Friends page; quest 101 completes, so the next
+/// pass shows the "Quest complete" notification and writes `NOTIFIED_FILE` in the home) or the
+/// claim modal. Sends nothing. False for other tokens.
 pub fn demo(state: &mut crate::state::AppState, view: &mut ViewState, token: &str) -> bool {
     let Some(rest) = token.strip_prefix("quests") else { return false };
     let what = rest.trim_start_matches(':');
@@ -1086,6 +1133,14 @@ pub fn demo(state: &mut crate::state::AppState, view: &mut ViewState, token: &st
             view.modal = (what == "watch-play").then_some(Modal::QuestVideo { quest_id: Id(101) });
         }
         "claim" => view.modal = Some(Modal::QuestClaim { quest_id: Id(106) }),
+        // The Friends page; the next `completed` pass notifies for 101 (104 counts as told).
+        "complete" => {
+            view.quests_ui.open = false;
+            q.notified = Some([Id(104)].into());
+            if let Some(s) = q.quests.iter_mut().find(|x| x.id == Id(101)).and_then(|x| x.user_status.as_mut()) {
+                s.completed_at = Some(shift(0));
+            }
+        }
         _ => {}
     }
     true
@@ -1228,7 +1283,7 @@ mod tests {
     /// backend but image loads.
     #[test]
     fn demo_hooks_send_nothing() {
-        for token in ["quests", "quests:blocked", "quests:empty", "quests:error", "quests:loading", "quests:watch", "quests:watch-play", "quests:bg", "quests:claim"] {
+        for token in ["quests", "quests:blocked", "quests:empty", "quests:error", "quests:loading", "quests:watch", "quests:watch-play", "quests:bg", "quests:complete", "quests:claim"] {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cmd = crate::backend::CommandSender(tx);
             let mut state = crate::state::AppState::default();
@@ -1251,7 +1306,7 @@ mod tests {
             while let Ok(c) = rx.try_recv() {
                 assert!(matches!(c, Command::LoadImage { .. }), "{token} sent {c:?}");
             }
-            assert!(view.quests_ui.open);
+            assert!(view.quests_ui.open || token == "quests:complete");
             // Textures decoded in the background free on drop: flush that delta while ctx lives.
             drop((images, view));
             ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
