@@ -13,6 +13,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 cpal = "=0.18.2"
 davey = "=0.2.0"
 directories = "6.0.0"
+# Self-updater: verifies the signed update feed (approved; already in the tree via openmls).
+ed25519-dalek = "2.2"
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "accesskit", "clipboard", "links", "wayland", "x11"] }
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 # Unicode emoji table (shortcodes, groups, skin tones) for the picker and `:shortcode:` (approved).
@@ -36,6 +38,8 @@ rfd = "0.18.0"
 rsa = "0.10.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Self-updater: version compare of the update feed (approved; already in the tree via rustc_version).
+semver = "1.0"
 sha2 = "0.11.1"
 # cmap lookups for the system font fallback chain: the version epaint already builds (approved).
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
