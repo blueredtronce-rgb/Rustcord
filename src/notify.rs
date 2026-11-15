@@ -232,6 +232,12 @@ fn retry_for(wait: Duration, mut attempt: impl FnMut() -> bool) -> bool {
     }
 }
 
+/// Quit like the tray menu's Quit (also while the window is hidden): the updater, once the new
+/// version is started.
+pub fn request_quit() {
+    push(TrayAction::Quit);
+}
+
 /// Asks the Rustcord that holds this data dir to come to the front, or to quit (`quit`; then
 /// waits until it has exited, at most 20 s). False when none answered within 5 s.
 pub fn signal_running(quit: bool) -> bool {

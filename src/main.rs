@@ -19,6 +19,7 @@ mod quests;
 mod state;
 mod theme;
 mod ui;
+mod update;
 mod voice;
 #[cfg(windows)]
 mod winreg;
@@ -108,7 +109,7 @@ fn main() -> eframe::Result {
         }));
     }
 
-    eframe::run_native_ext(
+    let result = eframe::run_native_ext(
         config::APP_NAME,
         options,
         Some(ctx),
@@ -121,11 +122,15 @@ fn main() -> eframe::Result {
             if !test_run {
                 notify::start(&cc.egui_ctx);
             }
+            update::start(rt.handle(), &cc.egui_ctx, settings.auto_update);
             let app = ui::RustcordApp::new(&cc.egui_ctx, rt, backend, settings, snapshot, token, started);
             ui::images::mem_trace("app_built");
             Ok(Box::new(app))
         }),
-    )
+    );
+    // After an update (Windows, Linux): the new version (on_exit has run; Linux: this process).
+    update::relaunch();
+    result
 }
 
 fn window_icon() -> egui::IconData {

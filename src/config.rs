@@ -137,6 +137,8 @@ pub struct Settings {
     pub tray_hint_shown: bool,
     /// Notifications > Taskbar flashing on a notification while the window is in the background.
     pub flash_taskbar: bool,
+    /// Windows/Linux/macOS settings > Updates: install updates automatically (docs/UPDATER_DESIGN.md).
+    pub auto_update: bool,
 }
 
 /// Settings > Streamer Mode.
@@ -212,6 +214,7 @@ impl Default for Settings {
             minimize_to_tray: true,
             tray_hint_shown: false,
             flash_taskbar: true,
+            auto_update: true,
         }
     }
 }
@@ -292,6 +295,10 @@ mod tests {
         let old: Settings = toml::from_str("theme = \"Ember Dark\"\n[streamer]\nenabled = true\n").unwrap();
         assert_eq!((old.zoom, old.flash_taskbar, old.streamer.enabled, old.streamer.hide_personal_info), (1.0, true, true, true));
         assert!(old.streamer.hides_invites() && !old.streamer.hide_from_capture && !old.autostart_default_done);
+        // Updates install automatically unless switched off; older files: on.
+        assert!(old.auto_update && back.auto_update);
+        let off: Settings = toml::from_str(&toml::to_string_pretty(&Settings { auto_update: false, ..Default::default() }).unwrap()).unwrap();
+        assert!(!off.auto_update);
     }
 
     #[test]
