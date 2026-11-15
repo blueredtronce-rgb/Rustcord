@@ -6,10 +6,12 @@
 
 <p align="center">
   A lightweight, unofficial desktop client for Discord, written from scratch in Rust.<br>
-  No Electron, no web view – egui + tokio, talking to the HTTP API and the Gateway directly.
+  No Electron – egui + tokio, talking to the HTTP API and the Gateway directly.<br>
+  Made by <a href="https://github.com/r0sc">rosc</a>.
 </p>
 
 <p align="center">
+  <img alt="Status: beta" src="https://img.shields.io/badge/status-beta-orange">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-f74c00?logo=rust&logoColor=white">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078d6">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
@@ -17,27 +19,65 @@
   <a href="https://github.com/r0sc/Rustcord/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/r0sc/Rustcord/total"></a>
 </p>
 
+> **Beta – expect bugs.** Rustcord is a beta and may contain bugs. It was vibe-coded: almost all
+> of its code was written with AI coding tools (Claude Code), not by hand. Many features have only
+> been tested with offline demo data, not with a live account, and the Linux and macOS builds have
+> had the least testing. If something breaks, please open an
+> [issue](https://github.com/r0sc/Rustcord/issues).
+
 <p align="center">
-  <img src="docs/screenshots/main.png" width="820" alt="Rustcord main window: server bar, channel list with text, announcement, forum, media and voice channel icons, chat, and a member list showing a game, a detected game and Spotify">
+  <img src="docs/screenshots/main.png" width="820" alt="Rustcord's main window in the Ember Dark theme: the server bar, the Rust Workshop server's channels, the #general chat where rosc and friends talk about Rustcord, and the member list with rosc's custom status &quot;Rewriting it in Rust&quot;, a game and Spotify">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/stream.png" width="820" alt="A voice channel in Rustcord: Cara's live stream of Red Eclipse gameplay fills the stage, with Alice, Bob, Cara, dan_ops and rosc in the tiles below and rosc connected to Lounge in the voice panel">
 </p>
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/profile.png" alt="Profile card with a game activity: art, details, party size and elapsed time"></td>
-    <td><img src="docs/screenshots/plugins.png" alt="Settings page with the built-in plugins"></td>
+    <td><img src="docs/screenshots/profile.png" alt="rosc's profile popout above the user panel, with a local-only banner, the custom status &quot;Rewriting it in Rust&quot;, a game activity and the status picker"></td>
+    <td><img src="docs/screenshots/plugins.png" alt="Settings → Plugins: the built-in Vencord-style plugins, 4 of 48 turned on"></td>
   </tr>
   <tr>
-    <td align="center">Profile card with a game activity</td>
+    <td align="center">rosc's profile, with a local-only banner</td>
     <td align="center">Settings → Plugins (Vencord-style, built in)</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/viewer.png" alt="The built-in media viewer showing a Red Eclipse screenshot that rosc posted, with Save, Copy image and Copy link"></td>
+    <td><img src="docs/screenshots/light.png" alt="The same #general chat in the Paper Light theme"></td>
+  </tr>
+  <tr>
+    <td align="center">Pictures and videos open in the app</td>
+    <td align="center">Paper Light theme</td>
   </tr>
 </table>
 
-<sub>Screenshots use the offline demo data from <code>tests/fixtures</code>.</sub>
+<sub>The screenshots use Rustcord's offline demo data, with the signed-in user shown as rosc. The
+other people, servers and messages are made up; the live stream and the shared picture show Red
+Eclipse gameplay (see <a href="#credits">Credits</a>). <code>scripts/readme-shots.py</code> takes
+them again.</sub>
 
 > **Warning.** Third-party clients that log in with a user account violate Discord's Terms of
 > Service and can get the account banned. You use this at your own risk. Rustcord behaves like
 > a normal user client (no automation, nothing is sent on your behalf, all rate limits are
 > respected), but that does not remove the risk. Rustcord is not affiliated with Discord.
+
+## Why Rustcord
+
+On November 4, 2026, Discord's co-founder and CTO Stanislav Vishnevskiy announced that Discord is
+rebuilding its desktop app in Rust instead of Electron. An early internal Windows build exists and
+is heading into private testing; there is no release date yet, and the Electron app carries on in
+the meantime ([mlq.ai](https://mlq.ai/news/discord-is-rebuilding-its-desktop-app-in-rust-to-cut-memory-use/),
+[andrealosavio.com](https://www.andrealosavio.com/en/blog/discord-rust-client-rewrite),
+[tech-insider.org](https://tech-insider.org/discord-electron-rust-gpui-rebuild-290mb-ram-2026/)).
+
+I didn't feel like waiting for it. So I vibe-coded my own Rust client and shipped it first:
+Rustcord 0.1.0 came out on November 15, 2026, for Windows, Linux and macOS, while Discord's Rust
+app still has no release date. I also built in plugins, the way [Vencord](https://vencord.dev)
+adds them to the official app: 48 of them, re-implemented in Rust, off by default, and they only
+change this app.
+
+— rosc ([@r0sc](https://github.com/r0sc))
 
 ## Features
 
@@ -62,23 +102,6 @@
 - Themes (TOML) with a live editor, three built-ins, import/export.
 - Local-only profile banner and (animated) avatar – only visible to you, never uploaded.
 - Profile cosmetics loaded from Discord: avatar decorations, nameplates, profile effects and
-## Why Rustcord
-
-On November 4, 2026, Discord's co-founder and CTO Stanislav Vishnevskiy announced that Discord is
-rebuilding its desktop app in Rust instead of Electron. An early internal Windows build exists and
-is heading into private testing; there is no release date yet, and the Electron app carries on in
-the meantime ([mlq.ai](https://mlq.ai/news/discord-is-rebuilding-its-desktop-app-in-rust-to-cut-memory-use/),
-[andrealosavio.com](https://www.andrealosavio.com/en/blog/discord-rust-client-rewrite),
-[tech-insider.org](https://tech-insider.org/discord-electron-rust-gpui-rebuild-290mb-ram-2026/)).
-
-I didn't feel like waiting for it. So I vibe-coded my own Rust client and shipped it first:
-Rustcord 0.1.0 came out on November 15, 2026, for Windows, Linux and macOS, while Discord's Rust
-app still has no release date. I also built in plugins, the way [Vencord](https://vencord.dev)
-adds them to the official app: 48 of them, re-implemented in Rust, off by default, and they only
-change this app.
-
-— rosc ([@r0sc](https://github.com/r0sc))
-
   frames, display-name styles, profile themes, clan tags, badges, connections and games; an
   uploaded banner fades into the profile's background colour.
 - Clicking a badge shows what it means in Rustcord's own words (with its date, such as
@@ -187,7 +210,7 @@ Limits:
   on; it never tries to solve or bypass one. On Linux (and on a Windows without the WebView2
   runtime) Rustcord cannot show the captcha: it says so, and more attempts do not help; wait a
   while, use the token tab, or sign in once in the official app. Discord can still refuse an
-  answer that was given in this window; the QR code and token tabs do not depend on it.
+  answer given in Rustcord; the QR code and token tabs do not depend on it.
 - Accounts whose only 2FA method is a security key/passkey, and Discord's "new login
   location" checks (e-mail link or SMS), need the QR code or one login in the official app.
 - Every login attempt is one click. Rate limits are shown ("Wait N s") and never retried
@@ -531,6 +554,8 @@ loaded; with a live connection, avatars and attachments add to RAM (textures are
 - `docs/MEDIA_DESIGN.md` – the inline video player and the media viewer; `docs/QUESTS_NOTES.md` –
   quests, the video progress rule and why play and stream quests aren't advanced.
 - `docs/UPDATER_DESIGN.md` – the self-updater: feed, signature, install per system, test hooks.
+- `scripts/readme-shots.py` – retakes the README screenshots from the offline fixture (Windows):
+  `python -I scripts/readme-shots.py --exe <rustcord.exe> [--avatar <picture>]`.
 
 ### Releasing
 
@@ -572,6 +597,28 @@ this repository's release downloads, so the key alone is not enough to ship code
 Recommended hardening (GitHub settings): move the secret into an environment `release` with a
 required reviewer (and add `environment: release` to the workflow's `release` job), and protect
 `v*` tags so only you can push them.
+
+## Credits
+
+Rustcord is made by rosc ([@r0sc](https://github.com/r0sc)) and vibe-coded with Claude Code.
+
+- The plugins do what [Vencord](https://github.com/Vendicated/Vencord)'s plugins (GPL-3.0) do;
+  they are re-implemented in Rust, and no Vencord code, keys or assets are included.
+- README screenshots (`docs/screenshot-assets/`, used by `scripts/readme-shots.py`). These files
+  keep their own licenses; the MIT license covers Rustcord itself.
+  - The live stream, the shared picture and the profile banner show one frame of
+    [Red Eclipse 1,5 Gameplay 1](https://commons.wikimedia.org/wiki/File:Red_Eclipse_1,5_Gameplay_1.webm)
+    by Premitre, licensed [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), via
+    Wikimedia Commons (a still frame, scaled).
+  - Avatars from Wikimedia Commons: Alice –
+    [Cat face in sunlight](https://commons.wikimedia.org/wiki/File:Cat_face_in_sunlight_%28Unsplash%29.jpg)
+    by Alicja Koczaska (CC0); Bob – [Crab Nebula](https://commons.wikimedia.org/wiki/File:Crab_Nebula.jpg)
+    by NASA, ESA, J. Hester and A. Loll (public domain); Cara –
+    [Neon streets](https://commons.wikimedia.org/wiki/File:Neon_streets_%28Unsplash%29.jpg) by
+    JINDONG H (CC0); dan_ops –
+    [Portrait of a labrador retriever](https://commons.wikimedia.org/wiki/File:Portrait_of_a_labrador_retriever.jpg)
+    by Dktue (CC0). Cropped and scaled.
+  - rosc's avatar is rosc's own picture and is not part of the repository.
 
 ## License
 
