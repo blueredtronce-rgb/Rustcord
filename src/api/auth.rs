@@ -51,6 +51,11 @@ struct Device {
 }
 
 impl Device {
+    /// A login request is about to go out: fetch a fingerprint first unless one is stored.
+    fn needs_fingerprint(&self) -> bool {
+        self.fingerprint.is_none()
+    }
+
     /// Takes the `Set-Cookie` lines of one response; true if the cookies changed.
     fn absorb(&mut self, headers: &HeaderMap) -> bool {
         let merged = merge_cookies(&self.cookies, headers.get_all(SET_COOKIE).iter().filter_map(|v| v.to_str().ok()));
@@ -60,9 +65,13 @@ impl Device {
     }
 }
 
+/// Tries per fingerprint fetch (the web client retries it twice).
+const FINGERPRINT_TRIES: u32 = 3;
+
 pub struct AuthClient {
     http: reqwest::Client,
     device: Mutex<Device>,
+    fetching: tokio::sync::Mutex<()>,
 }
 
 impl AuthClient {
@@ -79,27 +88,37 @@ impl AuthClient {
             .build()
             .expect("HTTP client (TLS backend) failed to initialise");
         let cookies = cookies.and_then(|c| c.to_str().ok().map(str::to_owned)).unwrap_or_default();
-        Self { http, device: Mutex::new(Device { cookies, fingerprint: None }) }
+        Self { http, device: Mutex::new(Device { cookies, fingerprint: None }), fetching: tokio::sync::Mutex::new(()) }
     }
 
-    /// GET /experiments once per login screen for the `X-Fingerprint` header (3 valid ones per
-    /// 2 minutes per IP). Recommended, not required: on any failure go on without it. Also keeps
-    /// the device cookies the response sets.
-    pub async fn with_fingerprint(self) -> Self {
-        let mut req = self.http.get(format!("{API_BASE}/experiments?with_guild_experiments=true"));
-        if let Some(c) = self.cookie_header() {
-            req = req.header(COOKIE, c);
+    /// GET /experiments for the `X-Fingerprint` header (3 valid ones per 2 minutes per IP), only
+    /// while none is stored, up to 3 tries like the web client. Recommended, not required: if
+    /// every try fails the request goes without it. Also keeps the device cookies it sets.
+    async fn ensure_fingerprint(&self) {
+        if !self.device.lock().unwrap().needs_fingerprint() {
+            return;
         }
-        let fp = match req.send().await {
-            Ok(r) if r.status().is_success() => {
-                self.device.lock().unwrap().absorb(r.headers());
-                r.json::<Value>().await.ok()
+        // One fetch at a time: the QR flow and a password login may start together.
+        let _one = self.fetching.lock().await;
+        for attempt in 0..FINGERPRINT_TRIES {
+            if !self.device.lock().unwrap().needs_fingerprint() {
+                return;
             }
-            _ => None,
-        };
-        self.device.lock().unwrap().fingerprint =
-            fp.and_then(|v| v.get("fingerprint")?.as_str().map(str::to_owned)).filter(|f| HeaderValue::from_str(f).is_ok());
-        self
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            let mut req = self.http.get(format!("{API_BASE}/experiments?with_guild_experiments=true"));
+            if let Some(c) = self.cookie_header() {
+                req = req.header(COOKIE, c);
+            }
+            let Ok(r) = req.send().await else { continue };
+            self.device.lock().unwrap().absorb(r.headers());
+            if !r.status().is_success() {
+                continue;
+            }
+            let fp = r.json::<Value>().await.ok().and_then(|v| v.get("fingerprint")?.as_str().map(str::to_owned));
+            self.device.lock().unwrap().fingerprint = fp.filter(|f| HeaderValue::from_str(f).is_ok());
+        }
     }
 
     pub fn cookies(&self) -> Option<HeaderValue> {
@@ -116,6 +135,7 @@ impl AuthClient {
 
     /// One POST, no retries. Non-2xx responses go through `classify`.
     async fn post<B: Serialize + ?Sized, R: DeserializeOwned>(&self, path: &str, body: &B, captcha: &str) -> Result<R, LoginError> {
+        self.ensure_fingerprint().await;
         let mut req = self.http.post(format!("{API_BASE}{path}")).json(body);
         let fp = self.device.lock().unwrap().fingerprint.clone().and_then(|f| HeaderValue::from_str(&f).ok());
         if let Some(fp) = fp {
@@ -398,6 +418,16 @@ mod tests {
         assert!(d.absorb(&resp(&["_cfuvid=c; HttpOnly"])));
         assert_eq!(d.cookies, "__dcfduid=a; _cfuvid=c");
         assert!(!d.absorb(&resp(&["_cfuvid=c"])) && !d.absorb(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn a_fingerprint_is_fetched_only_while_none_is_stored() {
+        let mut d = Device::default();
+        assert!(d.needs_fingerprint());
+        d.fingerprint = Some("1.abc".into());
+        assert!(!d.needs_fingerprint());
+        d.fingerprint = None;
+        assert!(d.needs_fingerprint());
     }
 
     #[test]

@@ -2077,9 +2077,9 @@ fn relogin(again: &tmpsc::WeakUnboundedSender<Command>, token: Token, remember: 
     }
 }
 
-/// The login screen's unauthenticated client: one `/experiments` fingerprint and Discord's device
-/// cookies, shared by the email and QR flows (a new code reuses it).
-async fn login_client(
+/// The login screen's unauthenticated client: one `/experiments` fingerprint (fetched by its first
+/// request) and Discord's device cookies, shared by the email and QR flows (a new code reuses it).
+fn login_client(
     slot: &mut Option<Arc<AuthClient>>,
     props: &ClientProps,
     cookies: &mut Option<reqwest::header::HeaderValue>,
@@ -2087,10 +2087,13 @@ async fn login_client(
     if let Some(c) = slot {
         return c.clone();
     }
-    let c = Arc::new(AuthClient::new(props, cookies.clone()).with_fingerprint().await);
-    *cookies = c.cookies();
+    let c = Arc::new(AuthClient::new(props, cookies.clone()));
     *slot = Some(c.clone());
     c
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Ends the login screen's client but keeps the cookies its calls collected.
@@ -2226,10 +2229,11 @@ async fn run(
     // Discord's device cookies: like a browser's they outlive a logout, so a re-login comes from a
     // device Discord already knows. Memory only, never logged.
     let mut device_cookies: Option<reqwest::header::HeaderValue> = None;
-    let mut mfa: Option<MfaTicket> = None;
+    // Shared with the spawned password login, which may finish while other commands run.
+    let mfa: Arc<std::sync::Mutex<Option<MfaTicket>>> = Default::default();
     let mut qr: Option<tokio::task::JoinHandle<()>> = None;
     // Shown as a toast once the password login's token is accepted.
-    let mut notice: Option<&'static str> = None;
+    let notice: Arc<std::sync::Mutex<Option<&'static str>>> = Default::default();
     let mut chat = ChatBackend::default();
 
     while let Some(cmd) = cmds.recv().await {
@@ -2248,9 +2252,9 @@ async fn run(
                         // login card is busy as a login error, which would hide the toast below.
                         sink.send(BackendEvent::LoggedIn);
                         // Logged in (maybe through another tab): drop leftover login-screen credentials.
-                        mfa = None;
+                        *lock(&mfa) = None;
                         drop_login_client(&mut auth_client, &mut device_cookies);
-                        if let Some(n) = notice.take() {
+                        if let Some(n) = lock(&notice).take() {
                             sink.send(BackendEvent::ActionFailed(n.into()));
                         }
                         session = Some(Session::start(api, token.clone(), remember, &props, &sink, &voice));
@@ -2271,13 +2275,13 @@ async fn run(
                         }
                     }
                     Err(ApiError::Unauthorized) => {
-                        notice = None;
+                        *lock(&notice) = None;
                         sink.send(BackendEvent::AuthFailed("That token was rejected.".into()))
                     }
                     // Not an auth problem (network, 5xx, rate limit): AuthFailed would make the
                     // UI wipe the cache and keyring. The login card shows this inline instead.
                     Err(e) => {
-                        notice = None;
+                        *lock(&notice) = None;
                         sink.send(BackendEvent::ActionFailed(format!("Could not log in: {e}")))
                     }
                 }
@@ -2291,58 +2295,68 @@ async fn run(
                 session = Some(Session::start(api, token, true, &props, &sink, &voice));
                 refresh_detectable(&mut session, &sink, &activity, &mut detectable_fetched);
             }
-            // Login calls run inline: one user action = one request, never retried.
+            // One user action = one request, never retried. The password login runs in its own task:
+            // its first request may fetch the fingerprint first, which must not stall other commands.
             Command::LoginPassword { login, password, remember } => {
-                mfa = None;
-                let client = login_client(&mut auth_client, &props, &mut device_cookies).await;
-                match client.login(&login, &password).await {
-                    Ok(LoginOutcome::Token { token, update_password }) => {
-                        notice = update_password.then_some("Discord asks you to change your password. Do it in the official app.");
-                        relogin(&again, token, remember);
+                *lock(&mfa) = None;
+                let client = login_client(&mut auth_client, &props, &mut device_cookies);
+                let (sink, again, mfa, notice) = (sink.clone(), again.clone(), mfa.clone(), notice.clone());
+                tokio::spawn(async move {
+                    match client.login(&login, &password).await {
+                        Ok(LoginOutcome::Token { token, update_password }) => {
+                            *lock(&notice) =
+                                update_password.then_some("Discord asks you to change your password. Do it in the official app.");
+                            relogin(&again, token, remember);
+                        }
+                        Ok(LoginOutcome::Mfa { ticket, login_instance_id, methods }) => {
+                            *lock(&mfa) =
+                                Some(MfaTicket { ticket, login_instance_id, remember });
+                            sink.send(login_step(LoginStep::MfaRequired { methods }));
+                        }
+                        Err(e) => sink.send(login_step(LoginStep::Failed(e.message))),
                     }
-                    Ok(LoginOutcome::Mfa { ticket, login_instance_id, methods }) => {
-                        mfa = Some(MfaTicket { ticket, login_instance_id, remember });
-                        sink.send(login_step(LoginStep::MfaRequired { methods }));
+                });
+            }
+            Command::SubmitMfa { method, code } => {
+                let ticket = lock(&mfa).take();
+                match (ticket, &auth_client) {
+                    (Some(t), Some(client)) => {
+                        match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref()).await {
+                            Ok(token) => {
+                                drop_login_client(&mut auth_client, &mut device_cookies);
+                                relogin(&again, token, t.remember);
+                            }
+                            Err(e) => {
+                                if e.keep_ticket {
+                                    *lock(&mfa) = Some(t);
+                                }
+                                sink.send(login_step(LoginStep::Failed(e.message)));
+                            }
+                        }
                     }
-                    Err(e) => {
-                        sink.send(login_step(LoginStep::Failed(e.message)));
-                    }
+                    _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
                 }
             }
-            Command::SubmitMfa { method, code } => match (mfa.take(), &auth_client) {
-                (Some(t), Some(client)) => {
-                    match client.verify_mfa(method, &code, &t.ticket, t.login_instance_id.as_deref()).await {
-                        Ok(token) => {
-                            drop_login_client(&mut auth_client, &mut device_cookies);
-                            relogin(&again, token, t.remember);
-                        }
+            Command::SendMfaSms => {
+                let ticket = lock(&mfa).as_ref().map(|t| t.ticket.clone());
+                match (ticket, &auth_client) {
+                    (Some(ticket), Some(client)) => match client.send_mfa_sms(&ticket).await {
+                        Ok(phone) => sink.send(login_step(LoginStep::SmsSent { phone })),
                         Err(e) => {
-                            if e.keep_ticket {
-                                mfa = Some(t);
+                            if !e.keep_ticket {
+                                *lock(&mfa) = None;
                             }
                             sink.send(login_step(LoginStep::Failed(e.message)));
                         }
-                    }
+                    },
+                    _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
                 }
-                _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
-            },
-            Command::SendMfaSms => match (&mfa, &auth_client) {
-                (Some(t), Some(client)) => match client.send_mfa_sms(&t.ticket).await {
-                    Ok(phone) => sink.send(login_step(LoginStep::SmsSent { phone })),
-                    Err(e) => {
-                        if !e.keep_ticket {
-                            mfa = None;
-                        }
-                        sink.send(login_step(LoginStep::Failed(e.message)));
-                    }
-                },
-                _ => sink.send(login_step(LoginStep::Failed(EXPIRED.into()))),
-            },
+            }
             Command::StartQrLogin { remember } => {
                 if let Some(old) = qr.take() {
                     old.abort();
                 }
-                let auth = login_client(&mut auth_client, &props, &mut device_cookies).await;
+                let auth = login_client(&mut auth_client, &props, &mut device_cookies);
                 let (props, sink, again) = (props.clone(), sink.clone(), again.clone());
                 qr = Some(tokio::spawn(async move {
                     if let Some(token) = crate::gateway::remote_auth::run(props, auth, sink).await {
@@ -2359,7 +2373,7 @@ async fn run(
                 if let Some(t) = qr.take() {
                     t.abort();
                 }
-                mfa = None;
+                *lock(&mfa) = None;
                 drop_login_client(&mut auth_client, &mut device_cookies);
                 // Like the image cache: the app icons of this account's friends' activities go.
                 activity.save_apps(Vec::new());

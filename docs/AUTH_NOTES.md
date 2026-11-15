@@ -79,7 +79,7 @@ let http = reqwest::Client::builder()
 - Stop sending it once you have a token.
 - UD also says to put it in any "applicable `fingerprint` JSON parameter". `/auth/login` has none.
 
-**Rate limit:** 3 *valid* fingerprints per 2 minutes per IP. Above that a fingerprint is still returned but is **invalid**. Fetch one per login screen session and reuse it across retries.
+**Rate limit:** 3 *valid* fingerprints per 2 minutes per IP. Above that a fingerprint is still returned but is **invalid**. Fetch one only when a login request is about to go out and none is stored, and reuse it across retries. Opening the login screen fetches nothing.
 
 **Optional:**
 - `POST /auth/fingerprint` → `{fingerprint}` still exists but is **deprecated** (same rate limit).
@@ -87,7 +87,7 @@ let http = reqwest::Client::builder()
 
 **Device cookies:** the same response sets `__dcfduid` and `__sdcfduid` (5-year device IDs) and `_cfuvid` (checked 2026-11-15 with one anonymous request). A browser sends them on every auth call and keeps them across logouts. Rustcord keeps them as one `Cookie` value in memory (`AuthClient::cookies`, hand-merged from `Set-Cookie`, no reqwest `cookies` feature), sends them on every auth call, and keeps them for the app's lifetime, across logouts. They are not persisted, so the first login after a restart still looks like a new device. Every auth response updates them, errors included (`/experiments`, login, MFA, SMS send, QR exchange), like a browser's jar; the client keeps them when the login screen's client is dropped. The login screen shares one `AuthClient` (one fingerprint) between the email and QR flows; a new QR code reuses it, a logout drops it.
 
-**Failure handling:** if `/experiments` fails or has no `fingerprint`, go on without the header. UD calls the header recommended, not required (INFERENCE from "should").
+**Failure handling:** the fetch runs inside the first auth request (`AuthClient::ensure_fingerprint`), never inline in the backend command loop (the password login has its own task; the QR flow already did). It tries up to 3 times, 1 s apart, like the web client. If all fail or there is no `fingerprint`, go on without the header; the next request tries again. UD calls the header recommended, not required (INFERENCE from "should").
 
 ## 1.2 Headers on unauthenticated auth calls
 
