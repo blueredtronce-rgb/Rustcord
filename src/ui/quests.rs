@@ -481,7 +481,7 @@ fn paint_hero(ui: &egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, q: &Quest, rect: Rect
 fn paint_tile(ui: &egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, q: &Quest, tile: Rect) {
     let r = f32::from(pal.radius);
     ui.painter().rect_filled(tile.expand(2.0), r + 2.0, pal.surface);
-    let url = q.config.assets.game_tile.as_deref().and_then(|a| crate::api::cdn::quest_asset_url(q.id, a));
+    let url = q.config.assets.game_tile.as_deref().and_then(|a| crate::api::cdn::quest_tile_url(q.id, a, pal.dark));
     match url.and_then(|u| cx.images.get(ui.ctx(), &u, 96, false)) {
         Some(tex) => egui::Image::new(tex).corner_radius(pal.radius).paint_at(ui, tile),
         None => {
@@ -925,7 +925,7 @@ pub const DEMO_JSON: &str = r##"{"quests":[
   "colors":{"primary":"#C2410C","secondary":"#1E293B"},
   "messages":{"quest_name":"Forge three blades","game_title":"Ferris Forge","game_publisher":"Crab Works"},
   "task_config_v2":{"join_operator":"or","tasks":{"WATCH_VIDEO":{"type":"WATCH_VIDEO","target":180,
-    "assets":{"video":{"url":"https://cdn.discordapp.com/assets/quests/101/trailer.mp4"}},"messages":{"video_title":"Forge three blades: the trailer"}}}},
+    "assets":{"video":{"url":"https://cdn.discordapp.com/quests/101/trailer.mp4"}},"messages":{"video_title":"Forge three blades: the trailer"}}}},
   "rewards_config":{"assignment_method":1,"platforms":[0],"rewards_expire_at":"2026-12-28T00:00:00+00:00",
     "rewards":[{"type":4,"sku_id":"7001","messages":{"name":"700 Orbs","name_with_article":"700 Orbs"},"orb_quantity":700}]}},
   "user_status":{"user_id":"1","quest_id":"101","enrolled_at":"2026-11-10T10:00:00+00:00","completed_at":null,"claimed_at":null,

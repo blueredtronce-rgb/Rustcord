@@ -674,12 +674,12 @@ mod tests {
         let q = |features: &str, assets: &str| {
             quest(&format!(r#"{{"id":"101","config":{{"features":{features},"task_config_v2":{{"tasks":{{"WATCH_VIDEO":{{"target":180,"assets":{assets}}}}}}}}}}}"#))
         };
-        let mp4 = r#"{"video":{"url":"https://cdn.discordapp.com/assets/quests/101/trailer.mp4"}}"#;
-        assert_eq!(q("[]", mp4).video_url().as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/trailer.mp4"));
+        let mp4 = r#"{"video":{"url":"https://cdn.discordapp.com/quests/101/trailer.mp4"}}"#;
+        assert_eq!(q("[]", mp4).video_url().as_deref(), Some("https://cdn.discordapp.com/quests/101/trailer.mp4"));
         assert_eq!(q("[18]", mp4).video_url(), None, "forced HLS");
         assert_eq!(q("[]", r#"{"video_hls":{"url":"https://cdn.discordapp.com/x.m3u8"}}"#).video_url(), None);
         let low = r#"{"video_low_res":{"url":"low.mp4"},"video":{"url":"full.mp4"}}"#;
-        assert_eq!(q("[]", low).video_url().as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/low.mp4"));
+        assert_eq!(q("[]", low).video_url().as_deref(), Some("https://cdn.discordapp.com/quests/101/low.mp4"));
         assert_eq!(q("[]", r#"{"video":{"url":"https://evil.example/x.mp4"}}"#).video_url(), None);
     }
 

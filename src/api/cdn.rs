@@ -243,27 +243,42 @@ pub fn game_cover_url(url: &str) -> Option<String> {
     is_discord_media_host(url).then(|| url.to_owned())
 }
 
-/// A quest asset (`assets.hero`, `game_tile`, a task video): an absolute URL only on Discord's
-/// media hosts, else a name under `/assets/quests/{id}/`; only with one of `exts` (lowercase,
-/// the path's end, query ignored). Which form newer quests use is UNCONFIRMED (QUESTS_NOTES §1.5).
-fn quest_url(quest_id: Id, asset: &str, exts: &[&str]) -> Option<String> {
+/// A quest asset (`assets.hero`, `game_tile`, a task video), built like the web client's own
+/// function (read from discord.com's public JS bundle, QUESTS_NOTES §1.5): an absolute URL only
+/// on Discord's media hosts; a name with a `/` is a CDN-root path (`{CDN}/{asset}`); a bare name
+/// lives under `{CDN}/quests/{id}/`, with `{theme}/` between for the game tile (`light`/`dark`).
+/// (userdoccers' `/assets/quests/` is not what the client requests.) Only with one of `exts`
+/// (lowercase, the path's end, query ignored).
+fn quest_url(quest_id: Id, asset: &str, theme: Option<&str>, exts: &[&str]) -> Option<String> {
     let url = if asset.starts_with("https://") {
         is_discord_media_host(asset).then(|| asset.to_owned())?
+    } else if !plain_path(asset) {
+        return None;
+    } else if asset.contains('/') {
+        format!("{CDN}/{asset}")
     } else {
-        plain_path(asset).then(|| format!("{CDN}/assets/quests/{quest_id}/{asset}"))?
+        let theme = theme.map(|t| format!("{t}/")).unwrap_or_default();
+        format!("{CDN}/quests/{quest_id}/{theme}{asset}")
     };
     let path = Url::parse(&url).ok()?.path().to_ascii_lowercase();
     exts.iter().any(|e| path.ends_with(e)).then_some(url)
 }
 
-/// A quest image (hero, game tile) the image loader can decode; `.webm` / `.mp4` heroes -> None.
+const IMAGE_EXTS: [&str; 5] = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+
+/// A quest image (the hero still) the image loader can decode; `.webm` / `.mp4` -> None.
 pub fn quest_asset_url(quest_id: Id, asset: &str) -> Option<String> {
-    quest_url(quest_id, asset, &[".png", ".jpg", ".jpeg", ".webp", ".gif"])
+    quest_url(quest_id, asset, None, &IMAGE_EXTS)
+}
+
+/// The game tile: like the client, a bare name sits in a `dark/` or `light/` folder.
+pub fn quest_tile_url(quest_id: Id, asset: &str, dark: bool) -> Option<String> {
+    quest_url(quest_id, asset, Some(if dark { "dark" } else { "light" }), &IMAGE_EXTS)
 }
 
 /// A quest video for the in-app player (MP4 only; never HLS).
 pub fn quest_video_url(quest_id: Id, url: &str) -> Option<String> {
-    quest_url(quest_id, url, &[".mp4"])
+    quest_url(quest_id, url, None, &[".mp4"])
 }
 
 #[cfg(test)]
@@ -425,15 +440,19 @@ mod tests {
     #[test]
     fn quest_asset_urls() {
         let q = Id(101);
-        assert_eq!(quest_asset_url(q, "hero.png").as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/hero.png"));
-        let abs = "https://cdn.discordapp.com/assets/quests/101/tile.JPG?x=1";
+        assert_eq!(quest_asset_url(q, "hero.png").as_deref(), Some("https://cdn.discordapp.com/quests/101/hero.png"));
+        assert_eq!(quest_asset_url(q, "quests/101/hero.jpg").as_deref(), Some("https://cdn.discordapp.com/quests/101/hero.jpg"));
+        assert_eq!(quest_tile_url(q, "tile.webp", true).as_deref(), Some("https://cdn.discordapp.com/quests/101/dark/tile.webp"));
+        assert_eq!(quest_tile_url(q, "quests/101/tile.webp", false).as_deref(), Some("https://cdn.discordapp.com/quests/101/tile.webp"));
+        let abs = "https://cdn.discordapp.com/quests/101/tile.JPG?x=1";
         assert_eq!(quest_asset_url(q, abs).as_deref(), Some(abs));
         assert_eq!(quest_asset_url(q, "https://evil.example/hero.png"), None);
         assert_eq!(quest_asset_url(q, "../../avatars/hero.png"), None);
+        assert_eq!(quest_asset_url(q, "quests/../../avatars/hero.png"), None);
         assert_eq!(quest_asset_url(q, "hero.webm"), None);
         assert_eq!(quest_asset_url(q, "trailer.mp4"), None);
-        assert_eq!(quest_video_url(q, "trailer.mp4").as_deref(), Some("https://cdn.discordapp.com/assets/quests/101/trailer.mp4"));
-        assert_eq!(quest_video_url(q, "https://cdn.discordapp.com/assets/quests/101/hls/master.m3u8"), None);
+        assert_eq!(quest_video_url(q, "trailer.mp4").as_deref(), Some("https://cdn.discordapp.com/quests/101/trailer.mp4"));
+        assert_eq!(quest_video_url(q, "https://cdn.discordapp.com/quests/101/hls/master.m3u8"), None);
         assert_eq!(quest_video_url(q, "hero.png"), None);
     }
 

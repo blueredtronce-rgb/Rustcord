@@ -86,10 +86,18 @@ QuestUserStatus  { quest_id, enrolled_at?, completed_at?, claimed_at?, progress 
 Features: 21 DO_NOT_DISPLAY (hidden), 18 VIDEO_QUEST_FORCE_HLS_VIDEO (no in-app video). No
 `task_config_v2` (v1 is discontinued): "Open this quest in the Discord app."
 
-Assets: an absolute URL only on Discord's media hosts, else a plain name under
-`cdn.discordapp.com/assets/quests/{id}/` (`cdn::quest_asset_url`); which form newer quests use is
-**UNCONFIRMED**. Only `.png .jpg .jpeg .webp .gif` load as images; other heroes fall back to the
-quest's colour gradient. The video: `video_low_res`, else `video`, `.mp4` only
+Assets (fixed after the Quests page showed only fallbacks on a real account; UD's `/assets/quests/{id}/{name}`
+was wrong). Source: the web client's asset function in discord.com's public JS bundle (read
+anonymously, no account): a name with a `/` -> `https://cdn.discordapp.com/{name}`; a bare name ->
+`https://cdn.discordapp.com/quests/{id}/{name}`, and for the game tile (and logotype) with a
+`dark/` or `light/` folder in between; `http(s)://` and `blob:` values pass through. The client
+shows `hero_video` when present and the still `hero` otherwise; Rustcord only paints the still.
+Rustcord (`cdn::quest_asset_url` / `quest_tile_url`) takes the same three forms, absolute only on
+Discord's media hosts, no `..`. Not seen on a live response: the exact value shape of the real
+`hero` / `game_tile` (bare or `quests/..`) and whether the tile folder exists for every quest, so
+a tile that fails to load keeps the letter fallback (a failed load is retried at most every 60 s
+and only while it is drawn). Only `.png .jpg .jpeg .webp .gif` load as images; other heroes fall
+back to the quest's colour gradient. The video: `video_low_res`, else `video`, `.mp4` only
 (`cdn::quest_video_url`); its codec (expected H.264 + AAC) is **UNCONFIRMED**. Never HLS.
 
 ## 2. Tasks and what Rustcord does
