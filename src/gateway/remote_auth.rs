@@ -104,8 +104,8 @@ fn close_end(code: Option<u16>) -> End {
 
 /// Runs one QR login. Emits `LoginStep`s; returns the token after the phone approved.
 /// Cancel by aborting the task (socket and key drop with it).
-pub async fn run(props: Arc<ClientProps>, sink: EventSink) -> Option<Token> {
-    match flow(&props, &sink).await {
+pub async fn run(props: Arc<ClientProps>, auth: Arc<AuthClient>, sink: EventSink) -> Option<Token> {
+    match flow(&props, &auth, &sink).await {
         Ok(token) => Some(token),
         Err(end) => {
             sink.send(BackendEvent::LoginStep(match end {
@@ -117,7 +117,7 @@ pub async fn run(props: Arc<ClientProps>, sink: EventSink) -> Option<Token> {
     }
 }
 
-async fn flow(props: &ClientProps, sink: &EventSink) -> Result<Token, End> {
+async fn flow(props: &ClientProps, auth: &AuthClient, sink: &EventSink) -> Result<Token, End> {
     let keys = tokio::task::spawn_blocking(RaKeys::generate);
     // Same browser-like headers as the gateway (Origin is mandatory here).
     let req = super::conn::upgrade_request(URL, props).map_err(protocol)?;
@@ -183,7 +183,7 @@ async fn flow(props: &ClientProps, sink: &EventSink) -> Result<Token, End> {
     drop((tx, rx)); // the server closes with 1000 now anyway
 
     // Exchanged right away: the ticket's lifetime is unknown. Never retried.
-    let encrypted = AuthClient::new(props).remote_auth_login(&ticket).await.map_err(|e| End::Failed(e.message))?;
+    let encrypted = auth.remote_auth_login(&ticket).await.map_err(|e| End::Failed(e.message))?;
     let token = keys.decrypt_b64(&encrypted).map_err(protocol)?;
     std::str::from_utf8(&token).ok().and_then(Token::parse).ok_or_else(|| protocol("unreadable token"))
 }

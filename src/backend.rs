@@ -2077,6 +2077,22 @@ fn relogin(again: &tmpsc::WeakUnboundedSender<Command>, token: Token, remember: 
     }
 }
 
+/// The login screen's unauthenticated client: one `/experiments` fingerprint and Discord's device
+/// cookies, shared by the email and QR flows (a new code reuses it).
+async fn login_client(
+    slot: &mut Option<Arc<AuthClient>>,
+    props: &ClientProps,
+    cookies: &mut Option<reqwest::header::HeaderValue>,
+) -> Arc<AuthClient> {
+    if let Some(c) = slot {
+        return c.clone();
+    }
+    let c = Arc::new(AuthClient::new(props, cookies.clone()).with_fingerprint().await);
+    *cookies = c.cookies();
+    *slot = Some(c.clone());
+    c
+}
+
 fn login_step(step: LoginStep) -> BackendEvent {
     BackendEvent::LoginStep(step)
 }
@@ -2199,7 +2215,10 @@ async fn run(
     let mut session: Option<Session> = None;
     let not_connected = || BackendEvent::ActionFailed("Not connected".into());
     // Login screen state: unauthenticated client (+ fingerprint), 2FA ticket, running QR flow.
-    let mut auth_client: Option<AuthClient> = None;
+    let mut auth_client: Option<Arc<AuthClient>> = None;
+    // Discord's device cookies: like a browser's they outlive a logout, so a re-login comes from a
+    // device Discord already knows. Memory only, never logged.
+    let mut device_cookies: Option<reqwest::header::HeaderValue> = None;
     let mut mfa: Option<MfaTicket> = None;
     let mut qr: Option<tokio::task::JoinHandle<()>> = None;
     // Shown as a toast once the password login's token is accepted.
@@ -2268,10 +2287,7 @@ async fn run(
             // Login calls run inline: one user action = one request, never retried.
             Command::LoginPassword { login, password, remember } => {
                 mfa = None;
-                let client = match auth_client.take() {
-                    Some(c) => c,
-                    None => AuthClient::new(&props).with_fingerprint().await,
-                };
+                let client = login_client(&mut auth_client, &props, &mut device_cookies).await;
                 match client.login(&login, &password).await {
                     Ok(LoginOutcome::Token { token, update_password }) => {
                         notice = update_password.then_some("Discord asks you to change your password. Do it in the official app.");
@@ -2279,11 +2295,9 @@ async fn run(
                     }
                     Ok(LoginOutcome::Mfa { ticket, login_instance_id, methods }) => {
                         mfa = Some(MfaTicket { ticket, login_instance_id, remember });
-                        auth_client = Some(client);
                         sink.send(login_step(LoginStep::MfaRequired { methods }));
                     }
                     Err(e) => {
-                        auth_client = Some(client);
                         sink.send(login_step(LoginStep::Failed(e.message)));
                     }
                 }
@@ -2321,9 +2335,10 @@ async fn run(
                 if let Some(old) = qr.take() {
                     old.abort();
                 }
+                let auth = login_client(&mut auth_client, &props, &mut device_cookies).await;
                 let (props, sink, again) = (props.clone(), sink.clone(), again.clone());
                 qr = Some(tokio::spawn(async move {
-                    if let Some(token) = crate::gateway::remote_auth::run(props, sink).await {
+                    if let Some(token) = crate::gateway::remote_auth::run(props, auth, sink).await {
                         relogin(&again, token, remember);
                     }
                 }));
@@ -2342,8 +2357,12 @@ async fn run(
                 // Like the image cache: the app icons of this account's friends' activities go.
                 activity.save_apps(Vec::new());
                 if let Some(old) = session.take() {
-                    // Wait (bounded) so no event of the old connection arrives after Offline.
+                    // Gateway first (a 4004 after the token dies would show as AuthFailed on the new
+                    // login screen), bounded so no event of the old connection arrives after Offline.
+                    // Then end the token at Discord; errors ignored, a logout always completes locally.
+                    let api = old.api.clone();
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), old.shutdown()).await;
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), api.logout()).await;
                 }
                 // Awaited so a following Login cannot race with the delete.
                 if let Ok(Err(e)) = tokio::task::spawn_blocking(crate::auth::clear_token).await {

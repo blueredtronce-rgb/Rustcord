@@ -218,6 +218,11 @@ impl ApiClient {
         self.send(Method::POST, Self::url(&["auth", "sessions", "logout"]), Some(body)).await.map(drop)
     }
 
+    /// `POST /auth/logout {"provider":null,"voip_provider":null}` (what the official client sends): ends this token at Discord, not only in the keyring.
+    pub async fn logout(&self) -> Result<(), ApiError> {
+        self.send(Method::POST, Self::url(&["auth", "logout"]), Some(json!({ "provider": null, "voip_provider": null }))).await.map(drop)
+    }
+
     /// `GET /oauth2/tokens`.
     pub async fn authorized_apps(&self) -> Result<Vec<AuthorizedApp>, ApiError> {
         self.send_json(Method::GET, Self::url(&["oauth2", "tokens"]), None).await

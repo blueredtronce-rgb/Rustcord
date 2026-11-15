@@ -8,15 +8,15 @@
 use super::{API_BASE, default_headers, first_nested_error, net_err, props::ClientProps, ratelimit};
 use crate::auth::{Secret, Token};
 use crate::backend::MfaMethod;
-use reqwest::header::{HeaderMap, HeaderValue, REFERER};
+use reqwest::header::{COOKIE, HeaderMap, HeaderValue, REFERER, SET_COOKIE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Duration;
 
-pub const CAPTCHA_PASSWORD: &str =
-    "Discord wants a captcha for this login. Use QR login, or sign in once in the official app, then try again.";
-pub const CAPTCHA_QR: &str = "Discord wants a captcha for this login. Complete the login in the official app.";
+pub const CAPTCHA_PASSWORD: &str = "Discord wants a captcha for this login, and Rustcord cannot show one. Use QR code login, or wait a few minutes and try again. The Token tab also works.";
+pub const CAPTCHA_QR: &str =
+    "Discord wants a captcha for this login, and Rustcord cannot show one. Wait a few minutes, then get a new code, or use the Token tab.";
 pub const EXPIRED: &str = "The login expired. Enter your password again.";
 
 /// User-facing failure of a login call. Never contains the password, code, ticket or token.
@@ -44,10 +44,13 @@ pub enum LoginOutcome {
 pub struct AuthClient {
     http: reqwest::Client,
     fingerprint: Option<HeaderValue>,
+    /// Discord's device cookies (`__dcfduid`, `__sdcfduid`, `_cfuvid`) as one `Cookie` value; a
+    /// browser sends them on every login call and keeps them across logouts.
+    cookies: Option<HeaderValue>,
 }
 
 impl AuthClient {
-    pub fn new(props: &ClientProps) -> Self {
+    pub fn new(props: &ClientProps, cookies: Option<HeaderValue>) -> Self {
         let mut h = default_headers(props);
         h.insert(REFERER, HeaderValue::from_static("https://discord.com/login"));
         let http = reqwest::Client::builder()
@@ -59,19 +62,35 @@ impl AuthClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("HTTP client (TLS backend) failed to initialise");
-        Self { http, fingerprint: None }
+        Self { http, fingerprint: None, cookies }
     }
 
     /// GET /experiments once per login screen for the `X-Fingerprint` header (3 valid ones per
-    /// 2 minutes per IP). Recommended, not required: on any failure go on without it.
+    /// 2 minutes per IP). Recommended, not required: on any failure go on without it. Also keeps
+    /// the device cookies the response sets.
     pub async fn with_fingerprint(mut self) -> Self {
-        let resp = self.http.get(format!("{API_BASE}/experiments?with_guild_experiments=true")).send().await;
-        let fp = match resp {
-            Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+        let mut req = self.http.get(format!("{API_BASE}/experiments?with_guild_experiments=true"));
+        if let Some(c) = &self.cookies {
+            req = req.header(COOKIE, c.clone());
+        }
+        let fp = match req.send().await {
+            Ok(r) if r.status().is_success() => {
+                let old = self.cookies.as_ref().and_then(|c| c.to_str().ok()).unwrap_or_default().to_owned();
+                let merged = merge_cookies(&old, r.headers().get_all(SET_COOKIE).iter().filter_map(|v| v.to_str().ok()));
+                self.cookies = HeaderValue::from_str(&merged).ok().filter(|_| !merged.is_empty()).map(|mut v| {
+                    v.set_sensitive(true);
+                    v
+                });
+                r.json::<Value>().await.ok()
+            }
             _ => None,
         };
         self.fingerprint = fp.and_then(|v| HeaderValue::from_str(v.get("fingerprint")?.as_str()?).ok());
         self
+    }
+
+    pub fn cookies(&self) -> Option<HeaderValue> {
+        self.cookies.clone()
     }
 
     /// One POST, no retries. Non-2xx responses go through `classify`.
@@ -79,6 +98,9 @@ impl AuthClient {
         let mut req = self.http.post(format!("{API_BASE}{path}")).json(body);
         if let Some(fp) = &self.fingerprint {
             req = req.header("x-fingerprint", fp.clone());
+        }
+        if let Some(c) = &self.cookies {
+            req = req.header(COOKIE, c.clone());
         }
         let network = |e| LoginError::new(net_err(e).to_string(), true);
         let resp = req.send().await.map_err(network)?;
@@ -150,6 +172,21 @@ impl AuthClient {
             .map(str::to_owned)
             .ok_or_else(|| LoginError::new("Unexpected response from Discord.", false))
     }
+}
+
+/// Merges `Set-Cookie` lines into a `Cookie` value ("a=1; b=2"): same name replaces, new appends.
+// shortcut: ignores Expires/Max-Age=0 and Path; every cookie here comes from discord.com/api; upgrade if Discord starts expiring them mid-login.
+fn merge_cookies<'a>(old: &str, set: impl Iterator<Item = &'a str>) -> String {
+    let pair = |s: &str| s.split_once('=').map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned())).filter(|(n, _)| !n.is_empty());
+    let mut jar: Vec<(String, String)> = old.split(';').filter_map(pair).collect();
+    for line in set {
+        let Some((n, v)) = line.split(';').next().and_then(pair) else { continue };
+        match jar.iter_mut().find(|(k, _)| *k == n) {
+            Some(slot) => slot.1 = v,
+            None => jar.push((n, v)),
+        }
+    }
+    jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; ")
 }
 
 /// Trimmed login (phone numbers in E.164 without separators) after local checks, so a doomed
@@ -320,6 +357,14 @@ mod tests {
         assert!(err(403, r#"{"code":40333,"message":"internal network error"}"#).message.contains("firewall"));
         assert!(err(403, r#"{"code":10008,"message":"Unknown Message"}"#).message.contains("blocked"));
         assert_eq!(err(502, "bad gateway").message, "Discord returned an error (HTTP 502).");
+    }
+
+    #[test]
+    fn merges_cookies() {
+        let set = ["__dcfduid=a; Expires=Fri, 14-Nov-2031 03:22:46 GMT; Path=/", "_cfuvid=b; HttpOnly", "garbage"];
+        assert_eq!(merge_cookies("", set.into_iter()), "__dcfduid=a; _cfuvid=b");
+        assert_eq!(merge_cookies("__dcfduid=a; _cfuvid=b", ["_cfuvid=c; Path=/"].into_iter()), "__dcfduid=a; _cfuvid=c");
+        assert_eq!(merge_cookies("", std::iter::empty()), "");
     }
 
     #[test]
