@@ -30,7 +30,7 @@ directly as a **user** client. Not a port of the official client.
 - **Login secrets** (password, 2FA code, MFA/QR tickets): `auth::Secret` only (zeroized,
   redacted Debug); never logged, persisted or put into error text. Login calls go through
   `api::auth::AuthClient` (no `Authorization`, no `RateLimiter`, one request per user action,
-  429 is reported, never retried). A captcha response is shown to the user in the captcha window
+  429 is reported, never retried). A captcha response is shown to the user inside the login card
   (`src/captcha.rs`, Windows and macOS) and the request is sent again with the answer the *user*
   solved; elsewhere the attempt stops with a message. Never solve, bypass or automate one. Any
   token a login produces re-enters via `Command::Login`.
@@ -109,8 +109,8 @@ cargo check
   - `gateway/remote_auth.rs`: QR login over `wss://remote-auth-gateway.discord.gg/?v=2`
     (RSA-OAEP key per code, heartbeat, close codes); the ticket exchange is the backend's
     (`Command::QrExchange`), so a captcha there can be answered like the others.
-  - `captcha.rs`: the helper process `rustcord --captcha` (winit window + wry webview with
-    hCaptcha, `docs/AUTH_NOTES.md` section 0). The backend parks the refused request
+  - `captcha.rs`: hCaptcha in a wry webview that is a child of the main window, laid over the
+    login card's slot once per pass (`Inline::sync`, `docs/AUTH_NOTES.md` section 0). The backend parks the refused request
     (`LoginStep::Captcha`) and resends it with the token (`Command::Captcha`).
   - `backend::run` keeps the login state (shared auth client, 2FA ticket, QR task) and feeds every
     resulting token into `Command::Login` (validate, keyring, gateway). It also holds Discord's
@@ -184,9 +184,10 @@ login hint and README).
 - `RUSTCORD_HOME=<dir>`: config+cache under that dir.
 - `RUSTCORD_OFFLINE=1`: no keyring, no network; shows cached UI.
 - `RUSTCORD_TRACE_STARTUP=<file>`: startup timings.
-- `RUSTCORD_CAPTCHA_DEMO=1|auto` (with `RUSTCORD_LOGIN_TAB=email`): a password login gets a demo
-  captcha (hCaptcha's test sitekey) instead of a request to Discord; `auto` signs in once by itself,
-  so `RUSTCORD_SCREENSHOT` can show the login screen with the captcha window open.
+- `RUSTCORD_CAPTCHA_DEMO=1|auto|open` (with `RUSTCORD_LOGIN_TAB=email`): a password login gets a
+  demo captcha (hCaptcha's test sitekey) instead of a request to Discord; `auto` signs in once by
+  itself, `open` also shows the open-challenge layout. The webview is a native child window, so
+  `RUSTCORD_SCREENSHOT` (egui's own frame) shows its slot empty: capture the window from the OS.
 - `RUSTCORD_MEMSTATS=<file>`: appends process counters (working set, private, process heap) at
   startup steps, then 15 s after start (and every minute) capacity-based heap estimates of the big
   `AppState` structures, texture and font-atlas bytes (`ui::images::mem_hooks`).

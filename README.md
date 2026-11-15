@@ -62,6 +62,23 @@
 - Themes (TOML) with a live editor, three built-ins, import/export.
 - Local-only profile banner and (animated) avatar – only visible to you, never uploaded.
 - Profile cosmetics loaded from Discord: avatar decorations, nameplates, profile effects and
+## Why Rustcord
+
+On November 4, 2026, Discord's co-founder and CTO Stanislav Vishnevskiy announced that Discord is
+rebuilding its desktop app in Rust instead of Electron. An early internal Windows build exists and
+is heading into private testing; there is no release date yet, and the Electron app carries on in
+the meantime ([mlq.ai](https://mlq.ai/news/discord-is-rebuilding-its-desktop-app-in-rust-to-cut-memory-use/),
+[andrealosavio.com](https://www.andrealosavio.com/en/blog/discord-rust-client-rewrite),
+[tech-insider.org](https://tech-insider.org/discord-electron-rust-gpui-rebuild-290mb-ram-2026/)).
+
+I didn't feel like waiting for it. So I vibe-coded my own Rust client and shipped it first:
+Rustcord 0.1.0 came out on November 15, 2026, for Windows, Linux and macOS, while Discord's Rust
+app still has no release date. I also built in plugins, the way [Vencord](https://vencord.dev)
+adds them to the official app: 48 of them, re-implemented in Rust, off by default, and they only
+change this app.
+
+— rosc ([@r0sc](https://github.com/r0sc))
+
   frames, display-name styles, profile themes, clan tags, badges, connections and games; an
   uploaded banner fades into the profile's background colour.
 - Clicking a badge shows what it means in Rustcord's own words (with its date, such as
@@ -157,17 +174,18 @@ The login screen has three tabs:
 - **Token**: paste an account token (the tab explains where to find it).
 
 If Discord asks for a captcha (it does for logins it finds unusual, and after many sign-in
-attempts), Rustcord opens a small window with Discord's own hCaptcha (Windows and macOS). You
-solve it there, then Rustcord sends the same login again with the result. Closing the window
-or *Cancel* ends the attempt. The window only talks to hCaptcha, never to Discord, and its
-temporary profile is deleted afterwards. Details and the origin it runs under:
+attempts), Rustcord shows Discord's own hCaptcha right in the sign-in card, under the password or
+2FA code field (Windows and macOS). You solve it there, then Rustcord sends the same login again
+with the result; *Cancel* ends the attempt. If hCaptcha opens a picture challenge, it covers the
+window until you finish it or click beside it. The captcha only talks to hCaptcha, never to
+Discord, and its temporary profile is deleted afterwards. Details and the origin it runs under:
 `docs/AUTH_NOTES.md`.
 
 Limits:
 
 - **Captchas are yours to solve.** Rustcord only shows Discord's captcha and passes your answer
   on; it never tries to solve or bypass one. On Linux (and on a Windows without the WebView2
-  runtime) there is no captcha window: Rustcord says so, and more attempts do not help; wait a
+  runtime) Rustcord cannot show the captcha: it says so, and more attempts do not help; wait a
   while, use the token tab, or sign in once in the official app. Discord can still refuse an
   answer that was given in this window; the QR code and token tabs do not depend on it.
 - Accounts whose only 2FA method is a security key/passkey, and Discord's "new login
