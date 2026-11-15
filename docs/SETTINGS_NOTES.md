@@ -315,6 +315,8 @@ All ✔ except spell check. They are cheap render gates in the message view.
 | Open on startup | HKCU `Software\Microsoft\Windows\CurrentVersion\Run` value. Needs the windows-sys `Win32_System_Registry` feature (a feature, not a crate). |
 | Start minimized | startup argument |
 | Close button minimizes to tray | the existing tray (`notify.rs`) |
+| Install updates automatically | `Settings::auto_update` (default on) -> `update::set_auto`. Off: the check still runs and the title bar says "Update available"; a click downloads. Disabled on copies that can't update themselves (portable, dev, read-only) and while the updater is off (debug builds, `RUSTCORD_*` test hooks). docs/UPDATER_DESIGN.md §15.3 |
+| Check for updates | button on the "Version 0.1.0" row (`update::check_now`); the row's description is the updater's state. Same section "Updates" |
 
 All ✔.
 

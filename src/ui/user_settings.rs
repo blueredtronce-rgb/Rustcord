@@ -153,7 +153,7 @@ impl Page {
             Page::Keybinds => ("Keybinds", "keybinds", "shortcuts hotkeys keyboard"),
             Page::Language => ("Language", "language", "locale"),
             // One id on every OS; title and rows say Windows, Linux or macOS.
-            Page::Windows => (app::DESKTOP.title, "windows", "startup login autostart minimize tray menu bar close"),
+            Page::Windows => (app::DESKTOP.title, "windows", "startup login autostart minimize tray menu bar close update updates version upgrade"),
             Page::StreamerMode => ("Streamer mode", "streamer", "streaming obs hide"),
             Page::Advanced => ("Advanced", "advanced", "developer mode copy id hardware acceleration"),
             Page::ActivityPrivacy => ("Activity privacy", "activity", "activity status game join"),
@@ -797,6 +797,8 @@ mod tests {
         assert!(hits("open inbox").contains(&Page::Keybinds), "a keybind action");
         assert!(hits("spoiler").contains(&Page::Chat), "a synced option's label");
         assert!(hits("developer").contains(&Page::Advanced));
+        assert_eq!(hits("upgrade"), [Page::Windows]);
+        assert_eq!(hits("install updates"), [Page::Windows], "the Updates rows");
         assert_eq!(hits("authenticator"), [Page::MyAccount]);
         assert_eq!(hits("avatar").first(), Some(&Page::Profiles), "the upload rows moved to Profiles");
         assert_eq!(hits("").len(), all.len());

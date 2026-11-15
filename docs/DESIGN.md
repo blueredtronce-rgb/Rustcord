@@ -900,6 +900,10 @@ Playing                                     <- label role: "Playing" / "Listenin
   one primary ("Install", "Continue"). A failure shows `Alert` 16 and the message in `danger`
   (ui role) in the bar's place. Enter = the primary, Esc = "Not now" / "Continue". Static: it
   repaints only when the updater reports progress.
+- **Settings > Windows / Linux / macOS > Updates:** switch row "Install updates automatically"
+  (description by install kind; disabled with its reason on copies that can't update
+  themselves and in development builds), then a row "Version 0.1.0" whose description says
+  what the updater is doing, with a secondary "Check for updates".
 
 ---
 

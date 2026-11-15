@@ -3,7 +3,8 @@
 //! hook that applies them: zoom (Ctrl +/−/0 included, kept in `Settings::zoom`), reduced motion,
 //! the global keybinds (mute, deafen, Streamer Mode); `logic`, the window's tray life (close to
 //! the tray, tray menu, `--minimized`), which also runs while the window is hidden.
-//! OWNERSHIP: user-settings engineer; Windows Settings and `logic`: desktop engineer.
+//! OWNERSHIP: user-settings engineer; Windows Settings and `logic`: desktop engineer; the Updates
+//! rows: updater ui (copy in ui/update.rs).
 
 use super::super::messages::Pal;
 use super::super::{UiCx, ViewState, hint, section};
@@ -139,7 +140,9 @@ pub(super) const DESKTOP: DesktopCopy = if cfg!(target_os = "macos") {
 };
 
 /// The page's own rows, for the settings search.
-pub(super) const DESKTOP_LABELS: [&str; 3] = [DESKTOP.startup, "Start minimized", DESKTOP.close];
+pub(super) const DESKTOP_LABELS: [&str; 5] = [DESKTOP.startup, "Start minimized", DESKTOP.close, AUTO_UPDATE, CHECK_UPDATES];
+const AUTO_UPDATE: &str = "Install updates automatically";
+const CHECK_UPDATES: &str = "Check for updates";
 
 /// Windows / Linux / macOS settings: open at sign-in and start minimized (the OS entry itself,
 /// read each time the page draws: the installer or another copy may have changed it), minimize
@@ -165,7 +168,34 @@ pub(super) fn windows(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
     let no_tray = cfg!(target_os = "linux") && (crate::notify::tray_failed() || super::super::sidebar::nav_demo("no-tray"));
     let meta = if no_tray { "No system tray found, so closing the window quits Rustcord." } else { DESKTOP.close_meta };
     let theme = &*cx.theme;
-    changed | ui.add_enabled_ui(!no_tray, |ui| switch_row(ui, theme, DESKTOP.close, Some(meta), &mut cx.settings.minimize_to_tray)).inner
+    changed |= ui.add_enabled_ui(!no_tray, |ui| switch_row(ui, theme, DESKTOP.close, Some(meta), &mut cx.settings.minimize_to_tray)).inner;
+    changed | updates(ui, cx)
+}
+
+/// Updates (docs/UPDATER_DESIGN.md §15.3): install automatically (off while this copy can't
+/// update itself or the updater is off), the running version with what the updater is doing,
+/// and "Check for updates". True when the settings changed.
+fn updates(ui: &mut egui::Ui, cx: &mut UiCx<'_>) -> bool {
+    use crate::ui::update;
+    let up = update::status();
+    section(ui, cx.theme, "Updates");
+    let theme = &*cx.theme;
+    let can = up.enabled && up.kind != crate::update::Kind::NoticeOnly;
+    let auto = &mut cx.settings.auto_update;
+    let toggled = ui.add_enabled_ui(can, |ui| switch_row(ui, theme, AUTO_UPDATE, Some(update::auto_meta(&up)), auto)).inner;
+    if toggled {
+        crate::update::set_auto(*auto);
+    }
+    let pal = Pal::new(theme);
+    let font = egui::FontId::new(pal.ui(), crate::theme::medium_family());
+    let button_w = (ui.painter().layout_no_wrap(CHECK_UPDATES.to_owned(), font, pal.text).size().x + 32.0).max(64.0);
+    let version = concat!("Version ", env!("CARGO_PKG_VERSION"));
+    super::setting_row(ui, theme, version, update::settings_meta(&up).as_deref(), egui::vec2(button_w, 32.0), |ui| {
+        if super::super::messages::button(ui, &pal, super::super::messages::Btn::Secondary, CHECK_UPDATES, update::can_check(&up)).clicked() {
+            crate::update::check_now();
+        }
+    });
+    toggled
 }
 
 /// Streamer Mode (no "Disable sounds": Rustcord plays none; no OBS auto-enable: no process scan).

@@ -119,6 +119,55 @@ pub(super) fn title_button(ui: &mut egui::Ui, cx: &UiCx<'_>, up: &Status, inbox:
 }
 
 // ---------------------------------------------------------------------------
+// Settings > Windows / Linux / macOS > Updates (§15.3; the rows are in user_settings/app.rs)
+// ---------------------------------------------------------------------------
+
+/// Description of "Install updates automatically".
+pub(super) fn auto_meta(up: &Status) -> &'static str {
+    match up.kind {
+        _ if !up.enabled => "Updates are off for development builds and test runs.",
+        Kind::NoticeOnly => "This copy of Rustcord can't update itself. New versions are on the releases page.",
+        Kind::Package => "Rustcord downloads new versions in the background. Installing asks for your password.",
+        // macOS never installs from the menu bar: the relaunch could ask for keychain access
+        // with no window in sight (design review item 6).
+        Kind::Auto if cfg!(target_os = "macos") => "Rustcord downloads new versions in the background and installs them when it starts, never during a call.",
+        Kind::Auto => "Rustcord downloads new versions in the background and installs them when it starts or while it waits in the tray, never during a call.",
+    }
+}
+
+/// The "Version 0.1.0" row's description: what the updater is doing (None while it is off).
+pub(super) fn settings_meta(up: &Status) -> Option<String> {
+    if !up.enabled {
+        return None;
+    }
+    // A background download failed: the title-bar button stays, the reason is here.
+    if let (Phase::Available { version }, Some(note)) = (&up.phase, &up.note) {
+        return Some(format!("Version {version} is available. {note}"));
+    }
+    Some(match &up.phase {
+        Phase::Idle => "Rustcord checks for updates every 6 hours.".into(),
+        Phase::Checking => "Checking for updates".into(),
+        Phase::UpToDate => "Rustcord is up to date.".into(),
+        Phase::Available { version } if up.kind == Kind::NoticeOnly => format!("Version {version} is on the releases page."),
+        Phase::Available { version } => format!("Version {version} is available."),
+        Phase::Downloading { version, total: 0, .. } => format!("Downloading version {version}"),
+        Phase::Downloading { version, done, total } => format!("Downloading version {version} ({} %)", (*done as f64 * 100.0 / *total as f64).round().min(100.0)),
+        // Not "installs when Rustcord restarts": with auto install off, or for a version that
+        // failed to install (blocked), it waits for a click on "Update ready".
+        Phase::Ready { version } => format!("Version {version} is ready to install."),
+        Phase::Installing { version } => format!("Installing version {version}"),
+        Phase::Restarting { .. } => "Restarting".into(),
+        Phase::Manual { version, path } => format!("Version {version} is downloaded to {}.", path.display()),
+        Phase::Failed { message } => message.clone(),
+    })
+}
+
+/// "Check for updates" works (not while one runs or an update is on its way).
+pub(super) fn can_check(up: &Status) -> bool {
+    up.enabled && !matches!(up.phase, Phase::Checking | Phase::Downloading { .. } | Phase::Installing { .. } | Phase::Restarting { .. })
+}
+
+// ---------------------------------------------------------------------------
 // Update screen (§15.1)
 // ---------------------------------------------------------------------------
 
@@ -373,6 +422,46 @@ mod tests {
             assert_eq!(tip(&p, Kind::Auto, false), None, "{p:?}");
         }
         assert_eq!(tip(&Phase::Downloading { version: v(), done: 1, total: 2 }, Kind::Auto, false), None);
+    }
+
+    #[test]
+    fn settings_meta_per_phase() {
+        let meta = |p: Phase, k| settings_meta(&st(p, k));
+        let s = |t: &str| Some(t.to_owned());
+        assert_eq!(meta(Phase::Idle, Kind::Auto), s("Rustcord checks for updates every 6 hours."));
+        assert_eq!(meta(Phase::Checking, Kind::Auto), s("Checking for updates"));
+        assert_eq!(meta(Phase::UpToDate, Kind::Auto), s("Rustcord is up to date."));
+        assert_eq!(meta(Phase::Available { version: v() }, Kind::Auto), s("Version 0.1.1 is available."));
+        assert_eq!(meta(Phase::Available { version: v() }, Kind::NoticeOnly), s("Version 0.1.1 is on the releases page."));
+        assert_eq!(meta(Phase::Downloading { version: v(), done: 7_300_000, total: 12_000_000 }, Kind::Auto), s("Downloading version 0.1.1 (61 %)"));
+        assert_eq!(meta(Phase::Downloading { version: v(), done: 5, total: 0 }, Kind::Auto), s("Downloading version 0.1.1"));
+        assert_eq!(meta(Phase::Downloading { version: v(), done: 9, total: 3 }, Kind::Auto), s("Downloading version 0.1.1 (100 %)"));
+        assert_eq!(meta(Phase::Ready { version: v() }, Kind::Auto), s("Version 0.1.1 is ready to install."));
+        assert_eq!(meta(Phase::Ready { version: v() }, Kind::Package), s("Version 0.1.1 is ready to install."));
+        assert_eq!(meta(Phase::Installing { version: v() }, Kind::Auto), s("Installing version 0.1.1"));
+        assert_eq!(meta(Phase::Restarting { version: v() }, Kind::Auto), s("Restarting"));
+        let path = PathBuf::from("/home/you/x.deb");
+        assert_eq!(meta(Phase::Manual { version: v(), path }, Kind::Package), s("Version 0.1.1 is downloaded to /home/you/x.deb."));
+        assert_eq!(meta(Phase::Failed { message: "Could not check for updates. Check your connection.".into() }, Kind::Auto), s("Could not check for updates. Check your connection."));
+        assert_eq!(settings_meta(&Status { enabled: false, ..Default::default() }), None, "off: no line");
+        let failed = Status { note: Some("Could not download the update. Check your connection; Rustcord tries again later.".into()), ..st(Phase::Available { version: v() }, Kind::Auto) };
+        assert_eq!(settings_meta(&failed), s("Version 0.1.1 is available. Could not download the update. Check your connection; Rustcord tries again later."));
+    }
+
+    #[test]
+    fn auto_switch_meta_and_check_button() {
+        let off = Status::default();
+        assert_eq!(auto_meta(&off), "Updates are off for development builds and test runs.");
+        assert!(auto_meta(&st(Phase::Idle, Kind::NoticeOnly)).starts_with("This copy of Rustcord can't update itself."));
+        assert!(auto_meta(&st(Phase::Idle, Kind::Package)).ends_with("Installing asks for your password."));
+        assert!(auto_meta(&st(Phase::Idle, Kind::Auto)).ends_with("never during a call."));
+        assert!(!can_check(&off));
+        for p in [Phase::Idle, Phase::UpToDate, Phase::Available { version: v() }, Phase::Ready { version: v() }, Phase::Failed { message: "x".into() }] {
+            assert!(can_check(&st(p.clone(), Kind::Auto)), "{p:?}");
+        }
+        for p in [Phase::Checking, Phase::Downloading { version: v(), done: 0, total: 1 }, Phase::Installing { version: v() }, Phase::Restarting { version: v() }] {
+            assert!(!can_check(&st(p.clone(), Kind::Auto)), "{p:?}");
+        }
     }
 
     #[test]
