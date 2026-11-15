@@ -82,6 +82,9 @@ fn main() -> eframe::Result {
 
     // Create the egui context up front so the backend can start connecting immediately.
     let ctx = egui::Context::default();
+    // eframe sets this itself only on a context it creates; ours must open real windows for the game overlay's viewports (ui/overlay).
+    #[cfg(windows)]
+    ctx.set_embed_viewports(false);
     let backend = backend::spawn(rt.handle(), ctx.clone());
 
     // eframe's defaults are already the lean ones: no MSAA, depth or stencil buffer, vsync on

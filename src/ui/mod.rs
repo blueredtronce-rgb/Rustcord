@@ -23,6 +23,7 @@ pub mod login;
 pub mod markdown;
 pub mod members;
 pub mod messages;
+pub mod overlay;
 pub mod pickers;
 pub mod pins;
 pub mod profile;
@@ -356,6 +357,8 @@ pub struct RustcordApp {
     event_pass: bool,
     /// A key or pointer button was pressed since start (the updater's start screen waits for none).
     interacted: bool,
+    /// The in-game overlay (Windows; a stub elsewhere): `overlay/live.rs`.
+    overlay: overlay::Overlay,
 }
 
 impl RustcordApp {
@@ -405,6 +408,7 @@ impl RustcordApp {
             overrides_me: None,
             started,
             frame_no: 0,
+            overlay: Default::default(),
             last_cache_save: Instant::now(),
             event_pass: false,
             interacted: false,
@@ -454,7 +458,11 @@ impl RustcordApp {
                     {
                         // Off, or Streamer Mode: none, or without sender and text.
                         if let Some((title, body)) = self.settings.notification(&n.title, &n.body) {
-                            crate::notify::show(title, body);
+                            // A game is in front: the overlay shows it instead of the desktop notification.
+                            let author = n.author_id.filter(|_| !self.settings.streamer.hides_personal());
+                            if !self.overlay.notify(&self.state, &self.settings, title, body, author) {
+                                crate::notify::show(title, body);
+                            }
                         }
                         if !self.view.window_focused && self.settings.flash_taskbar {
                             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -802,7 +810,10 @@ impl RustcordApp {
                     if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) {
                         let _ = buf.save(&path);
                     }
-                    ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // A game-overlay demo closes the window itself, after its panes' own screenshots.
+                    if !overlay::demo_active() {
+                        ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 });
             }
             if self.frame_no < at + 10 {
@@ -813,6 +824,11 @@ impl RustcordApp {
 }
 
 impl eframe::App for RustcordApp {
+    /// One clear for every viewport: the overlay windows need it transparent, and the root's panels cover the root.
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     /// Runs before every `ui` call and also while the window is hidden/minimized, so
     /// network events and notifications are processed even when nothing is drawn.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -840,6 +856,7 @@ impl eframe::App for RustcordApp {
         // Videos shown in the last pass stay decoded, the rest are hidden (also while minimized).
         call::sync(&mut self.view, &mut self.state, &self.backend.cmd, &self.backend.video);
         dm_call::logic(&mut self.state, &self.backend.cmd, &self.settings.camera);
+        self.overlay.logic(ctx, &self.state, &self.view, &self.settings, &self.theme, &mut self.images);
         let pressed = |e: &egui::Event| matches!(e, egui::Event::PointerButton { pressed: true, .. } | egui::Event::Key { pressed: true, .. });
         self.interacted |= ctx.input(|i| i.events.iter().any(pressed));
         let hidden = user_settings::in_tray(ctx);
@@ -914,6 +931,10 @@ impl eframe::App for RustcordApp {
     /// negative n: from the last control, e.g. an open menu's), one per frame from frame 14, to
     /// show the focus ring wherever it lands.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Runs for every viewport's pass; the pointer, click and focus hooks below are the root's.
+        if raw.viewport_id != egui::ViewportId::ROOT {
+            return;
+        }
         chrome::resize_press(ctx, raw);
         static SHOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *SHOT.get_or_init(|| std::env::var_os("RUSTCORD_SCREENSHOT").is_some()) {
