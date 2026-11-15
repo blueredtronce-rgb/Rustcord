@@ -1,0 +1,4 @@
+# Windows: link the C runtime statically (build.rs picks the matching VC++ libs), so the exe has
+# no vcruntime140*.dll import and needs no Visual C++ redistributable on the target machine.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
