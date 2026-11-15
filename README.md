@@ -136,6 +136,9 @@
 - Voice channels and calls with DAVE end-to-end encryption, camera, screen share (Go Live)
   and watching streams. Camera and screen are only captured after an explicit click. Camera and
   screen share are Windows only for now; on Linux and macOS you can still watch others.
+- Game overlay (Windows, Settings → Game overlay): while a detected game is in
+  front, two small click-through windows show who is talking in your voice channel and
+  notification cards. No injection into the game; borderless or windowed games only.
 
 Not included: other Nitro features, account creation, stickers picker, slash commands/bot
 components, solving captchas (when Discord asks for one, do that step in the official app),
