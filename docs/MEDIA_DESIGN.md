@@ -74,12 +74,17 @@ UI (viewer.rs) ──Player::{play,pause,seek,set_volume,set_target,drawn}──
 4. End: gifv loops (seek 0); a video becomes `Ended` (last frame stays, the disc shows Replay).
 5. Visibility: the UI calls `drawn()` on every paint. Not drawn for 1 s (scrolled away, other
    channel, window minimized or in the tray) → pause, after a 1 s grace from a (re)start (a slow
-   load can outlast the last paint). Paused or ended and not drawn for 30 s → the thread exits,
+   load can outlast the last paint). Exception `Opts::background` (quest videos the user
+   started): it does not pause when not drawn; pictures not drawn for 1 s are decoded (H.264
+   references) but neither converted to RGBA nor published, so no UI wakes at 30 fps and `pos`
+   still advances (`shortcut:` audio-only playback with a keyframe resync when drawn again is not
+   built). Paused or ended and not drawn for 30 s → the thread exits,
    decoders and blocks are freed, the frame slot is removed; the UI drops the handle and shows
    the poster again. A video paused mid-way that is still on screen asks for a repaint every
    20 s, so a still window keeps its frame and position. The speaker stream runs only while a video plays (cpal `pause` otherwise),
    so nothing runs while nothing plays (0 % idle CPU).
-6. `played_ms` grows only while Playing **and** drawn in the last second, by the clock's advance
+6. `played_ms` grows only while Playing **and** drawn in the last second (with
+   `Opts::background`: while Playing, drawn or not), by the clock's advance
    (≤ real time); a seek adds nothing. `max_ms` = the furthest position reached by playing.
 
 ### `RangeSource` (net.rs)
@@ -97,7 +102,8 @@ first. `fetch_all(url, 32 MiB)`: Copy image.
 
 ## For other areas (Quests: video quests)
 Documented at the top of `src/media/mod.rs`:
-- `Player::open(ctx, url, Opts { no_seek_ahead, output, .. })`; call `drawn()` and
+- `Player::open(ctx, url, Opts { no_seek_ahead, output, background, .. })` (`background`: keeps
+  playing and counting `played_ms` while not drawn, quest videos only); call `drawn()` and
   `set_target(w, h)` on every paint it is visible; `play`, `pause`, `seek(ms)` (clamped to
   `max_ms` with `no_seek_ahead`), `set_volume`.
 - `status()`: `state` (Loading, Paused, Playing, Ended, Failed(why), Freed), `position_ms`,
@@ -144,6 +150,19 @@ Measured 2026-11-14 (**debug** build: C: had too little room for a release rebui
 | 1080p clip playing | 113 MB peak | 139 MB | 24 | 26–60 % of one core (debug) |
 | Ended, decoder thread gone (30 s after the last paint) | 102 MB | 136 MB | 17 | 0 between the app's own repaints |
 
+Quest video in the background, **debug** build (2026-11-15, offline, 1180×760, `quests:bg` /
+`quests:watch-play`: the 640×360 demo.mp4 looped, muted, `Opts::background`; process CPU over 20 s,
+median of 3 runs, 1 run for the modal; % of one core):
+| | CPU | Private | Working set |
+|---|---|---|---|
+| Nothing playing, window in front or minimized | 0.08 % | 90 MB | 107 MB |
+| Playing, modal open in front (44 frames/s drawn) | 31 % (1 run) | 106 MB | 136 MB |
+| Playing, no modal, Quests page in front (≈ 1.5 frames/s drawn) | 4.5 % | 101 MB | 127 MB |
+| Playing, window minimized (only `logic` runs, pictures not converted) | 3.9 % | 101 MB | 123 MB |
+
+The background rows are the decoder plus the 1 s tick; with the modal open the UI redraws at the
+video's rate. 1080p in the background was not measured (its decode cost is in the table above).
+
 Playback CPU, **release** (2026-11-14, offline, 1180×760 at 125 %, window in front, process CPU
 over 20 s, median of 3 runs; per thread from the same runs; before this tuning: 39–44 % inline,
 72 % for 1080p):
@@ -174,5 +193,7 @@ fixture home's disk cache. `RUSTCORD_MSG_DEMO=media[,viewer|viewer-zoom|viewer-v
 1. HEVC iPhone videos and WebM don't play (card with Open in browser / Download).
 2. Range support and video stills on Discord's hosts are UNCONFIRMED (fallbacks above).
 3. Signed URLs (`ex`) of old messages expire → "This video is no longer available."
-4. A video pauses when its window is minimized or hidden (0 % idle CPU rule); Discord keeps playing.
+4. A chat video pauses when its window is minimized or hidden (0 % idle CPU rule); Discord keeps
+   playing. A quest video the user started keeps playing (`Opts::background`) until it ends, the
+   quest is done or the user stops it; that is the one case where media runs with nothing drawn.
 5. RAM while a 1080p video plays is above the idle target until 30 s after it stops.

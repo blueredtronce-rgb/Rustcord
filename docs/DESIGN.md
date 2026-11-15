@@ -771,6 +771,14 @@ Glyphs inside strings lose the glyph and get a painted 14 px icon in front:
 - Channel and server in meta.
 - `Hangup` in `danger`.
 
+**Quest video section** above the voice section (while a quest video session exists), 56 tall plus
+a hairline:
+- "Quest video" in label role, `positive_text`.
+- The quest name in meta (a link, `text_muted`, `text` on hover; opens the video).
+- Mute / Unmute (only if the video has sound) and Stop video (`Close`), 32 px, tinted on hover,
+  `text_muted` icons.
+- A 3 px progress bar under the row (`paint_bar`).
+
 ### 10.6 Title bar
 
 - Keep: one bar, 32 tall, on frame.
