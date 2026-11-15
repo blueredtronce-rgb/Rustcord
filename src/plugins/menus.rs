@@ -75,18 +75,18 @@ pub fn user_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, user_id: Id, guild_id: O
         let user = cx.state.users.get(&user_id).or(cx.state.me.as_ref().filter(|m| m.id == user_id)).cloned();
         if let Some(u) = user {
             if item(ui, "View Avatar", "🖼") {
-                open_url(ui, &media::avatar_full(&u));
+                crate::ui::viewer::open_icon(ui.ctx(), cx, media::avatar_full(&u), 1.0);
             }
             let member = guild_id.and_then(|g| cx.state.find_member(g, user_id).map(|m| (g, m.clone())));
             if let Some(url) = member.and_then(|(g, m)| media::member_avatar_full(g, user_id, &m))
                 && item(ui, "View Server Avatar", "🖼")
             {
-                open_url(ui, &url);
+                crate::ui::viewer::open_icon(ui.ctx(), cx, url, 1.0);
             }
             if let Some(url) = media::banner_full(&u)
                 && item(ui, "View Banner", "🖼")
             {
-                open_url(ui, &url);
+                crate::ui::viewer::open_icon(ui.ctx(), cx, url, 2.5);
             }
         }
     }
@@ -107,7 +107,7 @@ pub fn guild_items(ui: &mut egui::Ui, cx: &mut UiCx<'_>, guild_id: Id, item: Ite
         && let Some(url) = cx.state.guild(guild_id).and_then(media::guild_icon_full)
         && item(ui, "View Icon", "🖼")
     {
-        open_url(ui, &url);
+        crate::ui::viewer::open_icon(ui.ctx(), cx, url, 1.0);
     }
     if enabled(Plugin::PermissionsViewer)
         && let Some(me) = cx.state.me.as_ref().map(|m| m.id)

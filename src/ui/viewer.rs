@@ -45,6 +45,8 @@ pub enum Kind {
 pub enum Src {
     Attachment(Attachment),
     Embed(EmbedMedia),
+    /// A CDN URL shown as is (ViewIcons: avatars, banners, server icons; no proxy resize).
+    Url(String),
 }
 
 /// One image or video of a message, as the lightbox steps through them.
@@ -70,6 +72,7 @@ impl MediaItem {
         match self.src.as_ref()? {
             Src::Attachment(a) => Some(cdn::attachment_preview_url(a, w, h)),
             Src::Embed(m) => cdn::embed_media_url(m, w, h),
+            Src::Url(u) => Some(u.clone()),
         }
     }
 
@@ -219,6 +222,14 @@ pub fn open(ctx: &egui::Context, cx: &mut UiCx<'_>, msg: &Message, author: Optio
     let index = items.iter().position(|i| i.file_url == clicked.file_url);
     let items = if index.is_some() { items } else { vec![clicked.clone()] };
     open_items(ctx, cx, items, index.unwrap_or(0), author);
+}
+
+/// ViewIcons: opens the CDN image `url` (an avatar, banner or server icon; `aspect` = width / height,
+/// as these have no stored size) in the lightbox. Animated ones (gif) animate.
+pub fn open_icon(ctx: &egui::Context, cx: &mut UiCx<'_>, url: String, aspect: f32) {
+    let gif = url.split('?').next().unwrap_or_default().to_ascii_lowercase().ends_with(".gif");
+    let item = MediaItem { kind: Kind::Image { gif }, src: Some(Src::Url(url.clone())), play_url: None, filename: net::file_name(&url), open_url: url.clone(), file_url: url, natural: Some(vec2(1024.0 * aspect.max(1.0), 1024.0 / aspect.min(1.0))), unsupported: false };
+    open_items(ctx, cx, vec![item], 0, None);
 }
 
 fn open_items(ctx: &egui::Context, cx: &mut UiCx<'_>, items: Vec<MediaItem>, index: usize, author: Option<Author>) {

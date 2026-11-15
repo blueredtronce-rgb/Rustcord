@@ -194,8 +194,8 @@ fn card(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, user: &User, member: Op
     let name = cx.state.member_display_name(guild_id, user, member);
     super::sidebar::user_avatar_at(ui, cx.images, &avatar_url, avatar_rect, animate, 1.0, (user.id, &name));
     // ViewIcons: the avatar and banner open in full size.
-    crate::plugins::media::icon_link(ui, rect, "View Banner", || crate::plugins::media::banner_full(user));
-    crate::plugins::media::icon_link(ui, avatar_rect, "View Avatar", || Some(crate::plugins::media::avatar_full(user)));
+    crate::plugins::media::icon_link(ui, cx, rect, "View Banner", 2.5, || crate::plugins::media::banner_full(user));
+    crate::plugins::media::icon_link(ui, cx, avatar_rect, "View Avatar", 1.0, || Some(crate::plugins::media::avatar_full(user)));
     let fx = overrides::effective_for(user, member);
     let fx_anim = cosmetics::animates(cx, ui.ui_contains_pointer());
     images::decoration_at(ui, cx.images, avatar_rect, fx.decoration.as_ref(), fx_anim, 1.0);

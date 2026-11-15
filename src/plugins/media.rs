@@ -106,15 +106,15 @@ pub fn guild_icon_full(g: &Guild) -> Option<String> {
     crate::api::cdn::guild_icon_url(g, icon_size(), true).map(with_format)
 }
 
-/// ViewIcons: `rect` (a profile avatar or banner) opens `url()` in the browser on a click.
-pub fn icon_link(ui: &egui::Ui, rect: Rect, tip: &str, url: impl FnOnce() -> Option<String>) {
+/// ViewIcons: `rect` (a profile avatar or banner, `aspect` = width / height) opens `url()` in the lightbox on a click.
+pub fn icon_link(ui: &egui::Ui, cx: &mut crate::ui::UiCx<'_>, rect: Rect, tip: &str, aspect: f32, url: impl FnOnce() -> Option<String>) {
     if !enabled(Plugin::ViewIcons) {
         return;
     }
     let Some(u) = url() else { return };
     let resp = ui.interact(rect, ui.make_persistent_id(("rc_view_icon", tip)), egui::Sense::click()).on_hover_text(tip);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(u));
+        crate::ui::viewer::open_icon(ui.ctx(), cx, u, aspect);
     }
 }
 

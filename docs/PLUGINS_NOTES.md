@@ -307,7 +307,7 @@ All settings are written `key` = default.
   - User: View Avatar / Server Avatar / Avatar Decoration.
   - Server: Icon / Banner.
   - Group DM: Icon.
-- Profile avatars and banners become clickable.
+- Profile avatars and banners become clickable. Every open (click and menu entries) goes through `viewer::open_icon`, the in-app lightbox (GIF avatars animate; "Open in browser" stays in its bottom bar).
 - CDN paths (an `a_` prefix means animated):
   - `avatars/{uid}/{hash}`
   - `guilds/{gid}/users/{uid}/avatars/{hash}`
