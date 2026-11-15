@@ -191,6 +191,9 @@ fn save_apps(apps: &[(Id, Option<String>)]) {
 }
 
 #[cfg(windows)]
+pub(crate) use os::{image, processes};
+
+#[cfg(windows)]
 mod os {
     use super::Window;
     use crate::activity::detect::normalize;

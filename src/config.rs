@@ -139,6 +139,8 @@ pub struct Settings {
     pub flash_taskbar: bool,
     /// Windows/Linux/macOS settings > Updates: install updates automatically (docs/UPDATER_DESIGN.md).
     pub auto_update: bool,
+    /// Windows, Settings > Game overlay (ui/overlay).
+    pub overlay: OverlaySettings,
 }
 
 /// Settings > Streamer Mode.
@@ -171,6 +173,45 @@ impl StreamerMode {
     pub fn hides_invites(&self) -> bool {
         self.enabled && self.hide_invite_links
     }
+}
+
+/// Settings > Game overlay (Windows, ui/overlay): Rustcord's own windows over the game, never inside it.
+/// Data only, so the settings file loads the same everywhere; labels live in the Windows-only page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlaySettings {
+    pub enabled: bool,
+    pub voice_corner: Corner,
+    pub notification_corner: Corner,
+    pub show_names: Show,
+    /// `Never` is not offered; it is treated as `Always`.
+    pub show_users: Show,
+    pub large_avatars: bool,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self { enabled: true, voice_corner: Corner::TopLeft, notification_corner: Corner::BottomRight, show_names: Show::Always, show_users: Show::Always, large_avatars: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Show {
+    #[default]
+    Always,
+    Speaking,
+    Never,
 }
 
 /// `Settings::role_colors` for renderers that get no `Settings` (`Settings::publish`).
@@ -215,6 +256,7 @@ impl Default for Settings {
             tray_hint_shown: false,
             flash_taskbar: true,
             auto_update: true,
+            overlay: OverlaySettings::default(),
         }
     }
 }
@@ -313,6 +355,18 @@ mod tests {
         }
         let off: Settings = toml::from_str("minimize_to_tray = false\ntray_hint_shown = true\n").unwrap();
         assert!(!off.minimize_to_tray && off.tray_hint_shown);
+    }
+
+    #[test]
+    fn overlay_settings_default_and_use_snake_case() {
+        let s: Settings = toml::from_str("theme = \"Ember Dark\"\n").unwrap();
+        let o = &s.overlay;
+        assert!(o.enabled && o.large_avatars);
+        assert_eq!((o.voice_corner, o.notification_corner, o.show_names, o.show_users), (Corner::TopLeft, Corner::BottomRight, Show::Always, Show::Always));
+        let t: Settings = toml::from_str("[overlay]\nvoice_corner = \"top_right\"\nnotification_corner = \"off\"\nshow_names = \"speaking\"\n").unwrap();
+        assert_eq!((t.overlay.voice_corner, t.overlay.notification_corner, t.overlay.show_names), (Corner::TopRight, Corner::Off, Show::Speaking));
+        let saved = toml::to_string_pretty(&t).unwrap();
+        assert!(saved.contains("voice_corner = \"top_right\"") && saved.contains("show_names = \"speaking\""));
     }
 
     #[test]

@@ -16,6 +16,9 @@ mod scan;
 
 pub use detect::Table;
 pub use scan::{Service, Window, table_path};
+// The game overlay's foreground watcher asks the same two questions as the scan (ui/overlay).
+#[cfg(windows)]
+pub(crate) use scan::{image as process_image, processes};
 
 use crate::api::cdn;
 use crate::backend::{Command, CommandSender, ConnState};

@@ -136,6 +136,7 @@ impl AppState {
             channel_id,
             title: self.channel_name(channel_id),
             body: "Incoming call".into(),
+            author_id: None,
         })
     }
 
