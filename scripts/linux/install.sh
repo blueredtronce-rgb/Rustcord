@@ -3,6 +3,9 @@
 #   sh install.sh                        install or update; a first install opens Rustcord when
 #                                        you log in, an update keeps the choice made in the app
 #   sh install.sh --no-autostart         the same, but Rustcord does not open when you log in
+#   sh install.sh --update               the self-updater's update (docs/UPDATER_DESIGN.md §12):
+#                                        an install that leaves the login entry and the running
+#                                        Rustcord alone; fails when Rustcord is not installed
 #   sh install.sh --uninstall [--purge]  remove it (--purge: also settings, cache, saved login)
 # Files: ~/.local/bin/rustcord, ~/.local/share/applications/rustcord.desktop, hicolor icons
 # in ~/.local/share/icons, ~/.config/autostart/rustcord.desktop and a copy of this script in
@@ -12,11 +15,12 @@
 # the saved login.
 set -eu
 
-usage="usage: sh install.sh [--no-autostart] | --uninstall [--purge]"
+usage="usage: sh install.sh [--no-autostart | --update] | --uninstall [--purge]"
 mode=install autostart=1 purge=0
 for arg; do
 	case $arg in
 	--no-autostart) autostart=0 ;;
+	--update) mode=update ;;
 	--uninstall) mode=uninstall ;;
 	--purge) purge=1 ;;
 	*) echo "$usage" >&2; exit 2 ;;
@@ -83,7 +87,15 @@ install_app() {
 		echo "install.sh: no rustcord program next to this script. Run the install.sh from the unpacked download." >&2
 		exit 1
 	fi
-	quit_running
+	if [ "$mode" = update ]; then
+		# The app that runs this quits itself afterwards.
+		if [ ! -e "$bin" ]; then
+			echo "install.sh: Rustcord is not installed in $bin, so there is nothing to update." >&2
+			exit 1
+		fi
+	else
+		quit_running
+	fi
 	# After the first install the app's "Open Rustcord when I log in" switch owns the login entry.
 	fresh=1
 	if [ -e "$bin" ]; then fresh=0; fi
@@ -104,7 +116,7 @@ install_app() {
 	if [ "$src" != "$(cd "$data/rustcord" && pwd)" ]; then
 		cp "$src/install.sh" "$data/rustcord/install.sh"
 	fi
-	if [ "$fresh" = 1 ] || [ "$autostart" = 0 ]; then write_login_entry "$autostart"; fi
+	if [ "$mode" = install ] && { [ "$fresh" = 1 ] || [ "$autostart" = 0 ]; }; then write_login_entry "$autostart"; fi
 	refresh_icons
 
 	# winit loads libxkbcommon-x11 at run time and panics without it.
@@ -141,4 +153,4 @@ uninstall_app() {
 	echo "Rustcord is uninstalled."
 }
 
-if [ "$mode" = install ]; then install_app; else uninstall_app; fi
+if [ "$mode" = uninstall ]; then uninstall_app; else install_app; fi
