@@ -11,7 +11,13 @@ use super::super::{UiCx, bold, hint, section};
 use super::{Page, switch_row};
 use crate::backend::{AccountCommand, Command};
 use crate::state::account::AccountState;
+use super::super::images::{ImageCache, avatar, paint_initial};
+use crate::model::Id;
 use egui::{Align, Layout, RichText};
+
+/// App icon in Authorized Apps, in points and the CDN size asked for (sharp at 2x).
+const ICON: f32 = 40.0;
+const ICON_PX: u32 = 128;
 
 /// The page's fetch, once per opening of the layer (`UserSettingsUi::fetched`).
 pub(super) fn fetch_once(cx: &mut UiCx<'_>, page: Page, cmd: AccountCommand, clear: impl FnOnce(&mut AccountState)) {
@@ -47,7 +53,7 @@ pub(super) fn demo(a: &mut AccountState) {
     let app = |id: u64, name: &str, description: &str, scopes: &[&str]| AuthorizedApp {
         id: Id(id),
         scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
-        application: OAuthApplication { id: Id(id), name: name.into(), icon: None, description: description.into() },
+        application: OAuthApplication { id: Id(id), name: name.into(), icon: (id == 1).then(|| "0123456789abcdef0123456789abcdef".into()), description: description.into() },
     };
     if !a.authorized_apps.as_ref().is_some_and(Result::is_ok) {
         a.authorized_apps = Some(Ok(vec![
@@ -96,11 +102,21 @@ fn day(iso: Option<&str>) -> String {
 }
 
 /// One card row: title, muted detail line, and an optional button on the right (true when clicked).
-fn card(ui: &mut egui::Ui, pal: &Pal, title: &str, detail: &str, button: Option<&str>) -> bool {
+/// `icon`: (image cache, picture URL or None for the letter, seed id) shown left of the text.
+fn card(ui: &mut egui::Ui, pal: &Pal, icon: Option<(&mut ImageCache, Option<&str>, u64)>, title: &str, detail: &str, button: Option<&str>) -> bool {
     let mut clicked = false;
     egui::Frame::new().fill(pal.surface).corner_radius(pal.card_radius()).inner_margin(12).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
+            if let Some((images, url, id)) = icon {
+                match url {
+                    Some(u) => _ = avatar(ui, images, u, ICON, false, Some((Id(id), title))),
+                    None => {
+                        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(ICON), egui::Sense::hover());
+                        paint_initial(ui.painter(), r, ICON / 2.0, id, title, ui.visuals().dark_mode);
+                    }
+                }
+            }
             ui.vertical(|ui| {
                 ui.set_max_width(ui.available_width() - 120.0);
                 ui.add(egui::Label::new(RichText::new(title).font(bold(pal.size)).color(pal.text)).truncate());
@@ -142,7 +158,7 @@ pub(super) fn devices(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     let mut ask = None;
     section(ui, cx.theme, "Current device");
     match current.first() {
-        Some((title, detail, _)) => _ = card(ui, &pal, title, detail, None),
+        Some((title, detail, _)) => _ = card(ui, &pal, None, title, detail, None),
         None => hint(ui, cx.theme, "This app"),
     }
     section(ui, cx.theme, "Other devices");
@@ -155,7 +171,7 @@ pub(super) fn devices(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         hint(ui, cx.theme, "This device could not be told apart, so logging out here is off.");
     }
     for (title, detail, hash) in &others {
-        if card(ui, &pal, title, detail, known.then_some("Log out")) {
+        if card(ui, &pal, None, title, detail, known.then_some("Log out")) {
             ask = Some((format!("Log out of {title}?"), vec![hash.clone()]));
         }
     }
@@ -195,7 +211,9 @@ pub(super) fn authorized_apps(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
             let scopes = format!("Permissions: {}", app.scopes.join(", "));
             detail = if detail.is_empty() { scopes } else { format!("{detail}\n{scopes}") };
         }
-        if card(ui, &pal, &app.application.name, &detail, Some("Deauthorize")) {
+        let a = &app.application;
+        let url = a.icon.as_deref().filter(|h| !h.is_empty()).and_then(|h| crate::api::cdn::app_icon_url(a.id, h, ICON_PX));
+        if card(ui, &pal, Some((&mut *cx.images, url.as_deref(), a.id.0)), &a.name, &detail, Some("Deauthorize")) {
             ask = Some((app.application.name.clone(), app.id));
         }
     }
