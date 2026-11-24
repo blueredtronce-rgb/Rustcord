@@ -148,7 +148,6 @@ pub fn sync(view: &mut ViewState, state: &mut AppState, cmd: &CommandSender, fra
             for (stream_key, _) in ui.watching.drain() {
                 cmd.send(video(VideoCommand::StopWatching { stream_key }));
             }
-            ui.stream_audio.clear();
         }
         Some(ch) => {
             let remote = &state.voice.video.remote;
