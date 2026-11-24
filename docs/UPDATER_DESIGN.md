@@ -1,5 +1,9 @@
 # Rustcord self-updater: design
 
+The Windows fork uses `blueredtronce-rgb/Rustcord` for production releases and
+its own signing key and staging directory. The original URLs below describe
+upstream fixtures. See [the fork's release notes](FORK_WINDOWS_RU.md).
+
 Status: implemented for v0.1.0. This file describes the updater as built, with the design
 review's changes folded in; §16 says how it was tested and §18 what it does not do. Module map
 and public API: §17.

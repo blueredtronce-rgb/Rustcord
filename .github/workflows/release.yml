@@ -149,7 +149,9 @@ jobs:
           merge-multiple: true
 
       - name: Update manifest
-        run: python3 scripts/make-update-manifest.py dist --require-all
+        run: |
+          python3 scripts/make-update-manifest.py --self-test
+          python3 scripts/make-update-manifest.py dist --require-all
 
       # Never `set -x` here. The key lives only in this step's env and, briefly, in RUNNER_TEMP.
       - name: Sign the update manifest

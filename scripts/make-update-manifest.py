@@ -111,7 +111,7 @@ def main(argv):
     if not a.dir:
         raise Error("usage: make-update-manifest.py DIR [--version X.Y.Z] [--base-url URL] [--require-all] [--out FILE]")
     version = a.version or cargo_version()
-    base_url = a.base_url or f"https://github.com/r0sc/Rustcord/releases/download/v{version}/"
+    base_url = a.base_url or f"https://github.com/blueredtronce-rgb/Rustcord/releases/download/v{version}/"
     data = encode(manifest(a.dir, version, base_url, a.require_all))
     try:
         with open(a.out or os.path.join(a.dir, "latest.json"), "wb") as f:
@@ -134,7 +134,7 @@ def self_test():
             content[key] = bytes([i]) * (i + 1) * 1000
             with open(os.path.join(d, template.format(v="1.2.3")), "wb") as f:
                 f.write(content[key])
-        base = "https://github.com/r0sc/Rustcord/releases/download/v1.2.3/"
+        base = "https://github.com/blueredtronce-rgb/Rustcord/releases/download/v1.2.3/"
         m = manifest(d, "1.2.3", base, True)
         assert m["schema"] == 1 and m["version"] == "1.2.3"
         assert sorted(m["platforms"]) == sorted(FILES)

@@ -150,7 +150,7 @@ pub fn start(rt: &tokio::runtime::Handle, ctx: &egui::Context, auto: bool) {
         platform::detect(exe, test.is_some(), test.as_ref().and_then(|t| t.prefix.as_deref()))
     };
 
-    let dir = store::dir();
+    let dir = store::dir(test.is_some());
     let state_file = dir.join("state.toml");
     let mut saved = store::Saved::load(&state_file);
     let loaded = saved.clone();

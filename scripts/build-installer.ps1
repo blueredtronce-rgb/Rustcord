@@ -23,7 +23,7 @@ foreach ($exe in $app, $setup) {
 
 Push-Location $root
 try {
-    cargo build --release --bin rustcord --bin rustcord-setup
+    cargo build --locked --release --bin rustcord --bin rustcord-setup
     if ($LASTEXITCODE) { throw "cargo build failed ($LASTEXITCODE)" }
     $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
     $dist = Join-Path $root 'dist'

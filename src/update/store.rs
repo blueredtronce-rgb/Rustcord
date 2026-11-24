@@ -5,8 +5,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub fn dir() -> PathBuf {
-    crate::config::paths().cache_dir.join("update")
+pub fn dir(test: bool) -> PathBuf {
+    // A different signing key must not inherit packages staged by upstream.
+    crate::config::paths().cache_dir.join(if test { "update" } else { "update-blueredtronce" })
 }
 
 /// What the updater remembers between runs. Read from a user-writable file, so every value is

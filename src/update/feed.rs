@@ -9,14 +9,14 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-pub const RELEASES: &str = "https://github.com/r0sc/Rustcord/releases";
-const FEED: &str = "https://github.com/r0sc/Rustcord/releases/latest/download/latest.json";
+pub const RELEASES: &str = "https://github.com/blueredtronce-rgb/Rustcord/releases";
+const FEED: &str = "https://github.com/blueredtronce-rgb/Rustcord/releases/latest/download/latest.json";
 const KEY: &str = include_str!("../../assets/update-signing.pub");
 const MAX_FEED: usize = 64 * 1024;
 const MAX_SIG: usize = 512;
 /// The largest package the app accepts (also the manifest's `size` limit).
 pub const MAX_SIZE: u64 = 200 * 1024 * 1024;
-const USER_AGENT: &str = concat!("Rustcord/", env!("CARGO_PKG_VERSION"), " (+https://github.com/r0sc/Rustcord)");
+const USER_AGENT: &str = concat!("Rustcord/", env!("CARGO_PKG_VERSION"), " (+https://github.com/blueredtronce-rgb/Rustcord)");
 
 /// A platform key of the manifest and its package (§2; frozen names).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
