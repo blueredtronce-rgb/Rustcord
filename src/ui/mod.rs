@@ -389,6 +389,10 @@ impl RustcordApp {
         let mut view = ViewState::default();
         let offline = crate::config::offline_mode();
         user_settings::restore_voice(&settings, &backend.cmd);
+        #[cfg(windows)]
+        if settings.pulse_sync_rpc && !crate::config::offline_mode() {
+            backend.cmd.send(Command::SetPulseSyncRpc(true));
+        }
         if let Some(token) = token {
             // Cached UI immediately; connect in the background.
             view.screen = Screen::Main;

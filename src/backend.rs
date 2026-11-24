@@ -79,6 +79,7 @@ pub enum Command {
     SetVoiceDevices { input: Option<String>, output: Option<String> },
     /// Voice activity (threshold) or push-to-talk.
     SetVoiceInputMode(crate::voice::InputMode),
+    SetNoiseSuppression(crate::voice::NoiseSuppression),
     /// Answered with `VoiceEvent::Devices`.
     ListVoiceDevices,
     /// Camera, screen share, Go Live (docs/VIDEO_DESIGN.md); answered with
@@ -96,6 +97,8 @@ pub enum Command {
     /// Game detection and activity icons (`crate::activity`); answered with
     /// `BackendEvent::Activity`.
     Activity(crate::activity::ActivityCommand),
+    #[cfg(windows)]
+    SetPulseSyncRpc(bool),
     /// Quests list, accept, claim, reward code, video progress (`crate::quests`); answered
     /// with `BackendEvent::Quests`. docs/QUESTS_NOTES.md.
     Quests(crate::quests::QuestCommand),
@@ -2278,6 +2281,8 @@ async fn run(
     let voice = VoiceManager::spawn(sink.clone(), video);
     // Game detection (its own thread; local files only) and the games list fetched once a run.
     let activity = crate::activity::Service::spawn(sink.clone());
+    #[cfg(windows)]
+    let mut pulse_rpc = crate::activity::pulse_rpc::Service::default();
     let mut detectable_fetched = false;
     let mut session: Option<Session> = None;
     let not_connected = || BackendEvent::ActionFailed("Not connected".into());
@@ -2601,11 +2606,14 @@ async fn run(
             Command::SetSelfDeaf(on) => voice.set_self_deaf(on),
             Command::SetVoiceDevices { input, output } => voice.set_devices(input, output),
             Command::SetVoiceInputMode(mode) => voice.set_input_mode(mode),
+            Command::SetNoiseSuppression(mode) => voice.set_noise_suppression(mode),
             Command::ListVoiceDevices => voice.list_devices(),
             Command::Video(cmd) => voice.video(cmd),
             Command::Chat(c) => handle_chat(c, &mut session, &sink, &props, &mut chat),
             Command::Social(c) => handle_social(c, &mut session, &sink),
             Command::Account(c) => handle_account(c, &mut session, &sink, None),
+            #[cfg(windows)]
+            Command::SetPulseSyncRpc(enabled) => pulse_rpc.set_enabled(enabled, &sink),
             Command::Activity(c) => handle_activity(c, &mut session, &sink, &activity),
             Command::Quests(c) => handle_quests(c, &mut session, &sink),
         }

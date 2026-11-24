@@ -63,6 +63,25 @@ pub enum InputMode {
     PushToTalk { vk: u16 },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoiseSuppression {
+    #[default]
+    Off,
+    RnNoise,
+}
+
+impl NoiseSuppression {
+    pub const OPTIONS: [Self; 2] = [Self::Off, Self::RnNoise];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::RnNoise => "RNNoise",
+        }
+    }
+}
+
 impl Default for InputMode {
     fn default() -> Self {
         InputMode::VoiceActivity { threshold_db: -50.0 }
@@ -111,6 +130,7 @@ enum Msg {
     SelfDeaf(bool),
     Devices { input: Option<String>, output: Option<String> },
     Mode(InputMode),
+    NoiseSuppression(NoiseSuppression),
     ListDevices,
     Video(video::VideoCommand),
     /// From tasks and threads of `video::stream::Video`.
@@ -167,6 +187,10 @@ impl VoiceManager {
 
     pub fn set_input_mode(&self, mode: InputMode) {
         self.post(Msg::Mode(mode));
+    }
+
+    pub fn set_noise_suppression(&self, mode: NoiseSuppression) {
+        self.post(Msg::NoiseSuppression(mode));
     }
 
     /// Answered with `VoiceEvent::Devices`.
@@ -324,6 +348,10 @@ impl Manager {
             }
             Msg::Mode(mode) => {
                 self.prefs.mode = mode;
+                self.apply_audio();
+            }
+            Msg::NoiseSuppression(mode) => {
+                self.prefs.noise_suppression = mode;
                 self.apply_audio();
             }
             Msg::ListDevices => {

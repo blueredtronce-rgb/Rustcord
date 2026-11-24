@@ -56,6 +56,15 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     }
 
     section(ui, cx.theme, "Activity sharing");
+    #[cfg(windows)]
+    {
+        if super::switch_row(ui, cx.theme, "Show PulseSync activity", Some("Reads PulseSync's local Rich Presence. Visible in your profile on this device."), &mut cx.settings.pulse_sync_rpc) {
+            cx.cmd.send(Command::SetPulseSyncRpc(cx.settings.pulse_sync_rpc));
+            if let Err(error) = cx.settings.save() {
+                cx.view.toast(format!("Could not save settings: {error}"), true);
+            }
+        }
+    }
     let on = crate::activity::sharing(cx.state);
     let text = if on { "Others see the game you play while Share detected activity is on." } else { "Share detected activity is off: nobody sees your game." };
     // The button first (right), then the text in the room left of it, wrapping in narrow windows.

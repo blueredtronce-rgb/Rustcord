@@ -101,6 +101,9 @@ pub struct Settings {
     pub voice_input: Option<String>,
     pub voice_output: Option<String>,
     pub voice_threshold_db: f32,
+    pub noise_suppression: crate::voice::NoiseSuppression,
+    #[cfg(windows)]
+    pub pulse_sync_rpc: bool,
     pub push_to_talk: bool,
     pub push_to_talk_key: u16,
     pub camera: Option<String>,
@@ -241,6 +244,9 @@ impl Default for Settings {
             voice_input: None,
             voice_output: None,
             voice_threshold_db: -50.0,
+            noise_suppression: crate::voice::NoiseSuppression::Off,
+            #[cfg(windows)]
+            pulse_sync_rpc: false,
             push_to_talk: false,
             push_to_talk_key: 0,
             camera: None,

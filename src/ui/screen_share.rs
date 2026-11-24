@@ -22,6 +22,7 @@ pub struct ShareForm {
     hd: bool,
     /// 15 fps (else 30).
     low_fps: bool,
+    desktop_duplication: bool,
 }
 
 /// Opens the picker and lists the screens and windows (local, no request).
@@ -88,6 +89,10 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             ui.selectable_value(&mut f.low_fps, true, "15 FPS");
             ui.selectable_value(&mut f.low_fps, false, "30 FPS");
         });
+        if cfg!(windows) && !f.windows {
+            ui.checkbox(&mut f.desktop_duplication, "Desktop Duplication (monitor without a border)")
+                .on_hover_text("Shares the entire selected monitor. Use the default mode for individual windows, HDR or rotated displays.");
+        }
         // A picked source must still be listed (⟳ may have dropped it).
         let ok = connected && f.pick.is_some_and(|p| rows.iter().any(|r| r.0 == p));
         dialog_buttons(ui, theme, "Go live", false, ok)
@@ -97,6 +102,10 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     }
     match resp.inner {
         Some(true) if let Some(source) = f.pick => {
+            let source = match source {
+                ScreenSource::Monitor(handle) if f.desktop_duplication => ScreenSource::DesktopDuplication(handle),
+                source => source,
+            };
             let (fps, max_height) = (if f.low_fps { 15 } else { 30 }, if f.hd { 1080 } else { 720 });
             cx.cmd.send(Command::Video(VideoCommand::StartScreenShare { source, fps, max_height, audio: false }));
             cx.state.voice.video.share_starting = true;

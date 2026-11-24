@@ -58,6 +58,7 @@ pub struct CallUi {
     /// Streams I clicked "Watch stream" on (stream keys) and when; None once connected (in
     /// `remote`). A click that got nowhere within the backend's CONNECT_TIMEOUT is forgotten.
     watching: HashMap<String, Option<Instant>>,
+    stream_audio: HashMap<String, StreamAudio>,
     /// Videos marked visible with the backend.
     visible: HashSet<VideoKey>,
     /// Videos painted in the current pass, and how many of them are someone else's.
@@ -70,6 +71,31 @@ pub struct CallUi {
     /// Screen share picker form (screen_share.rs).
     pub(super) share: ShareForm,
     demo_done: bool,
+}
+
+#[derive(Clone, Copy)]
+struct StreamAudio {
+    percent: u16,
+    muted: bool,
+}
+
+impl Default for StreamAudio {
+    fn default() -> Self {
+        Self { percent: 100, muted: false }
+    }
+}
+
+fn stream_audio_menu(ui: &mut egui::Ui, cx: &mut UiCx<'_>, key: &str) {
+    let audio = cx.view.call_ui.stream_audio.entry(key.to_owned()).or_default();
+    ui.label("Stream audio");
+    let muted = ui.checkbox(&mut audio.muted, "Mute stream").changed();
+    let gain = ui.add(egui::Slider::new(&mut audio.percent, 0..=200).suffix(" %").text("Volume")).changed();
+    if muted || gain {
+        cx.cmd.send(video(VideoCommand::SetStreamVolume {
+            stream_key: key.to_owned(),
+            percent: if audio.muted { 0 } else { audio.percent },
+        }));
+    }
 }
 
 /// The connected (or joining) voice channel is the open channel: `main_layout` shows the call.
@@ -115,12 +141,14 @@ pub fn sync(view: &mut ViewState, state: &mut AppState, cmd: &CommandSender, fra
         // The call ended: the backend stopped everything.
         None => {
             ui.watching.clear();
+            ui.stream_audio.clear();
             ui.focus = None;
         }
         Some(_) if !is_open(state) => {
             for (stream_key, _) in ui.watching.drain() {
                 cmd.send(video(VideoCommand::StopWatching { stream_key }));
             }
+            ui.stream_audio.clear();
         }
         Some(ch) => {
             let remote = &state.voice.video.remote;
@@ -132,6 +160,7 @@ pub fn sync(view: &mut ViewState, state: &mut AppState, cmd: &CommandSender, fra
             }
             let pending = |t: &Option<Instant>| t.is_some_and(|t| t.elapsed() < CONNECT_TIMEOUT);
             ui.watching.retain(|k, t| streaming(state, ch, k) && (pending(t) || remote.contains_key(&VideoKey::Stream(k.clone()))));
+            ui.stream_audio.retain(|k, _| ui.watching.contains_key(k));
         }
     }
 }
@@ -536,7 +565,12 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
     // The user menu, as on their voice row (VolumeBooster's slider is one of its entries); the
     // profile card opens over the tile.
     let anchor = pos2(rect.center().x - 150.0, rect.top() + 8.0);
-    super::sidebar::user_context_menu(&resp, cx, t.user, cx.state.selected_guild, anchor);
+    if let Some(key) = t.stream.as_deref().filter(|k| !t.mine && cx.view.call_ui.watching.contains_key(*k)) {
+        egui::Popup::context_menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| stream_audio_menu(ui, cx, key));
+    } else {
+        super::sidebar::user_context_menu(&resp, cx, t.user, cx.state.selected_guild, anchor);
+    }
     if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
         cx.view.call_ui.focus = if focused { None } else { Some(t.key.clone()) };
     }
@@ -570,6 +604,7 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
         resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stop watching"));
         if resp.on_hover_text("Stop watching").on_hover_cursor(CursorIcon::PointingHand).clicked() {
             cx.view.call_ui.watching.remove(key);
+            cx.view.call_ui.stream_audio.remove(key);
             cx.view.call_ui.focus = None;
             cx.cmd.send(video(VideoCommand::StopWatching { stream_key: key.clone() }));
         }

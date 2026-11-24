@@ -2005,6 +2005,7 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
     let (text, muted) = (cx.theme.colors.text.to_color32(), cx.theme.colors.text_muted.to_color32());
     let (list, current) = if output { (&cx.state.voice.outputs, &cx.settings.voice_output) } else { (&cx.state.voice.inputs, &cx.settings.voice_input) };
     let (mut pick, mut page) = (None, false);
+    let mut noise = cx.settings.noise_suppression;
     egui::Popup::menu(chevron).align(egui::RectAlign::TOP_START).gap(8.0).show(|ui| {
         menu_setup(ui);
         ui.set_max_width(280.0);
@@ -2016,12 +2017,29 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
                 pick = Some(name.cloned());
             }
         }
+        if !output {
+            ui.separator();
+            ui.label(egui::RichText::new("Noise suppression").size(12.0).color(muted));
+            for mode in crate::voice::NoiseSuppression::OPTIONS {
+                let glyph = if noise == mode { "✔" } else { "" };
+                if menu_item(ui, mode.label(), MenuIcon::Glyph(glyph), text) {
+                    noise = mode;
+                }
+            }
+        }
         ui.separator();
         page = menu_item(ui, "Voice settings", MenuIcon::Glyph("⚙"), text);
     });
     if let Some(name) = pick {
         *(if output { &mut cx.settings.voice_output } else { &mut cx.settings.voice_input }) = name;
         cx.cmd.send(Command::SetVoiceDevices { input: cx.settings.voice_input.clone(), output: cx.settings.voice_output.clone() });
+        if let Err(e) = cx.settings.save() {
+            cx.view.toast(format!("Could not save settings: {e}"), true);
+        }
+    }
+    if noise != cx.settings.noise_suppression {
+        cx.settings.noise_suppression = noise;
+        cx.cmd.send(Command::SetNoiseSuppression(noise));
         if let Err(e) = cx.settings.save() {
             cx.view.toast(format!("Could not save settings: {e}"), true);
         }

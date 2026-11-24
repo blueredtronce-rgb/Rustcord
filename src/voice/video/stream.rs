@@ -18,7 +18,7 @@ use super::{FrameWriter, MAX_FRAME_SLOTS, ScreenSource, SendLimits, StreamKind, 
 use crate::auth::Secret;
 use crate::gateway::{GatewayCommand, StreamOp};
 use crate::model::{GatewayEvent, Id};
-use crate::voice::audio::{Captured, MediaLink};
+use crate::voice::audio::{Captured, MediaLink, StreamGain};
 use crate::voice::{Msg, VoiceEvent, VoiceEvents, transport};
 use futures_util::FutureExt;
 use std::collections::HashSet;
@@ -106,6 +106,7 @@ struct Capture {
 /// One Go Live (my screen share or a watched stream), from op 18/20 until it ends.
 struct GoLive {
     key: String,
+    gain: StreamGain,
     /// The current attempt (`StreamMsg` ids).
     id: u64,
     /// STREAM_CREATE `(rtc_server_id, rtc_channel_id)`.
@@ -136,7 +137,7 @@ impl Drop for StreamConn {
 
 impl GoLive {
     fn new(key: String, tx: &mpsc::WeakUnboundedSender<Msg>) -> GoLive {
-        let mut live = GoLive { key, id: 0, server: None, endpoint: None, conn: None };
+        let mut live = GoLive { key, gain: StreamGain::default(), id: 0, server: None, endpoint: None, conn: None };
         live.restart(tx);
         live
     }
@@ -251,6 +252,11 @@ impl Video {
                 }
             }
             VideoCommand::WatchStream { stream_key } => self.watch(stream_key, &ctx),
+            VideoCommand::SetStreamVolume { stream_key, percent } => {
+                if let Some(live) = self.watching.iter().find(|live| live.key == stream_key) {
+                    live.gain.set(percent);
+                }
+            }
             VideoCommand::StopWatching { stream_key } => {
                 if self.watching.iter().any(|l| l.key == stream_key) {
                     self.end_live(&stream_key, &ctx, None, true);
@@ -485,6 +491,7 @@ impl Video {
         }
         info.video = Some(VideoLink { kind: StreamKind::Screen, rx: rx.clone(), ctl: ctl_rx });
         let (audio, captured) = mpsc::channel(1);
+        let playback = playback.for_stream(live.id, live.gain.clone());
         let stop = spawn(tx, info, MediaLink { captured, playback }, key.to_owned(), live.id);
         live.conn = Some(StreamConn { _stop: stop, _audio: audio, ctl, rx, connected: false, capture: None });
     }
@@ -496,7 +503,7 @@ impl Video {
             self.share = None;
             true
         } else if let Some(i) = self.watching.iter().position(|l| l.key == key) {
-            self.watching.remove(i);
+            self.watching.remove(i).gain.set(0);
             false
         } else {
             return;
@@ -588,7 +595,7 @@ mod tests {
 
     #[test]
     fn go_live_connect_info_and_texts() {
-        let mut live = GoLive { key: "call:2:5".into(), id: 1, server: None, endpoint: Some(("host:443".into(), Secret::new("tok".into()))), conn: None };
+        let mut live = GoLive { key: "call:2:5".into(), gain: StreamGain::default(), id: 1, server: None, endpoint: Some(("host:443".into(), Secret::new("tok".into()))), conn: None };
         assert!(live.connect_info(Id(9), "s".into()).is_none(), "waits for STREAM_CREATE");
         assert!(live.endpoint.is_some(), "token kept until then");
         live.server = Some((Id(77), None));

@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::{D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION_IDENTITY;
 use windows_capture::capture::{CaptureControl, CaptureControlError, Context, GraphicsCaptureApiError, GraphicsCaptureApiHandler};
 use windows_capture::d3d11::StagingTexture;
+use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat, Error as DuplicationError};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
 use windows_capture::monitor::Monitor;
@@ -77,6 +79,7 @@ pub(super) fn run(source: ScreenSource, pipe: Pipeline, stop: &Stop) -> Result<(
     let interval = pipe.pacer.interval;
     let control = match source {
         ScreenSource::Monitor(h) => start(Monitor::from_raw_hmonitor(h as usize as *mut c_void), pipe, interval)?,
+        ScreenSource::DesktopDuplication(h) => return duplicate(Monitor::from_raw_hmonitor(h as usize as *mut c_void), pipe, stop),
         ScreenSource::Window(h) => {
             let window = Window::from_raw_hwnd(h as usize as *mut c_void);
             if !window.is_valid() {
@@ -103,6 +106,57 @@ pub(super) fn run(source: ScreenSource, pipe: Pipeline, stop: &Stop) -> Result<(
             return Err(e);
         }
     }
+}
+
+fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), String> {
+    let error = |e: DuplicationError| {
+        eprintln!("video: desktop duplication: {e}");
+        "Desktop Duplication could not read this monitor. Try the default capture mode.".to_owned()
+    };
+    let open = || -> Result<DxgiDuplicationApi, String> {
+        let api = DxgiDuplicationApi::new_options(monitor, &[DxgiDuplicationFormat::Bgra8]).map_err(error)?;
+        if api.duplication_desc().Rotation != DXGI_MODE_ROTATION_IDENTITY {
+            return Err("Use the default capture mode for a rotated monitor.".into());
+        }
+        Ok(api)
+    };
+    let mut api = open()?;
+    let mut staging: Option<StagingTexture> = None;
+    let mut retry = true;
+    while matches!(stop.0.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+        let lost = match api.acquire_next_frame(30) {
+            Ok(mut frame) => {
+                retry = true;
+                let now = Instant::now();
+                if frame.frame_info().LastPresentTime == 0 || !pipe.due(now)? {
+                    pipe.repeat(now)?;
+                    continue;
+                }
+                let (width, height, format) = (frame.width(), frame.height(), frame.texture_desc().Format);
+                let texture = match &mut staging {
+                    Some(texture) if (texture.desc().Width, texture.desc().Height, texture.desc().Format) == (width, height, format) => texture,
+                    slot => slot.insert(StagingTexture::new(frame.device(), width, height, format).map_err(|e| read_failed(&e))?),
+                };
+                let mut buffer = frame.buffer_with(texture).map_err(error)?;
+                let stride = buffer.row_pitch() as usize;
+                pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data: buffer.as_raw_buffer() }, now)?;
+                false
+            }
+            Err(DuplicationError::Timeout) => {
+                pipe.repeat(Instant::now())?;
+                false
+            }
+            Err(DuplicationError::AccessLost) if retry => true,
+            Err(e) => return Err(error(e)),
+        };
+        if lost {
+            retry = false;
+            staging = None;
+            drop(api);
+            api = open()?;
+        }
+    }
+    Ok(())
 }
 
 /// Start Windows Graphics Capture of `item` on its own thread: BGRA, cursor on, no yellow

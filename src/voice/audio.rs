@@ -62,6 +62,7 @@ pub struct AudioConfig {
     pub input: Option<String>,
     pub output: Option<String>,
     pub mode: InputMode,
+    pub noise_suppression: super::NoiseSuppression,
     /// Never transmit (self mute, deafen, server mute or stage suppress). Going muted while
     /// transmitting still ends with the silence frames and `Captured::End`.
     pub muted: bool,
@@ -86,9 +87,30 @@ pub struct MediaLink {
 }
 
 /// UDP task -> audio thread.
+type Track = (u64, u32);
+
+#[derive(Clone)]
+pub(super) struct StreamGain(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+impl Default for StreamGain {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU32::new(100)))
+    }
+}
+
+impl StreamGain {
+    pub(super) fn set(&self, percent: u16) {
+        self.0.store(u32::from(percent.min(200)), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn get(&self) -> f32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+    }
+}
+
 enum Packet {
-    Opus { user_id: Id, ssrc: u32, seq: u16, opus: Vec<u8> },
-    Remove(u32),
+    Opus { user_id: Id, track: Track, gain: Option<StreamGain>, seq: u16, opus: Vec<u8> },
+    Remove(Track),
 }
 
 /// Receive path into the engine. Cheap to clone, `Send + Sync`; methods never block (called
@@ -96,20 +118,27 @@ enum Packet {
 #[derive(Clone)]
 pub struct Playback {
     tx: std_mpsc::SyncSender<Packet>,
+    connection: u64,
+    gain: Option<StreamGain>,
 }
 
 impl Playback {
+    pub(super) fn for_stream(&self, connection: u64, gain: StreamGain) -> Self {
+        Self { tx: self.tx.clone(), connection, gain: Some(gain) }
+    }
+
     /// One received Opus frame, already transport- and E2EE-decrypted. `seq`/`timestamp` are
     /// the RTP fields (u16 wraparound ordering in the jitter buffer). Emits
     /// `VoiceEvent::Speaking` for `user_id` when its activity starts/stops (~250 ms rule).
     pub fn push(&self, user_id: Id, ssrc: u32, seq: u16, _timestamp: u32, opus: &[u8]) {
         // Full queue (audio thread behind): drop, the jitter buffer conceals it.
-        let _ = self.tx.try_send(Packet::Opus { user_id, ssrc, seq, opus: opus.to_vec() });
+        let track = (self.connection, ssrc);
+        let _ = self.tx.try_send(Packet::Opus { user_id, track, gain: self.gain.clone(), seq, opus: opus.to_vec() });
     }
 
     /// The SSRC is gone (op 13 client disconnect): drop its buffer and decoder.
     pub fn remove(&self, ssrc: u32) {
-        let _ = self.tx.try_send(Packet::Remove(ssrc));
+        let _ = self.tx.try_send(Packet::Remove((self.connection, ssrc)));
     }
 }
 
@@ -136,7 +165,7 @@ impl Audio {
         if spawned.is_err() {
             ev.send(VoiceEvent::Error("Could not start audio.".into()));
         }
-        (Audio { config }, MediaLink { captured, playback: Playback { tx: packets } })
+        (Audio { config }, MediaLink { captured, playback: Playback { tx: packets, connection: 0, gain: None } })
     }
 
     /// Apply a new config: mute/deafen/mode at once; devices re-opened only when the names
@@ -178,6 +207,7 @@ pub fn set_ptt_held(held: bool) {
 /// One remote SSRC.
 struct Remote {
     user_id: Id,
+    gain: Option<StreamGain>,
     jitter: Jitter,
     /// Created on the first frame played.
     decoder: Option<OpusDecoder>,
@@ -196,6 +226,7 @@ struct Engine {
     output: Option<device::Output>,
     encoder: Option<OpusEncoder>,
     vad: Vad,
+    denoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
     trailer: Trailer,
     /// Push-to-talk open until then.
     ptt_until: Option<Instant>,
@@ -204,7 +235,7 @@ struct Engine {
     level_frames: u8,
     level_peak: f32,
     level_sent: f32,
-    streams: HashMap<u32, Remote>,
+    streams: HashMap<Track, Remote>,
     decoded: Vec<f32>,
     mix: Vec<f32>,
 }
@@ -222,6 +253,7 @@ impl Engine {
             output: None,
             encoder,
             vad: Vad::default(),
+            denoise: None,
             trailer: Trailer::default(),
             ptt_until: None,
             pending: Vec::new(),
@@ -255,6 +287,9 @@ impl Engine {
 
     fn set_config(&mut self, cfg: AudioConfig) {
         let (new_input, new_output) = (cfg.input != self.cfg.input, cfg.output != self.cfg.output);
+        if new_input || cfg.noise_suppression != self.cfg.noise_suppression || cfg.muted {
+            self.denoise = None;
+        }
         if cfg.deafened && !self.cfg.deafened {
             for r in self.streams.values_mut() {
                 r.jitter = Jitter::default();
@@ -310,6 +345,19 @@ impl Engine {
     }
 
     fn on_frame(&mut self, mono: &[f32; FRAME_SAMPLES], now: Instant) {
+        let input_open = !self.cfg.muted && match self.cfg.mode {
+            InputMode::PushToTalk { .. } => self.ptt_until.is_some_and(|until| now < until),
+            InputMode::VoiceActivity { .. } => true,
+        };
+        let mut filtered = [0.0; FRAME_SAMPLES];
+        let mono = if input_open && self.cfg.noise_suppression == super::NoiseSuppression::RnNoise {
+            let state = self.denoise.get_or_insert_with(nnnoiseless::DenoiseState::new);
+            suppress_noise(state, mono, &mut filtered);
+            &filtered
+        } else {
+            self.denoise = None;
+            mono
+        };
         let db = dsp::db(mono);
         self.report_level(db);
         let open = !self.cfg.muted
@@ -360,24 +408,25 @@ impl Engine {
 
     fn on_packet(&mut self, p: Packet, now: Instant) {
         match p {
-            Packet::Remove(ssrc) => {
-                if let Some(r) = self.streams.remove(&ssrc)
+            Packet::Remove(track) => {
+                if let Some(r) = self.streams.remove(&track)
                     && r.speaking.is_on()
                 {
                     self.speaking(r.user_id, false);
                 }
             }
-            Packet::Opus { user_id, ssrc, seq, opus } => {
+            Packet::Opus { user_id, track, gain, seq, opus } => {
                 let playing = !self.cfg.deafened && self.output.is_some();
-                let r = self.streams.entry(ssrc).or_insert_with(|| Remote {
+                let r = self.streams.entry(track).or_insert_with(|| Remote {
                     user_id,
+                    gain,
                     jitter: Jitter::default(),
                     decoder: None,
                     speaking: Speaking::default(),
                     last_packet: now,
                 });
                 (r.user_id, r.last_packet) = (user_id, now);
-                if let Some(speaking) = r.speaking.packet(opus != SILENCE_FRAME, now) {
+                if r.gain.is_none() && let Some(speaking) = r.speaking.packet(opus != SILENCE_FRAME, now) {
                     self.events.send(VoiceEvent::Speaking { user_id, speaking });
                 }
                 // Deafened or no speaker: dropped cheaply, nothing would pull the buffer.
@@ -410,9 +459,24 @@ impl Engine {
     }
 }
 
+fn suppress_noise(
+    state: &mut nnnoiseless::DenoiseState<'_>,
+    input: &[f32; FRAME_SAMPLES],
+    output: &mut [f32; FRAME_SAMPLES],
+) {
+    const CHUNK: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
+    for (source, target) in input.as_chunks::<CHUNK>().0.iter().zip(output.as_chunks_mut::<CHUNK>().0) {
+        let pcm = source.map(|sample| sample.clamp(-1.0, 1.0) * 32_767.0);
+        state.process_frame(target, &pcm);
+        for sample in target {
+            *sample = (*sample / 32_767.0).clamp(-1.0, 1.0);
+        }
+    }
+}
+
 /// Mixes the next 20 ms of every playing stream into `mix` (48 kHz stereo, clipped). False
 /// when no stream is playing.
-fn mix_frame(streams: &mut HashMap<u32, Remote>, decoded: &mut [f32], mix: &mut [f32]) -> bool {
+fn mix_frame(streams: &mut HashMap<Track, Remote>, decoded: &mut [f32], mix: &mut [f32]) -> bool {
     mix.fill(0.0);
     let mut playing = false;
     for r in streams.values_mut() {
@@ -434,7 +498,7 @@ fn mix_frame(streams: &mut HashMap<u32, Remote>, decoded: &mut [f32], mix: &mut 
         if let Ok(n) = n {
             let pcm = &mut decoded[..n.min(FRAME_SAMPLES) * CHANNELS];
             // Plugins (VolumeBooster): the user's local volume; the mix is clipped below.
-            let gain = crate::plugins::voice::gain(r.user_id);
+            let gain = r.gain.as_ref().map_or_else(|| crate::plugins::voice::gain(r.user_id), StreamGain::get);
             if gain != 1.0 {
                 pcm.iter_mut().for_each(|s| *s *= gain);
             }
@@ -464,14 +528,14 @@ pub(super) mod test_hooks {
         let (mut decoded, mut mix) = (vec![0.0; MAX_DECODE * CHANNELS], vec![0.0; FRAME_SAMPLES * CHANNELS]);
         let speaker = move || {
             for p in rx.try_iter() {
-                if let Packet::Opus { user_id, ssrc, seq, opus } = p {
-                    let r = streams.entry(ssrc).or_insert_with(|| tests::remote(user_id.0));
+                if let Packet::Opus { user_id, track, gain, seq, opus } = p {
+                    let r = streams.entry(track).or_insert_with(|| Remote { gain, ..tests::remote(user_id.0) });
                     r.jitter.push(seq, opus);
                 }
             }
             mix_frame(&mut streams, &mut decoded, &mut mix).then(|| mix.clone())
         };
-        (Playback { tx }, speaker)
+        (Playback { tx, connection: 0, gain: None }, speaker)
     }
 }
 
@@ -480,18 +544,49 @@ mod tests {
     use super::*;
 
     pub(super) fn remote(user: u64) -> Remote {
-        Remote { user_id: Id(user), jitter: Jitter::default(), decoder: None, speaking: Speaking::default(), last_packet: Instant::now() }
+        Remote { user_id: Id(user), gain: None, jitter: Jitter::default(), decoder: None, speaking: Speaking::default(), last_packet: Instant::now() }
+    }
+
+    #[test]
+    fn stream_gain_does_not_mute_the_same_users_voice_on_the_same_ssrc() {
+        let (voice, mut speaker) = test_hooks::speaker();
+        let gain = StreamGain::default();
+        let stream = voice.for_stream(1, gain.clone());
+        let mut encode = test_hooks::encoder();
+        let tone = std::array::from_fn(|i| (i as f32 * 0.1).sin() * 0.4);
+        let packets: Vec<_> = (0..3).map(|_| encode(&tone)).collect();
+        for (seq, packet) in packets.iter().enumerate() {
+            stream.push(Id(10), 55, seq as u16, 0, packet);
+        }
+        gain.set(0);
+        assert!(speaker().unwrap().iter().all(|&sample| sample == 0.0));
+        for (seq, packet) in packets.iter().enumerate() {
+            voice.push(Id(10), 55, seq as u16, 0, packet);
+        }
+        assert!(speaker().unwrap().iter().any(|&sample| sample.abs() > 0.005));
+    }
+
+    #[test]
+    fn rnnoise_produces_bounded_pcm_for_a_noisy_mic() {
+        let mut state = nnnoiseless::DenoiseState::new();
+        let input = std::array::from_fn(|i| ((i * 1139 % 3277) as f32 / 3277.0 - 0.5) * 0.2);
+        let mut output = [0.0; FRAME_SAMPLES];
+        for _ in 0..12 {
+            suppress_noise(&mut state, &input, &mut output);
+            assert!(output.iter().all(|sample| (-1.0..=1.0).contains(sample)));
+        }
+        assert_ne!(output, input);
     }
 
     #[test]
     fn mixes_streams_and_conceals_loss() {
         let mut enc = dsp::encoder().unwrap();
         let loud = [0.6; FRAME_SAMPLES];
-        let mut streams = HashMap::from([(1, remote(10)), (2, remote(20))]);
+        let mut streams = HashMap::from([((0, 1), remote(10)), ((0, 2), remote(20))]);
         for seq in 0..3 {
             let opus = dsp::encode(&mut enc, &loud).unwrap();
-            streams.get_mut(&1).unwrap().jitter.push(seq, opus.clone());
-            streams.get_mut(&2).unwrap().jitter.push(seq, opus);
+            streams.get_mut(&(0, 1)).unwrap().jitter.push(seq, opus.clone());
+            streams.get_mut(&(0, 2)).unwrap().jitter.push(seq, opus);
         }
         let (mut decoded, mut mix) = (vec![0.0; MAX_DECODE * CHANNELS], vec![0.0; FRAME_SAMPLES * CHANNELS]);
         for _ in 0..3 {
@@ -501,7 +596,7 @@ mod tests {
         assert!(mix_frame(&mut streams, &mut decoded, &mut mix), "an underrun is concealed");
         assert!(streams.values().all(|r| r.decoder.is_some()));
 
-        let mut quiet = HashMap::from([(3, remote(30))]);
+        let mut quiet = HashMap::from([((0, 3), remote(30))]);
         assert!(!mix_frame(&mut quiet, &mut decoded, &mut mix), "nothing buffered: nothing plays");
         assert!(mix.iter().all(|&s| s == 0.0));
     }

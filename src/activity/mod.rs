@@ -13,6 +13,8 @@
 
 mod detect;
 mod scan;
+#[cfg(windows)]
+pub(crate) mod pulse_rpc;
 
 pub use detect::Table;
 pub use scan::{Service, Window, table_path};
@@ -79,6 +81,8 @@ pub enum ActivityCommand {
 
 #[derive(Debug)]
 pub enum ActivityEvent {
+    #[cfg(windows)]
+    PulseSync(Option<Activity>),
     /// The games list (from disk, or fetched).
     Table(Arc<Table>),
     /// The game I am playing changed.
@@ -93,6 +97,8 @@ pub enum ActivityEvent {
 /// `AppState::activity`.
 #[derive(Debug, Default)]
 pub struct ActivityState {
+    #[cfg(windows)]
+    pub pulse_sync: Option<Activity>,
     pub table: Option<Arc<Table>>,
     /// The game running now (shared or not).
     pub detected: Option<GameActivity>,
@@ -110,6 +116,8 @@ pub struct ActivityState {
 impl ActivityState {
     pub fn apply(&mut self, ev: ActivityEvent) {
         match ev {
+            #[cfg(windows)]
+            ActivityEvent::PulseSync(activity) => self.pulse_sync = activity,
             ActivityEvent::Table(t) => self.table = Some(t),
             ActivityEvent::Detected(g) => self.detected = g,
             ActivityEvent::Added(a) => self.added = a,
@@ -126,7 +134,12 @@ impl ActivityState {
     /// What survives a logout: this device's games, not the account's session or its friends'
     /// app icons.
     pub fn after_logout(self) -> Self {
-        Self { table: self.table, detected: self.detected, added: self.added, ..Default::default() }
+        Self {
+            table: self.table, detected: self.detected, added: self.added,
+            #[cfg(windows)]
+            pulse_sync: self.pulse_sync,
+            ..Default::default()
+        }
     }
 
     /// Application `id`'s icon hash from the games list or an answer; else it is asked for
@@ -159,6 +172,10 @@ pub fn my_game(state: &AppState) -> Option<Activity> {
 /// Someone's activity as rows and cards show it: their presence's; mine falls back to my shared
 /// game (my presence echo lags, and offline it never comes).
 pub fn activity_of(state: &AppState, user: Id) -> Option<Cow<'_, Activity>> {
+    #[cfg(windows)]
+    if state.me.as_ref().is_some_and(|me| me.id == user) && let Some(activity) = &state.activity.pulse_sync {
+        return Some(Cow::Borrowed(activity));
+    }
     if let Some(a) = state.presence_of(user).and_then(|p| p.activity.as_ref()) {
         return Some(Cow::Borrowed(a));
     }

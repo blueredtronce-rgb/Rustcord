@@ -63,6 +63,8 @@ pub enum VideoCommand {
     /// Watch someone's Go Live (key from `stream::stream_key`); I must be in its call. Answered
     /// with `RemoteVideo { key: Stream(..) }` once it connects, or `Error`.
     WatchStream { stream_key: String },
+    /// Local listening volume only; zero mutes this stream without muting its author.
+    SetStreamVolume { stream_key: String, percent: u16 },
     /// Stop watching (op 19); answered with `RemoteVideoEnded`.
     StopWatching { stream_key: String },
     /// Decode a video only while the UI shows it: `User(id)` = that user's camera (my own id =
@@ -99,6 +101,7 @@ pub enum VideoEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScreenSource {
     Monitor(u64),
+    DesktopDuplication(u64),
     Window(u64),
 }
 

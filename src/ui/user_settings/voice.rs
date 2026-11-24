@@ -10,7 +10,7 @@ use crate::backend::{Command, CommandSender};
 use crate::config::Settings;
 use crate::ui::messages::Pal;
 use crate::ui::{hint, section};
-use crate::voice::InputMode;
+use crate::voice::{InputMode, NoiseSuppression};
 use crate::voice::video::{VideoCommand, VideoKey, capture};
 use egui::{Key, Modifiers, PointerButton, Rect, RichText, Sense, Stroke, vec2};
 
@@ -48,6 +48,9 @@ pub(in crate::ui) fn restore(s: &Settings, cmd: &CommandSender) {
     }
     if input_mode(s) != InputMode::default() {
         cmd.send(Command::SetVoiceInputMode(input_mode(s)));
+    }
+    if s.noise_suppression != NoiseSuppression::default() {
+        cmd.send(Command::SetNoiseSuppression(s.noise_suppression));
     }
 }
 
@@ -102,6 +105,20 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut crate::ui::UiCx<'_>) -> bool {
     }
     if devices {
         cx.cmd.send(Command::SetVoiceDevices { input: s.voice_input.clone(), output: s.voice_output.clone() });
+        f.dirty = true;
+    }
+
+    field_label(ui, &pal, "Noise suppression");
+    let previous = s.noise_suppression;
+    egui::ComboBox::from_id_salt("rc_noise_suppression")
+        .selected_text(previous.label())
+        .show_ui(ui, |ui| {
+            for mode in NoiseSuppression::OPTIONS {
+                ui.selectable_value(&mut s.noise_suppression, mode, mode.label());
+            }
+        });
+    if s.noise_suppression != previous {
+        cx.cmd.send(Command::SetNoiseSuppression(s.noise_suppression));
         f.dirty = true;
     }
 
