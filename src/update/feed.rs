@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn committed_key_is_a_valid_point() {
         // Trimmed like `decode_key`: a CRLF checkout must not fail the Windows CI tests.
-        assert_eq!(KEY.trim(), "xhWhAUDE17E0HTQVGomlSG7pgrr517sISogYm9/PvxY=");
+        assert_ne!(KEY.trim(), "xhWhAUDE17E0HTQVGomlSG7pgrr517sISogYm9/PvxY=", "the fork must not trust upstream's key");
         assert!(decode_key(KEY).is_some());
         assert_eq!(decode_key("AAAA"), None, "wrong length");
         assert_eq!(decode_key("not base64!"), None);
@@ -457,17 +457,19 @@ mod tests {
 
     #[test]
     fn parses_the_design_fixture() {
-        let offer = parse(MANIFEST.as_bytes(), Some(Key::Windows), &github()).unwrap();
+        // Keep MANIFEST byte-for-byte for the signature test. Change its asset root for the fork.
+        let manifest = MANIFEST.replace("https://github.com/r0sc/Rustcord/releases", RELEASES);
+        let offer = parse(manifest.as_bytes(), Some(Key::Windows), &github()).unwrap();
         assert_eq!(offer.version, Version::new(0, 1, 0));
         let p = offer.package.unwrap();
-        assert_eq!(p.url, "https://github.com/r0sc/Rustcord/releases/download/v0.1.0/Rustcord-Setup-0.1.0.exe");
+        assert_eq!(p.url, "https://github.com/blueredtronce-rgb/Rustcord/releases/download/v0.1.0/Rustcord-Setup-0.1.0.exe");
         assert_eq!((hex(&p.sha256).as_str(), p.size), ("5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592", 24187210));
-        assert_eq!(offer.manifest, <[u8; 32]>::from(Sha256::digest(MANIFEST.as_bytes())));
+        assert_eq!(offer.manifest, <[u8; 32]>::from(Sha256::digest(manifest.as_bytes())));
         for (k, size) in [(Key::Linux, 16003285), (Key::LinuxDeb, 11452804), (Key::Macos, 31457280)] {
-            assert_eq!(parse(MANIFEST.as_bytes(), Some(k), &github()).unwrap().package.unwrap().size, size, "{k:?}");
+            assert_eq!(parse(manifest.as_bytes(), Some(k), &github()).unwrap().package.unwrap().size, size, "{k:?}");
         }
         // No key for this copy: a notice only.
-        assert_eq!(parse(MANIFEST.as_bytes(), None, &github()).unwrap().package, None);
+        assert_eq!(parse(manifest.as_bytes(), None, &github()).unwrap().package, None);
         // Unknown fields are ignored; a missing entry is a notice.
         let lean = r#"{"schema":1,"version":"1.2.3","platforms":{},"extra":true}"#;
         assert_eq!(parse(lean.as_bytes(), Some(Key::Linux), &github()).unwrap().package, None);
@@ -478,7 +480,7 @@ mod tests {
         let entry = |url: &str, sha: &str, size: &str| {
             format!(r#"{{"schema":1,"version":"0.2.0","platforms":{{"linux-x86_64":{{"url":"{url}","sha256":"{sha}","size":{size}}}}}}}"#)
         };
-        let good_url = "https://github.com/r0sc/Rustcord/releases/download/v0.2.0/rustcord-0.2.0-linux-x86_64.tar.gz";
+        let good_url = "https://github.com/blueredtronce-rgb/Rustcord/releases/download/v0.2.0/rustcord-0.2.0-linux-x86_64.tar.gz";
         let sha = "ab".repeat(32);
         assert!(parse(entry(good_url, &sha, "5").as_bytes(), Some(Key::Linux), &github()).is_ok());
         let bad = [
@@ -488,7 +490,8 @@ mod tests {
             entry(good_url, &"AB".repeat(32), "5"),
             entry(good_url, &"ab".repeat(31), "5"),
             entry(good_url, &format!("{}zz", "ab".repeat(31)), "5"),
-            entry("https://github.com/r0sc/Rustcord/releases/download/v0.1.0/rustcord-0.2.0-linux-x86_64.tar.gz", &sha, "5"),
+            entry(&good_url.replace("/v0.2.0/", "/v0.1.0/"), &sha, "5"),
+            entry(&good_url.replace("blueredtronce-rgb", "r0sc"), &sha, "5"),
             entry("https://evil.example/rustcord-0.2.0-linux-x86_64.tar.gz", &sha, "5"),
             entry(&good_url.replace("https:", "http:"), &sha, "5"),
             entry(&good_url.replace("linux-x86_64", "linux-aarch64"), &sha, "5"),
@@ -552,7 +555,7 @@ mod tests {
     fn expected_urls_per_key() {
         let v = Version::new(0, 1, 1);
         let gh = github();
-        let base = "https://github.com/r0sc/Rustcord/releases/download/v0.1.1/";
+        let base = "https://github.com/blueredtronce-rgb/Rustcord/releases/download/v0.1.1/";
         assert_eq!(gh.asset_base(&v), base);
         let names: Vec<String> = [Key::Windows, Key::Linux, Key::LinuxDeb, Key::Macos].iter().map(|k| k.file(&v)).collect();
         assert_eq!(names, ["Rustcord-Setup-0.1.1.exe", "rustcord-0.1.1-linux-x86_64.tar.gz", "rustcord_0.1.1_amd64.deb", "Rustcord-0.1.1-macos-universal.app.tar.gz"]);

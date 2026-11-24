@@ -52,11 +52,10 @@ async fn serve(sink: EventSink) {
             .reject_remote_clients(true)
             .max_instances(1)
             .create(PIPE)
+            && pipe.connect().await.is_ok()
         {
-            if pipe.connect().await.is_ok() {
-                let _ = session(&mut pipe, &sink).await;
-                sink.send(BackendEvent::Activity(ActivityEvent::PulseSync(None)));
-            }
+            let _ = session(&mut pipe, &sink).await;
+            sink.send(BackendEvent::Activity(ActivityEvent::PulseSync(None)));
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
