@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(root.asset_base(&v), "http://127.0.0.1:8765/");
         assert_eq!(test.key, gh.key, "no override: the committed key");
         // In Test mode the packages must come from the loopback folder, not GitHub.
-        let gh_json = MANIFEST.replace("0.1.0", "0.1.1");
+        let gh_json = MANIFEST.replace("https://github.com/r0sc/Rustcord/releases", RELEASES).replace("0.1.0", "0.1.1");
         assert!(parse(gh_json.as_bytes(), Some(Key::Windows), &test).is_err());
         assert!(parse(gh_json.replace(base, "http://127.0.0.1:8765/feed/").as_bytes(), Some(Key::Windows), &test).is_ok());
     }
