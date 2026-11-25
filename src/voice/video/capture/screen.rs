@@ -4,6 +4,7 @@
 //! keyframe requests while the picture is static (Windows only delivers changes).
 
 mod cursor;
+mod scale;
 
 use super::{Pipeline, Stop};
 use crate::voice::video::{MonitorInfo, PixelFormat, RawFrame, ScreenSource, WindowInfo};
@@ -11,9 +12,9 @@ use std::ffi::c_void;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Direct3D11::{D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE};
+use windows::Win32::Graphics::Direct3D11::{D3D11_MAP_READ, D3D11_MAP_READ_WRITE, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION_IDENTITY;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_MODE_ROTATION_IDENTITY};
 use windows_capture::capture::{CaptureControl, CaptureControlError, Context, GraphicsCaptureApiError, GraphicsCaptureApiHandler};
 use windows_capture::d3d11::StagingTexture;
 use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat, Error as DuplicationError};
@@ -123,7 +124,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
         Ok(api)
     };
     let mut api = open()?;
-    let mut staging: Option<StagingTexture> = None;
+    let mut readback = Readback::default();
     let mut cursor = cursor::Cursor::default();
     let mut next_capture = Instant::now();
     let mut retry = true;
@@ -133,7 +134,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
             return Ok(());
         }
         let lost = match api.acquire_next_frame(30) {
-            Ok(mut frame) => {
+            Ok(frame) => {
                 retry = true;
                 let now = Instant::now();
                 next_capture = now + pipe.pacer.interval;
@@ -143,16 +144,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
                     pipe.repeat(now)?;
                     continue;
                 }
-                let (width, height, format) = (frame.width(), frame.height(), frame.texture_desc().Format);
-                let texture = match &mut staging {
-                    Some(texture) if (texture.desc().Width, texture.desc().Height, texture.desc().Format) == (width, height, format) => texture,
-                    slot => slot.insert(StagingTexture::new(frame.device(), width, height, format).map_err(|e| read_failed(&e))?),
-                };
-                let mut buffer = frame.buffer_with(texture).map_err(error)?;
-                let stride = buffer.row_pitch() as usize;
-                let data = buffer.as_raw_buffer();
-                cursor.paint(width, height, stride, data);
-                pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now)?;
+                readback.push(&mut pipe, frame.device(), frame.device_context(), frame.texture(), Some(&cursor), now)?;
                 false
             }
             Err(DuplicationError::Timeout) => {
@@ -164,7 +156,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
         };
         if lost {
             retry = false;
-            staging = None;
+            readback = Readback::default();
             cursor = cursor::Cursor::default();
             drop(api);
             api = open()?;
@@ -220,9 +212,7 @@ fn reason(e: CaptureControlError<String>) -> String {
 /// windows-capture's frame handler: the pipeline, fed on its capture thread.
 struct Capture {
     pipe: Pipeline,
-    /// The CPU-readable copy of a frame, reused while size and format stay (`Frame::buffer`
-    /// would create one per frame).
-    staging: Option<StagingTexture>,
+    readback: Readback,
 }
 
 fn read_failed(e: &dyn std::fmt::Display) -> String {
@@ -235,7 +225,7 @@ impl GraphicsCaptureApiHandler for Capture {
     type Error = String;
 
     fn new(ctx: Context<Pipeline>) -> Result<Capture, String> {
-        Ok(Capture { pipe: ctx.flags, staging: None })
+        Ok(Capture { pipe: ctx.flags, readback: Readback::default() })
     }
 
     fn on_frame_arrived(&mut self, frame: &mut Frame, _: InternalCaptureControl) -> Result<(), String> {
@@ -244,21 +234,55 @@ impl GraphicsCaptureApiHandler for Capture {
         if !self.pipe.due(now)? {
             return Ok(());
         }
-        let (width, height, format) = (frame.desc().Width, frame.desc().Height, frame.desc().Format);
+        self.readback.push(&mut self.pipe, frame.device(), frame.device_context(), frame.as_raw_texture(), None, now)
+    }
+}
+
+#[derive(Default)]
+struct Readback {
+    source: Option<(u32, u32, DXGI_FORMAT)>,
+    scale: Option<scale::Scale>,
+    staging: Option<StagingTexture>,
+}
+
+impl Readback {
+    fn push(&mut self, pipe: &mut Pipeline, device: &ID3D11Device, context: &ID3D11DeviceContext, texture: &ID3D11Texture2D, cursor: Option<&cursor::Cursor>, now: Instant) -> Result<(), String> {
+        let at = pipe.trace.as_ref().map(|_| Instant::now());
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        let input = (desc.Width, desc.Height, desc.Format);
+        let original = (desc.Width, desc.Height);
+        let scaled = super::codec::fit_within(desc.Width, desc.Height, pipe.limits.max_width, pipe.limits.max_height);
+        if self.source != Some(input) {
+            self.source = Some(input);
+            self.scale = (scaled.0 <= original.0 && scaled.1 <= original.1 && scaled != original)
+                .then(|| scale::Scale::new(device, context, original, scaled, desc.Format, pipe.limits.fps).ok()).flatten();
+        }
+        if self.scale.as_ref().is_some_and(|scaler| scaler.frame(texture).is_err()) {
+            self.scale = None;
+        }
+        let ((width, height), texture) = self.scale.as_ref().map_or((original, texture), |scaler| (scaled, scaler.output_texture()));
+        let format = desc.Format;
         let staging = match &mut self.staging {
             Some(s) if (s.desc().Width, s.desc().Height, s.desc().Format) == (width, height, format) => s,
-            slot => slot.insert(StagingTexture::new(frame.device(), width, height, format).map_err(|e| read_failed(&e))?),
+            slot => slot.insert(StagingTexture::new(device, width, height, format).map_err(|e| read_failed(&e))?),
         };
-        let context = frame.device_context();
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        // SAFETY: the staging texture matches the frame's size and format; it stays mapped only
-        // while `data` is used (D3D11 maps `RowPitch × height` bytes of a 2D texture).
+        let mode = if cursor.is_some() { D3D11_MAP_READ_WRITE } else { D3D11_MAP_READ };
+        // The staging texture has the selected texture's size and format. Its slice ends at Unmap.
         unsafe {
-            context.CopyResource(staging.texture(), frame.as_raw_texture());
-            context.Map(staging.texture(), 0, D3D11_MAP_READ, 0, Some(&mut mapped)).map_err(|e| read_failed(&e))?;
+            context.CopyResource(staging.texture(), texture);
+            context.Map(staging.texture(), 0, mode, 0, Some(&mut mapped)).map_err(|e| read_failed(&e))?;
+            if let (Some(trace), Some(at)) = (&mut pipe.trace, at) {
+                trace.record(if self.scale.is_some() { 1 } else { 2 }, at.elapsed());
+            }
             let stride = mapped.RowPitch as usize;
+            if let Some(cursor) = cursor {
+                let data = std::slice::from_raw_parts_mut(mapped.pData.cast::<u8>(), stride * height as usize);
+                cursor.paint(original, (width, height), stride, data);
+            }
             let data = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), stride * height as usize);
-            let result = self.pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now);
+            let result = pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now);
             context.Unmap(staging.texture(), 0);
             result
         }

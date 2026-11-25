@@ -65,11 +65,33 @@ pub struct AudioConfig {
     pub output: Option<String>,
     pub mode: InputMode,
     pub noise_suppression: super::NoiseSuppression,
+    pub gain: Gain,
     /// Never transmit (self mute, deafen, server mute or stage suppress). Going muted while
     /// transmitting still ends with the silence frames and `Captured::End`.
     pub muted: bool,
     /// Play nothing (self or server deafen); packets are still decoded or dropped cheaply.
     pub deafened: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gain {
+    pub mic: u8,
+    pub playback: u8,
+}
+
+impl Default for Gain {
+    fn default() -> Self {
+        Self { mic: 100, playback: 100 }
+    }
+}
+
+fn attenuate(samples: &mut [f32], percent: u8) {
+    if percent < 100 {
+        let gain = f32::from(percent) / 100.0;
+        for sample in samples {
+            *sample *= gain;
+        }
+    }
 }
 
 /// Capture side output, in order.
@@ -132,10 +154,10 @@ impl Playback {
     /// One received Opus frame, already transport- and E2EE-decrypted. `seq` is
     /// the RTP sequence number (u16 wraparound ordering in the jitter buffer). Emits
     /// `VoiceEvent::Speaking` for `user_id` when its activity starts/stops (~250 ms rule).
-    pub fn push(&self, user_id: Id, ssrc: u32, seq: u16, opus: std::borrow::Cow<'_, [u8]>) {
+    pub fn push(&self, user_id: Id, ssrc: u32, seq: u16, opus: std::borrow::Cow<'_, [u8]>) -> bool {
         // Full queue (audio thread behind): drop, the jitter buffer conceals it.
         let track = (self.connection, ssrc);
-        let _ = self.tx.try_send(Packet::Opus { user_id, track, gain: self.gain.clone(), seq, opus: opus.into_owned() });
+        self.tx.try_send(Packet::Opus { user_id, track, gain: self.gain.clone(), seq, opus: opus.into_owned() }).is_ok()
     }
 
     /// The SSRC is gone (op 13 client disconnect): drop its buffer and decoder.
@@ -347,7 +369,8 @@ impl Engine {
     }
 
     fn on_frame(&mut self, mono: &[f32; FRAME_SAMPLES], now: Instant) {
-        let input_open = !self.cfg.muted && match self.cfg.mode {
+        let transmitting = !self.cfg.muted && self.cfg.gain.mic != 0;
+        let input_open = transmitting && match self.cfg.mode {
             InputMode::PushToTalk { .. } => self.ptt_until.is_some_and(|until| now < until),
             InputMode::VoiceActivity { .. } => true,
         };
@@ -362,7 +385,7 @@ impl Engine {
         };
         let db = dsp::db(mono);
         self.report_level(db);
-        let open = !self.cfg.muted
+        let open = transmitting
             && match self.cfg.mode {
                 InputMode::VoiceActivity { threshold_db } => self.vad.open(db, threshold_db),
                 InputMode::PushToTalk { .. } => self.ptt_until.is_some_and(|t| now < t),
@@ -373,6 +396,12 @@ impl Engine {
                 if !was_talking {
                     self.speaking(self.me, true);
                 }
+                let mut adjusted;
+                let mono = if self.cfg.gain.mic < 100 {
+                    adjusted = *mono;
+                    attenuate(&mut adjusted, self.cfg.gain.mic);
+                    &adjusted
+                } else { mono };
                 if let Some(opus) = self.encoder.as_mut().and_then(|enc| dsp::encode(enc, mono)) {
                     self.send(Captured::Frame(opus));
                 }
@@ -445,6 +474,7 @@ impl Engine {
             if !out.wants_more() || !mix_frame(&mut self.streams, &mut self.decoded, &mut self.mix) {
                 break;
             }
+            attenuate(&mut self.mix, self.cfg.gain.playback);
             out.write(&self.mix);
         }
     }

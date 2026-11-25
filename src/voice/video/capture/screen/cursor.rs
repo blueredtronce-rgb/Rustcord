@@ -49,7 +49,14 @@ impl Cursor {
         }
     }
 
-    pub(super) fn paint(&self, width: u32, height: u32, stride: usize, frame: &mut [u8]) {
+    pub(super) fn paint(
+        &self,
+        source: (u32, u32),
+        target: (u32, u32),
+        stride: usize,
+        frame: &mut [u8],
+    ) {
+        let (width, height) = target;
         let (Some((x, y)), Some(shape)) = (self.position, self.shape) else {
             return;
         };
@@ -82,14 +89,18 @@ impl Cursor {
         }
         let x = i64::from(x);
         let y = i64::from(y);
-        let left = x.clamp(0, i64::from(width));
-        let top = y.clamp(0, i64::from(height));
-        let right = (x + w as i64).clamp(left, i64::from(width));
-        let bottom = (y + visible_rows as i64).clamp(top, i64::from(height));
+        let (sw, sh) = (i64::from(source.0.max(1)), i64::from(source.1.max(1)));
+        let (tw, th) = (i64::from(width), i64::from(height));
+        let ceil =
+            |position: i64, target: i64, source: i64| -(-position * target).div_euclid(source);
+        let left = ceil(x, tw, sw).clamp(0, tw);
+        let top = ceil(y, th, sh).clamp(0, th);
+        let right = ceil(x + w as i64, tw, sw).clamp(left, tw);
+        let bottom = ceil(y + visible_rows as i64, th, sh).clamp(top, th);
         for dst_y in top..bottom {
-            let row = (dst_y - y) as usize * pitch;
+            let row = (dst_y * sh / th - y) as usize * pitch;
             for dst_x in left..right {
-                let src_x = (dst_x - x) as usize;
+                let src_x = (dst_x * sw / tw - x) as usize;
                 let offset = dst_y as usize * stride + dst_x as usize * 4;
                 let dst = &mut frame[offset..offset + 3];
                 if shape.Type == monochrome {
@@ -151,7 +162,7 @@ mod tests {
             pixels: vec![255, 255, 255, 255, 110, 120, 130, 128],
         };
         let mut frame = [10, 20, 30, 255, 10, 20, 30, 255];
-        cursor.paint(2, 1, 8, &mut frame);
+        cursor.paint((2, 1), (2, 1), 8, &mut frame);
         assert_eq!(frame, [60, 70, 80, 255, 10, 20, 30, 255]);
     }
 
@@ -175,7 +186,7 @@ mod tests {
             1,
             vec![0b1000_0000, 0b1000_0000],
         );
-        mono.paint(2, 1, 8, &mut frame);
+        mono.paint((2, 1), (2, 1), 8, &mut frame);
         assert_eq!(frame, [245, 235, 225, 255, 0, 0, 0, 255]);
         let masked = make(
             DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 as u32,
@@ -183,7 +194,7 @@ mod tests {
             8,
             vec![255, 255, 255, 255, 1, 2, 3, 0],
         );
-        masked.paint(2, 1, 8, &mut frame);
+        masked.paint((2, 1), (2, 1), 8, &mut frame);
         assert_eq!(frame, [10, 20, 30, 255, 1, 2, 3, 255]);
     }
 }

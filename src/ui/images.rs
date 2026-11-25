@@ -39,6 +39,8 @@ struct Entry {
 pub struct ImageCache {
     cmd: CommandSender,
     entries: HashMap<String, Entry>,
+    #[cfg(windows)]
+    pulse_cover: Option<TextureHandle>,
     /// Texture bytes of all Ready entries.
     bytes: usize,
     /// Earliest time (ctx time, seconds) an animation drawn this frame needs its next frame.
@@ -54,8 +56,19 @@ pub struct ImageCache {
 
 impl ImageCache {
     pub fn new(cmd: CommandSender) -> Self {
-        Self { cmd, entries: HashMap::new(), bytes: 0, next_frame_at: None, mem_next: 0.0, sweep_at: f64::INFINITY, trim_at: f64::INFINITY, was_connected: false }
+        Self { cmd, entries: HashMap::new(), bytes: 0, next_frame_at: None, mem_next: 0.0, sweep_at: f64::INFINITY, trim_at: f64::INFINITY, was_connected: false,
+            #[cfg(windows)] pulse_cover: None,
+        }
     }
+
+    #[cfg(windows)]
+    pub(super) fn pulse_cover(&mut self, ctx: &egui::Context, art: &std::sync::Arc<egui::ColorImage>) -> SizedTexture {
+        let texture = self.pulse_cover.get_or_insert_with(|| ctx.load_texture("Yandex Music cover", art.clone(), egui::TextureOptions::LINEAR));
+        SizedTexture::from_handle(texture)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn clear_pulse_cover(&mut self) { self.pulse_cover = None; }
 
     pub fn on_loaded(&mut self, ctx: &egui::Context, url: String, result: Result<DecodedImage, String>) {
         // Ignore results for entries removed/cleared (e.g. logout) while loading.

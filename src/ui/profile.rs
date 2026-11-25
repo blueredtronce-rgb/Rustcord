@@ -354,6 +354,10 @@ pub(super) fn activity_section(ui: &mut egui::Ui, cx: &mut UiCx<'_>, pal: &Pal, 
     let (rect, _) = ui.allocate_exact_size(vec2(w, side.max(text_h)), Sense::hover());
     let img = Rect::from_min_size(pos2(rect.left(), rect.center().y - side / 2.0), Vec2::splat(side));
     let art = crate::activity::art_url(ui.ctx(), cx.state, a, 128).and_then(|u| cx.images.get(ui.ctx(), &u, 128, false));
+    #[cfg(windows)]
+    let art = if cx.state.activity.pulse_sync.as_ref() == Some(a) {
+        cx.state.activity.pulse_cover.as_ref().map(|cover| cx.images.pulse_cover(ui.ctx(), cover)).or(art)
+    } else { art };
     match art {
         Some(tex) => Image::from_texture(tex).corner_radius(pal.radius).paint_at(ui, img),
         None => {

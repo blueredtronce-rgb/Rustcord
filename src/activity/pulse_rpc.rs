@@ -3,8 +3,9 @@
 
 use crate::activity::ActivityEvent;
 use crate::backend::{BackendEvent, EventSink};
-use crate::model::{Activity, RichPresence};
+use crate::model::{Activity, Id, RichPresence};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::{io, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
@@ -12,11 +13,33 @@ use tokio::sync::watch;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as MediaSession,
     GlobalSystemMediaTransportControlsSessionManager as MediaSessionManager,
+    GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
+use windows::Storage::Streams::DataReader;
 
 const PIPE: &str = r"\\.\pipe\discord-ipc-0";
-const PULSESYNC_ID: &str = "1124055337234858005";
+pub(crate) const PULSESYNC_ID: &str = "1124055337234858005";
+const PULSESYNC_APP: Id = Id(1124055337234858005);
+
+pub(crate) fn cover_url(url: &str) -> bool {
+    url.len() <= 256 && reqwest::Url::parse(url).is_ok_and(|url| cover_host(&url))
+}
+
+pub(crate) fn cover_host(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(
+            url.host_str(),
+            Some("avatars.yandex.net" | "avatars.mds.yandex.net")
+        )
+        && (url.path().starts_with("/get-music-content/")
+            || url.path().starts_with("/get-music-user-playlist/"))
+}
 const MAX_BODY: usize = 16 * 1024;
 const HANDSHAKE: u32 = 0;
 const FRAME: u32 = 1;
@@ -86,17 +109,17 @@ async fn display_activity(sink: EventSink, mut ipc: watch::Receiver<Option<Activ
     loop {
         let rpc_activity = ipc.borrow_and_update().clone();
         let has_rpc = rpc_activity.is_some();
-        let next = match rpc_activity {
-            Some(activity) => Some(activity),
+        let (next, cover) = match rpc_activity {
+            Some(activity) => (Some(activity), None),
             None => tokio::select! {
-                result = tokio::time::timeout(Duration::from_secs(2), windows_activity(&mut manager)) => {
+                result = tokio::time::timeout(Duration::from_secs(2), windows_activity(&mut manager, displayed.as_ref())) => {
                     match result {
                         Ok(Ok(activity)) => activity,
                         Ok(Err(_)) => {
                             manager = None;
-                            None
+                            (None, None)
                         }
-                        Err(_) => displayed.clone(),
+                        Err(_) => (displayed.clone(), None),
                     }
                 }
                 _ = ipc.changed() => continue,
@@ -107,6 +130,11 @@ async fn display_activity(sink: EventSink, mut ipc: watch::Receiver<Option<Activ
                 next.clone(),
             )));
             displayed = next;
+        }
+        if let Some(cover) = cover {
+            sink.send(BackendEvent::Activity(ActivityEvent::PulseCover(Arc::new(
+                cover,
+            ))));
         }
         if has_rpc {
             if ipc.changed().await.is_err() {
@@ -133,20 +161,62 @@ fn is_yandex_music(source: &str) -> bool {
 
 async fn windows_activity(
     manager: &mut Option<MediaSessionManager>,
-) -> windows::core::Result<Option<Activity>> {
+    displayed: Option<&Activity>,
+) -> windows::core::Result<(Option<Activity>, Option<egui::ColorImage>)> {
     if manager.is_none() {
         *manager = Some(MediaSessionManager::RequestAsync()?.await?);
     }
     let Some(manager) = manager else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let Some(session) = playing_yandex_session(manager)? else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let properties = session.TryGetMediaPropertiesAsync()?.await?;
     let title = properties.Title()?.to_string_lossy();
     let artist = properties.Artist()?.to_string_lossy();
-    Ok(make_activity("Yandex Music", Some(&title), Some(&artist)))
+    let activity = make_activity("Yandex Music", Some(&title), Some(&artist));
+    let cover = if activity.is_some() && activity.as_ref() != displayed {
+        tokio::time::timeout(Duration::from_millis(700), thumbnail(properties))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    Ok((activity, cover))
+}
+
+async fn thumbnail(properties: MediaProperties) -> Option<egui::ColorImage> {
+    let (reader, size) = {
+        let open = properties.Thumbnail().ok()?.OpenReadAsync().ok()?;
+        let stream = open.await.ok()?;
+        let size = stream.Size().ok()?;
+        if size == 0 || size > 512 * 1024 {
+            return None;
+        }
+        (
+            DataReader::CreateDataReader(&stream.GetInputStreamAt(0).ok()?).ok()?,
+            size,
+        )
+    };
+    let loaded = reader.LoadAsync(size as u32).ok()?.await.ok()?;
+    if u64::from(loaded) != size {
+        return None;
+    }
+    let mut bytes = vec![0; size as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    tokio::task::spawn_blocking(move || {
+        crate::cache::images::decode(&bytes, 128, false)
+            .ok()?
+            .frames
+            .into_iter()
+            .next()
+            .map(|f| f.image)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 fn playing_yandex_session(
@@ -240,11 +310,22 @@ fn listening_activity(value: &Value) -> Option<Activity> {
     if value["type"].as_u64() != Some(2) {
         return None;
     }
-    make_activity(
-        "Yandex Music · PulseSync",
+    let mut activity = make_activity(
+        "Yandex Music",
         value["details"].as_str(),
         value["state"].as_str(),
-    )
+    )?;
+    let rich = activity.rich.as_mut()?;
+    rich.large_image = value["assets"]["large_image"]
+        .as_str()
+        .filter(|image| {
+            cover_url(image)
+                || (image.len() <= 512
+                    && (image.starts_with("mp:external/")
+                        || !image.is_empty() && image.bytes().all(|b| b.is_ascii_digit())))
+        })
+        .map(str::to_owned);
+    Some(activity)
 }
 
 fn make_activity(name: &str, title: Option<&str>, artist: Option<&str>) -> Option<Activity> {
@@ -268,6 +349,7 @@ fn make_activity(name: &str, title: Option<&str>, artist: Option<&str>) -> Optio
         rich: Some(Box::new(RichPresence {
             details,
             state,
+            application_id: Some(PULSESYNC_APP),
             ..Default::default()
         })),
     })
@@ -289,6 +371,15 @@ mod tests {
         assert_eq!(rich.details.as_deref(), Some("Test track"));
         assert_eq!(rich.state.as_deref(), Some("Test artist"));
         assert!(rich.large_image.is_none());
+        let cover = "https://avatars.yandex.net/get-music-content/123/album/400x400";
+        let with_cover = listening_activity(
+            &json!({"type": 2, "details": "Track", "assets": {"large_image": cover}}),
+        )
+        .unwrap();
+        assert_eq!(with_cover.rich.unwrap().large_image.as_deref(), Some(cover));
+        assert!(!cover_url(
+            "https://avatars.yandex.net/get-music-content/123/400x400?token=ignored"
+        ));
         assert!(listening_activity(&Value::Null).is_none());
         assert!(listening_activity(&json!({"type": 0, "details": "Other"})).is_none());
     }

@@ -370,6 +370,7 @@ impl RxThread {
         d.depack.push(p, now);
         while let Some(frame) = d.depack.next_frame() {
             if let Some(size) = decode(d, &self.dave, &frame)
+                && size != d.size
                 && let Some(state) = self.state.upgrade()
             {
                 d.size = size;

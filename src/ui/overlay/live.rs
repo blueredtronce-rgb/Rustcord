@@ -144,6 +144,7 @@ pub(super) struct Row {
     pub name: String,
     pub tex: Option<TextureId>,
     pub speaking: bool,
+    pub watching: bool,
     pub muted: bool,
     pub deaf: bool,
     pub by_server: bool,
@@ -431,7 +432,7 @@ fn voice_rows(state: &AppState, view: &ViewState) -> Vec<Row> {
             if Some(id) == me {
                 (muted, deaf) = (muted || view.self_mute, deaf || view.self_deaf);
             }
-            Row { id, name, tex: None, speaking: state.voice.speaking.contains(&id), muted, deaf, by_server: vs.is_some_and(|v| v.mute || v.deaf) }
+            Row { id, name, tex: None, speaking: state.voice.speaking.contains(&id), watching: state.voice.video.share_viewers.binary_search(&id).is_ok(), muted, deaf, by_server: vs.is_some_and(|v| v.mute || v.deaf) }
         })
         .collect();
     rows.sort_by_cached_key(|r| (r.name.to_lowercase(), r.id));
@@ -447,7 +448,7 @@ fn demo_rows(state: &AppState) -> Vec<Row> {
     let mut rows: Vec<Row> = me
         .into_iter()
         .chain(users.into_iter().take(4))
-        .map(|u| Row { id: u.id, name: u.display_name().to_owned(), tex: None, speaking: false, muted: false, deaf: false, by_server: false })
+        .map(|u| Row { id: u.id, name: u.display_name().to_owned(), tex: None, speaking: false, watching: false, muted: false, deaf: false, by_server: false })
         .collect();
     rows.sort_by_cached_key(|r| (r.name.to_lowercase(), r.id));
     for (i, r) in rows.iter_mut().enumerate() {
@@ -566,7 +567,7 @@ mod tests {
 
     #[test]
     fn visible_rows_cap_and_count_the_rest() {
-        let row = |i: u64, speaking| Row { id: Id(i), name: format!("u{i}"), tex: None, speaking, muted: false, deaf: false, by_server: false };
+        let row = |i: u64, speaking| Row { id: Id(i), name: format!("u{i}"), tex: None, speaking, watching: false, muted: false, deaf: false, by_server: false };
         let rows: Vec<Row> = (0..14).map(|i| row(i, i % 5 == 0)).collect();
         let mut scene = VoiceScene { rows, names: Show::Always, users: Show::Always, large: false };
         let (shown, more) = visible(&scene);

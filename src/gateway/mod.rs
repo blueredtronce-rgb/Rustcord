@@ -48,6 +48,7 @@ pub enum GatewayCommand {
     /// change an op 3 with my current status is queued like `UpdatePresence` (after READY; a
     /// new session gets it again after its READY).
     SetGame(Option<crate::activity::GameActivity>),
+    SetListening(Option<crate::model::Activity>),
     /// Op 8 with `query` (§1.7): `{"guild_id":["<g>"],"query","limit","presences":false,
     /// "nonce"}` (nonce ≤ 32 bytes, kept with (guild, query) in a small bounded map). Debounced
     /// per guild (~600 ms, newest query wins). GUILD_MEMBERS_CHUNK with that nonce ->

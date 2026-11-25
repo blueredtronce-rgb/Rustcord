@@ -32,6 +32,22 @@ impl ApiClient {
     pub async fn public_apps(&self, ids: &[Id]) -> Result<Vec<PublicApp>, ApiError> {
         self.send_json(Method::GET, public_apps_url(ids), None).await
     }
+
+    #[cfg(windows)]
+    pub async fn pulse_cover_proxy(&self, url: &str) -> Result<Option<String>, ApiError> {
+        #[derive(Deserialize)]
+        struct Asset { url: String, external_asset_path: String }
+        use crate::activity::pulse_rpc::{PULSESYNC_ID, cover_url};
+        if !cover_url(url) { return Ok(None) }
+        let assets: Vec<Asset> = self.send_json(Method::POST,
+            Self::url(&["applications", PULSESYNC_ID, "external-assets"]),
+            Some(serde_json::json!({"urls": [url]})),
+        ).await?;
+        Ok(assets.into_iter().find(|a| a.url == url).and_then(|a| {
+            let path = a.external_asset_path.trim_start_matches('/');
+            path.starts_with("external/").then(|| format!("mp:{path}"))
+        }))
+    }
 }
 
 fn public_apps_url(ids: &[Id]) -> Url {

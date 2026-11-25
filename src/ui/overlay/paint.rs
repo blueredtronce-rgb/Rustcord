@@ -81,11 +81,14 @@ fn draw(ui: &egui::Ui, w: &Want) {
     }
 }
 
-fn avatar(ui: &egui::Ui, r: Rect, tex: Option<TextureId>, seed: u64, name: &str) {
-    let p = ui.painter();
+fn avatar(ui: &egui::Ui, r: Rect, tex: Option<TextureId>, seed: u64, name: &str, opacity: f32) {
     match tex {
-        Some(tex) => egui::Image::from_texture(SizedTexture::new(tex, Vec2::splat(r.width()))).corner_radius(r.width() / 2.0).paint_at(ui, r),
-        None => paint_initial(p, r, r.width() / 2.0, seed, name, true),
+        Some(tex) => egui::Image::from_texture(SizedTexture::new(tex, Vec2::splat(r.width()))).corner_radius(r.width() / 2.0).tint(Color32::WHITE.gamma_multiply(opacity)).paint_at(ui, r),
+        None => {
+            let mut p = ui.painter().clone();
+            p.multiply_opacity(opacity);
+            paint_initial(&p, r, r.width() / 2.0, seed, name, true);
+        }
     }
 }
 
@@ -105,17 +108,25 @@ fn draw_voice(ui: &egui::Ui, rect: Rect, corner: Corner, v: &VoiceScene, pal: &C
         let x = if right { rect.right() - slot_w - GAP - w } else { rect.left() + slot_w + GAP };
         Rect::from_min_size(pos2(x, cy - pill_h / 2.0), vec2(w, pill_h))
     };
-    let pill = |text: String, color: Color32, cy: f32| {
-        let galley = crate::ui::one_line(ui, text, FontId::new(font, crate::theme::medium_family()), color, NAME_MAX - 16.0);
-        let r = pill_at((galley.size().x + 16.0).min(NAME_MAX), cy);
-        p.rect_filled(r, 4, pal.pill);
-        p.galley(pos2(r.left() + 8.0, r.center().y - galley.size().y / 2.0), galley, color);
+    let pill = |text: String, color: Color32, cy: f32, opacity: f32, watching: bool| {
+        let extra = if watching { 18.0 } else { 0.0 };
+        let mut painter = p.clone();
+        painter.multiply_opacity(opacity);
+        let galley = crate::ui::one_line(ui, text, FontId::new(font, crate::theme::medium_family()), color, NAME_MAX - 16.0 - extra);
+        let r = pill_at((galley.size().x + 16.0 + extra).min(NAME_MAX), cy);
+        painter.rect_filled(r, 4, pal.pill);
+        painter.galley(pos2(r.left() + 8.0, r.center().y - galley.size().y / 2.0), galley, color);
+        if watching {
+            let eye = Rect::from_center_size(pos2(r.right() - 14.0, cy), Vec2::splat(13.0));
+            icons::paint(&painter, Icon::Eye, eye, color, pal.pill);
+        }
     };
     let row_cy = |slot: usize| rect.top() + PAD + (slot as f32 + 0.5) * row_h;
     for (i, row) in rows.iter().enumerate() {
         let cy = row_cy(base + i);
         let r = Rect::from_center_size(pos2(avatar_x + a / 2.0, cy), Vec2::splat(a));
-        avatar(ui, r, row.tex, row.id.0, &row.name);
+        let opacity = if row.speaking { 0.85 } else { 0.50 };
+        avatar(ui, r, row.tex, row.id.0, &row.name, opacity);
         if row.speaking {
             p.circle_stroke(r.center(), a / 2.0 + 2.0, Stroke::new(2.0, pal.positive));
         }
@@ -123,11 +134,11 @@ fn draw_voice(ui: &egui::Ui, rect: Rect, corner: Corner, v: &VoiceScene, pal: &C
             mark(p, r, row, a, pal);
         }
         if v.names == Show::Always || (v.names == Show::Speaking && row.speaking) {
-            pill(row.name.clone(), pal.on_media, cy);
+            pill(row.name.clone(), pal.on_media, cy, opacity, row.watching);
         }
     }
     if more > 0 && v.names != Show::Never {
-        pill(format!("{more} more"), pal.on_media_muted, row_cy(base + rows.len()));
+        pill(format!("{more} more"), pal.on_media_muted, row_cy(base + rows.len()), 0.70, false);
     }
 }
 
@@ -149,7 +160,7 @@ fn draw_toasts(ui: &egui::Ui, rect: Rect, rows: &[ToastRow], pal: &Colors) {
         let stroke = if pal.hc { Stroke::new(1.5, pal.muted) } else { Stroke::new(1.0, pal.rule) };
         p.rect_stroke(card, pal.card_r, stroke, StrokeKind::Inside);
         // Streamer Mode passes no author: the card then shows the app's "R".
-        avatar(ui, Rect::from_min_size(card.min + vec2(12.0, 12.0), Vec2::splat(32.0)), t.tex, t.seed, &t.title);
+        avatar(ui, Rect::from_min_size(card.min + vec2(12.0, 12.0), Vec2::splat(32.0)), t.tex, t.seed, &t.title, 1.0);
         let title = crate::ui::one_line(ui, t.title.clone(), crate::ui::semibold(14.0), pal.text, 252.0);
         p.galley(card.min + vec2(56.0, 12.0), title, pal.text);
         let mut job = LayoutJob { break_on_newline: false, ..Default::default() };

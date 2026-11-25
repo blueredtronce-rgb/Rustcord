@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 /// Names handled by `dispatch`.
-pub(super) const EVENTS: [&str; 3] = ["STREAM_CREATE", "STREAM_SERVER_UPDATE", "STREAM_DELETE"];
+pub(super) const EVENTS: [&str; 4] = ["STREAM_CREATE", "STREAM_UPDATE", "STREAM_SERVER_UPDATE", "STREAM_DELETE"];
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -20,8 +20,7 @@ struct Wire {
     stream_key: String,
     rtc_server_id: Id,
     rtc_channel_id: Id,
-    #[serde(deserialize_with = "null_default")]
-    viewer_ids: Vec<Id>,
+    viewer_ids: Option<Vec<Id>>,
     #[serde(deserialize_with = "null_default")]
     paused: bool,
     endpoint: Option<String>,
@@ -45,9 +44,10 @@ pub(super) fn dispatch(t: &str, b: &[u8]) -> serde_json::Result<Option<GatewayEv
             stream_key: w.stream_key,
             rtc_server_id: w.rtc_server_id,
             rtc_channel_id: Some(w.rtc_channel_id).filter(|c| !c.is_zero()),
-            viewer_ids: w.viewer_ids,
+            viewer_ids: w.viewer_ids.unwrap_or_default(),
             paused: w.paused,
         }),
+        "STREAM_UPDATE" => Some(E::StreamUpdate { stream_key: w.stream_key, viewer_ids: w.viewer_ids }),
         "STREAM_SERVER_UPDATE" => Some(E::StreamServerUpdate {
             stream_key: w.stream_key,
             endpoint: w.endpoint.filter(|e| !e.is_empty()),
@@ -93,6 +93,12 @@ mod tests {
         let bare = ev("STREAM_CREATE", r#"{"stream_key":"call:2:3","rtc_server_id":"77","viewer_ids":null,"paused":null}"#);
         assert!(matches!(bare, Some(GatewayEvent::StreamCreate { rtc_channel_id: None, paused: false, .. })));
         assert!(ev("STREAM_CREATE", r#"{"stream_key":"call:2:3"}"#).is_none(), "no server");
+        assert!(matches!(ev("STREAM_UPDATE", r#"{"stream_key":"call:2:3","viewer_ids":["5"]}"#),
+            Some(GatewayEvent::StreamUpdate { viewer_ids: Some(viewers), .. }) if viewers == [Id(5)]));
+        assert!(matches!(ev("STREAM_UPDATE", r#"{"stream_key":"call:2:3","viewer_ids":[]}"#),
+            Some(GatewayEvent::StreamUpdate { viewer_ids: Some(viewers), .. }) if viewers.is_empty()));
+        assert!(matches!(ev("STREAM_UPDATE", r#"{"stream_key":"call:2:3","paused":true}"#),
+            Some(GatewayEvent::StreamUpdate { viewer_ids: None, .. })));
 
         let server = ev("STREAM_SERVER_UPDATE", r#"{"stream_key":"call:2:3","endpoint":"host:443","token":"s3cret","guild_id":null}"#);
         let Some(GatewayEvent::StreamServerUpdate { stream_key, endpoint, token }) = &server else { panic!() };

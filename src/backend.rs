@@ -80,6 +80,7 @@ pub enum Command {
     /// Voice activity (threshold) or push-to-talk.
     SetVoiceInputMode(crate::voice::InputMode),
     SetNoiseSuppression(crate::voice::NoiseSuppression),
+    SetVoiceVolume { mic: u8, playback: u8 },
     /// Answered with `VoiceEvent::Devices`.
     ListVoiceDevices,
     /// Camera, screen share, Go Live (docs/VIDEO_DESIGN.md); answered with
@@ -2178,6 +2179,18 @@ fn handle_activity(cmd: crate::activity::ActivityCommand, session: &mut Option<S
                 s.gateway.send(GatewayCommand::SetGame(game));
             }
         }
+        C::SetListening(listening) => {
+            if let Some(s) = session {
+                s.gateway.send(GatewayCommand::SetListening(listening));
+            }
+        }
+        #[cfg(windows)]
+        C::ProxyPulseCover(url) => {
+            let original = url.clone();
+            rest(session, sink, move |api| async move { api.pulse_cover_proxy(&url).await }, move |r| {
+                Some(BackendEvent::Activity(ActivityEvent::PulseCoverProxy { original, asset: r.ok().flatten() }))
+            });
+        }
         C::FetchApps(ids) => {
             let (asked, service) = (ids.clone(), activity.clone());
             rest(session, sink, move |api| async move { api.public_apps(&asked).await }, move |r| {
@@ -2607,6 +2620,7 @@ async fn run(
             Command::SetVoiceDevices { input, output } => voice.set_devices(input, output),
             Command::SetVoiceInputMode(mode) => voice.set_input_mode(mode),
             Command::SetNoiseSuppression(mode) => voice.set_noise_suppression(mode),
+            Command::SetVoiceVolume { mic, playback } => voice.set_volume(mic, playback),
             Command::ListVoiceDevices => voice.list_devices(),
             Command::Video(cmd) => voice.video(cmd),
             Command::Chat(c) => handle_chat(c, &mut session, &sink, &props, &mut chat),

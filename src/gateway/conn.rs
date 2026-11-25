@@ -273,6 +273,7 @@ struct Gateway {
     settings_custom: Option<Option<CustomStatus>>,
     /// My detected game (`SetGame`): op 3 carries it next to the custom status.
     my_game: Option<crate::activity::GameActivity>,
+    my_listening: Option<crate::model::Activity>,
     /// Op 3 not sent yet (newest wins), and its `afk`.
     want_presence: Option<UserStatus>,
     afk: bool,
@@ -367,6 +368,7 @@ impl Gateway {
             settings_status: None,
             settings_custom: None,
             my_game: None,
+            my_listening: None,
             want_presence: None,
             afk: false,
             presence_limiter: SendLimiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
@@ -426,6 +428,13 @@ impl Gateway {
                     self.want_presence = Some(self.want_presence.unwrap_or(self.my_status));
                 }
                 self.my_game = game;
+                true
+            }
+            Some(GatewayCommand::SetListening(listening)) => {
+                if listening != self.my_listening && self.session.is_some() {
+                    self.want_presence = Some(self.want_presence.unwrap_or(self.my_status));
+                }
+                self.my_listening = listening;
                 true
             }
             Some(GatewayCommand::RequestMembers { guild_id, query, limit }) => {
@@ -592,7 +601,7 @@ impl Gateway {
                     let debounce = match &cmd {
                         Some(GatewayCommand::SubscribeMemberList { .. }) => SUBSCRIBE_DEBOUNCE,
                         Some(GatewayCommand::UpdateVoiceState { .. }) => VOICE_DEBOUNCE,
-                        Some(GatewayCommand::UpdatePresence { .. } | GatewayCommand::SetGame(_)) => PRESENCE_DEBOUNCE,
+                        Some(GatewayCommand::UpdatePresence { .. } | GatewayCommand::SetGame(_) | GatewayCommand::SetListening(_)) => PRESENCE_DEBOUNCE,
                         Some(GatewayCommand::RequestMembers { .. }) => MEMBERS_DEBOUNCE,
                         Some(GatewayCommand::Stream(_) | GatewayCommand::ExpectToken) => Duration::ZERO,
                         Some(GatewayCommand::SetToken(_)) => {
@@ -695,7 +704,7 @@ impl Gateway {
                     // A new session starts without my game: send it again with my real status.
                     let known = r.status.status.is_some();
                     self.on_status(r.status, false);
-                    if known && self.my_game.is_some() && self.want_presence.is_none() {
+                    if known && (self.my_game.is_some() || self.my_listening.is_some()) && self.want_presence.is_none() {
                         (self.want_presence, self.afk) = (Some(self.my_status), false);
                     }
                     self.connected(link);
@@ -755,6 +764,7 @@ impl Gateway {
                             ev,
                             GatewayEvent::VoiceServerUpdate { .. }
                                 | GatewayEvent::StreamCreate { .. }
+                                | GatewayEvent::StreamUpdate { .. }
                                 | GatewayEvent::StreamServerUpdate { .. }
                                 | GatewayEvent::StreamDelete { .. }
                         ) {
@@ -889,7 +899,7 @@ impl Gateway {
         }
         // The UI hears of a dropped custom status with the `emit_status` after the send.
         self.drop_expired_custom(chrono::Utc::now());
-        match link.send(presence_payload(status, self.afk, self.my_custom.as_ref(), self.my_game.as_ref(), unix_ms()), false).await {
+        match link.send(presence_payload(status, self.afk, self.my_custom.as_ref(), self.my_game.as_ref(), self.my_listening.as_ref(), unix_ms()), false).await {
             Ok(()) => {
                 self.want_presence = None;
                 self.my_status = status;
@@ -1026,7 +1036,7 @@ fn voice_state_payload(guild_id: Option<Id>, channel_id: Option<Id>, self_mute: 
 /// Op 3 (FEATURES_NOTES §1.3). It replaces the session's activity list, so the custom status
 /// (type 4) and my detected game (type 0, like the official client's: name, application id,
 /// start time) go along. `since` = when idle started (unix ms), else 0.
-fn presence_payload(status: UserStatus, afk: bool, custom: Option<&CustomStatus>, game: Option<&crate::activity::GameActivity>, now_ms: u64) -> String {
+fn presence_payload(status: UserStatus, afk: bool, custom: Option<&CustomStatus>, game: Option<&crate::activity::GameActivity>, listening: Option<&crate::model::Activity>, now_ms: u64) -> String {
     let activities: Vec<serde_json::Value> = custom
         .map(|c| {
             let mut a = json!({"type": 4, "name": "Custom Status"});
@@ -1048,6 +1058,14 @@ fn presence_payload(status: UserStatus, afk: bool, custom: Option<&CustomStatus>
                 a["application_id"] = json!(id);
             }
             a
+        }))
+        .chain(listening.and_then(|a| {
+            let r = a.rich.as_ref()?;
+            let mut payload = json!({"type": 2, "name": a.name, "application_id": r.application_id?});
+            if let Some(details) = &r.details { payload["details"] = json!(details); }
+            if let Some(state) = &r.state { payload["state"] = json!(state); }
+            if let Some(image) = &r.large_image { payload["assets"] = json!({"large_image": image}); }
+            Some(payload)
         }))
         .collect();
     let since = if status == UserStatus::Idle { now_ms } else { 0 };
@@ -1130,25 +1148,25 @@ mod tests {
         let v = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap();
         let custom = CustomStatus { text: Some("brb".into()), emoji: Some(crate::model::Emoji { name: Some("🍕".into()), ..Default::default() }) };
         assert_eq!(
-            v(presence_payload(UserStatus::Dnd, false, Some(&custom), None, 5)),
+            v(presence_payload(UserStatus::Dnd, false, Some(&custom), None, None, 5)),
             json!({"op":3,"d":{"status":"dnd","since":0,"afk":false,"activities":[
                 {"type":4,"name":"Custom Status","state":"brb","emoji":{"name":"🍕"}}]}})
         );
         let custom = CustomStatus { text: None, emoji: Some(crate::model::Emoji { id: Some(Id(9)), name: Some("pepe".into()), animated: true }) };
-        let idle = v(presence_payload(UserStatus::Idle, true, Some(&custom), None, 1_700_000_000_000));
+        let idle = v(presence_payload(UserStatus::Idle, true, Some(&custom), None, None, 1_700_000_000_000));
         assert_eq!((&idle["d"]["since"], &idle["d"]["status"], &idle["d"]["afk"]), (&json!(1_700_000_000_000u64), &json!("idle"), &json!(true)));
         assert_eq!(idle["d"]["activities"][0], json!({"type":4,"name":"Custom Status","emoji":{"id":"9","name":"pepe","animated":true}}));
-        assert_eq!(v(presence_payload(UserStatus::Invisible, false, None, None, 5))["d"]["activities"], json!([]));
+        assert_eq!(v(presence_payload(UserStatus::Invisible, false, None, None, None, 5))["d"]["activities"], json!([]));
         // My game goes next to the custom status, which it never replaces.
         let game = crate::activity::GameActivity { name: "Factorio".into(), application_id: Some(Id(427520)), start_ms: 1_700_000_000_000 };
         let custom = CustomStatus { text: Some("brb".into()), emoji: None };
         assert_eq!(
-            v(presence_payload(UserStatus::Online, false, Some(&custom), Some(&game), 5))["d"]["activities"],
+            v(presence_payload(UserStatus::Online, false, Some(&custom), Some(&game), None, 5))["d"]["activities"],
             json!([{"type":4,"name":"Custom Status","state":"brb"},
                    {"type":0,"name":"Factorio","application_id":"427520","timestamps":{"start":1_700_000_000_000u64}}])
         );
         let added = crate::activity::GameActivity { application_id: None, ..game };
-        assert_eq!(v(presence_payload(UserStatus::Dnd, false, None, Some(&added), 5))["d"]["activities"], json!([{"type":0,"name":"Factorio","timestamps":{"start":1_700_000_000_000u64}}]));
+        assert_eq!(v(presence_payload(UserStatus::Dnd, false, None, Some(&added), None, 5))["d"]["activities"], json!([{"type":0,"name":"Factorio","timestamps":{"start":1_700_000_000_000u64}}]));
 
         let q = MemberQuery { guild_id: Id(10), query: "ab".into(), limit: 50, due: Instant::now(), retried: false };
         assert_eq!(

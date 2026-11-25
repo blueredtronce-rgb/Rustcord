@@ -11,6 +11,7 @@ use crate::model::Id;
 use crate::voice::dave::Dave;
 use crate::voice::video::receive::VideoRx;
 use crate::voice::video::rtp_h264::{self, Feedback, MAX_PAYLOAD, RtpPacket, RtxHistory};
+use crate::voice::video::trace::Trace;
 use crate::voice::video::{EncodedFrame, H264_PT, H264_RTX_PT, StreamKind, VIDEO_CLOCK_HZ, VideoCtl, VideoLink, VideoSend, op12_payload, op15_payload, parse_op12};
 use serde::Deserialize;
 use serde_json::Value;
@@ -43,6 +44,7 @@ pub(super) struct VideoConn {
     sends_rx: Option<mpsc::UnboundedReceiver<SendReq>>,
     /// The SSRCs of the last op 15 (None = none sent yet).
     sent_wants: Option<Vec<u32>>,
+    stream_audio: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,7 +57,7 @@ struct Ssrcs {
 impl VideoConn {
     pub fn new(link: VideoLink) -> VideoConn {
         let (sends, sends_rx) = mpsc::unbounded_channel();
-        VideoConn { link, ssrcs: None, sends, sends_rx: Some(sends_rx), sent_wants: None }
+        VideoConn { link, ssrcs: None, sends, sends_rx: Some(sends_rx), sent_wants: None, stream_audio: None }
     }
 
     /// Identify `streams[].type`.
@@ -75,10 +77,18 @@ impl VideoConn {
         self.wants()
     }
 
+    /// Request the shared audio independently of whether the preview is shown.
+    pub fn set_stream_audio(&mut self, user: Id, local: Id, ssrc: u32) {
+        if ssrc != 0 && user != local && self.link.rx.stream_owner() == Some(user) {
+            self.stream_audio = Some(ssrc);
+        }
+    }
+
     /// Op 15 when the wanted SSRCs differ from the last one sent; never before Ready, and not
     /// for an empty set before anything was asked for.
-    fn wants(&mut self) -> Option<String> {
-        let wanted = self.link.rx.wanted_ssrcs();
+    pub fn wants(&mut self) -> Option<String> {
+        let mut wanted = self.link.rx.wanted_ssrcs();
+        if let Some(ssrc) = self.stream_audio { wanted.push(ssrc); }
         let last = self.sent_wants.as_deref().unwrap_or_default();
         if self.ssrcs.is_none() || wanted == last {
             return None;
@@ -90,6 +100,7 @@ impl VideoConn {
 
     /// Op 13 client disconnect.
     pub fn on_client_disconnect(&mut self, user_id: Id) {
+        if self.link.rx.stream_owner() == Some(user_id) { self.stream_audio = None; }
         self.link.rx.remove_user(user_id);
     }
 
@@ -244,6 +255,7 @@ impl SendTask {
 
     async fn run(mut self, mut sends: mpsc::UnboundedReceiver<SendReq>, mut rtcp: mpsc::UnboundedReceiver<Vec<u8>>, mut feedback: mpsc::UnboundedReceiver<Feedback>) {
         let mut current: Option<VideoSend> = None;
+        let mut trace = self.screen.then(|| Trace::new("send", &["from_capture", "sent", "dropped"])).flatten();
         let mut reports = tokio::time::interval_at(tokio::time::Instant::now() + SR_INTERVAL, SR_INTERVAL);
         reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -251,6 +263,8 @@ impl SendTask {
                 req = sends.recv() => match req {
                     Some(Some(send)) => {
                         send.keyframe.store(true, Ordering::Relaxed); // receivers start with a keyframe
+                        self.wait_keyframe = true;
+                        self.history = RtxHistory::default();
                         current = Some(send);
                     }
                     Some(None) => current = self.stopped(),
@@ -258,7 +272,14 @@ impl SendTask {
                 },
                 frame = next_frame(&mut current) => match frame {
                     Some(f) => {
-                        if !self.send_frame(&f).await
+                        let at = trace.as_ref().map(|_| Instant::now());
+                        let sent = self.send_frame(&f).await;
+                        if let (Some(trace), Some(at)) = (&mut trace, at) {
+                            trace.flush(at);
+                            trace.record(0, at.saturating_duration_since(f.captured));
+                            trace.record(if sent { 1 } else { 2 }, at.elapsed());
+                        }
+                        if !sent
                             && let Some(c) = &current
                         {
                             c.keyframe.store(true, Ordering::Relaxed); // a gap: restart the reference chain
@@ -302,6 +323,8 @@ impl SendTask {
         self.wait_keyframe = false;
         let ts = self.timestamp(f.captured);
         let payloads = rtp_h264::packetize(&frame, MAX_PAYLOAD);
+        if payloads.is_empty() { return false }
+        let mut sent = true;
         let now = Instant::now();
         for (i, payload) in payloads.iter().enumerate() {
             let marker = i + 1 == payloads.len();
@@ -312,10 +335,13 @@ impl SendTask {
             self.packets = self.packets.wrapping_add(1);
             self.octets = self.octets.wrapping_add(payload.len() as u32);
             if lock(&self.crypt).seal(&mut self.pkt, clear).is_ok() {
-                let _ = self.sock.send(&self.pkt).await;
+                sent &= self.sock.send(&self.pkt).await.is_ok();
+            } else {
+                sent = false;
             }
         }
-        true
+        self.wait_keyframe = !sent;
+        sent
     }
 
     /// Sender Report for my video (wallclock to RTP timestamp, counts), sealed; none before the
@@ -425,6 +451,23 @@ mod tests {
         let (tx, frames) = mpsc::channel(ENCODED_QUEUE);
         let keyframe = Arc::new(AtomicBool::new(false));
         (tx, keyframe.clone(), VideoSend { kind: StreamKind::Camera, limits: SendLimits::CAMERA, frames, keyframe })
+    }
+
+    #[test]
+    fn watching_audio_keeps_the_subscription_when_video_is_hidden() {
+        let key = "call:4:5".to_owned();
+        let rx = VideoRx::new(Arc::default(), sink().0, Some(key.clone()));
+        let mut conn = VideoConn::new(VideoLink { kind: StreamKind::Screen, rx: rx.clone(), ctl: mpsc::unbounded_channel().1 });
+        conn.on_ready(&json!({"ssrc":1}));
+        conn.set_stream_audio(Id(6), Id(1), 88);
+        assert!(conn.wants().is_none());
+        conn.set_stream_audio(Id(5), Id(1), 77);
+        assert_eq!(conn.wants(), Some(op15_payload(&[77])));
+        let key = VideoKey::Stream(key);
+        rx.set_wanted(&key, true);
+        assert_eq!(conn.on_op12(&json!({"user_id":"5","video_ssrc":9})), Some(op15_payload(&[9, 77])));
+        rx.set_wanted(&key, false);
+        assert_eq!(conn.wants(), Some(op15_payload(&[77])));
     }
 
     #[test]

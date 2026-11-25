@@ -64,6 +64,13 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
                 cx.view.toast(format!("Could not save settings: {error}"), true);
             }
         }
+        if ui.add_enabled_ui(cx.settings.pulse_sync_rpc, |ui| super::switch_row(
+            ui, cx.theme, "Share PulseSync activity",
+            Some("Share your track and artist on Discord while activity sharing is enabled."),
+            &mut cx.settings.share_pulse_sync,
+        )).inner && let Err(error) = cx.settings.save() {
+            cx.view.toast(format!("Could not save settings: {error}"), true);
+        }
     }
     let on = crate::activity::sharing(cx.state);
     let text = if on { "Others see the game you play while Share detected activity is on." } else { "Share detected activity is off: nobody sees your game." };

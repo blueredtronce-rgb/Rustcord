@@ -131,6 +131,7 @@ enum Msg {
     Devices { input: Option<String>, output: Option<String> },
     Mode(InputMode),
     NoiseSuppression(NoiseSuppression),
+    Volume { mic: u8, playback: u8 },
     ListDevices,
     Video(video::VideoCommand),
     /// From tasks and threads of `video::stream::Video`.
@@ -191,6 +192,10 @@ impl VoiceManager {
 
     pub fn set_noise_suppression(&self, mode: NoiseSuppression) {
         self.post(Msg::NoiseSuppression(mode));
+    }
+
+    pub fn set_volume(&self, mic: u8, playback: u8) {
+        self.post(Msg::Volume { mic, playback });
     }
 
     /// Answered with `VoiceEvent::Devices`.
@@ -354,6 +359,10 @@ impl Manager {
                 self.prefs.noise_suppression = mode;
                 self.apply_audio();
             }
+            Msg::Volume { mic, playback } => {
+                self.prefs.gain = audio::Gain { mic: mic.min(100), playback: playback.min(100) };
+                self.apply_audio();
+            }
             Msg::ListDevices => {
                 let events = self.events.clone();
                 // cpal enumeration blocks (WASAPI COM calls).
@@ -364,7 +373,7 @@ impl Manager {
             }
             Msg::Video(cmd) => self.with_video(|v, ctx| v.command(cmd, ctx)),
             Msg::Stream(msg) => self.with_video(|v, ctx| v.on_msg(msg, ctx)),
-            Msg::Gateway(ev @ (GatewayEvent::StreamCreate { .. } | GatewayEvent::StreamServerUpdate { .. } | GatewayEvent::StreamDelete { .. })) => {
+            Msg::Gateway(ev @ (GatewayEvent::StreamCreate { .. } | GatewayEvent::StreamUpdate { .. } | GatewayEvent::StreamServerUpdate { .. } | GatewayEvent::StreamDelete { .. })) => {
                 self.with_video(|v, ctx| v.on_gateway(ev, ctx));
             }
             Msg::Gateway(GatewayEvent::VoiceStateUpdate(v)) => self.on_my_state(*v),

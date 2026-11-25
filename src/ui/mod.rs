@@ -532,7 +532,13 @@ impl RustcordApp {
                     }
                 }
                 // Game detection, added games, app icons (crate::activity).
-                BackendEvent::Activity(ev) => self.state.activity.apply(ev),
+                BackendEvent::Activity(ev) => {
+                    #[cfg(windows)]
+                    if matches!(&ev, crate::activity::ActivityEvent::PulseSync(_) | crate::activity::ActivityEvent::PulseCover(_)) {
+                        self.images.clear_pulse_cover();
+                    }
+                    self.state.activity.apply(ev);
+                }
                 // Quests page; a video progress answer goes on to the video modal's session.
                 BackendEvent::Quests(ev) => {
                     if let Some((quest_id, ok)) = self.state.quests.apply(ev) {
@@ -861,7 +867,7 @@ impl eframe::App for RustcordApp {
             // Plugins (CustomIdle): auto-idle, also while minimized.
             crate::plugins::idle::logic(ctx, &self.state, &self.backend.cmd);
             // My detected game in op 3 (while shared), batched app-icon requests.
-            crate::activity::logic(&mut self.state, &self.backend.cmd);
+            crate::activity::logic(&mut self.state, &self.backend.cmd, self.settings.share_pulse_sync);
             // A quest video the user started plays on and reports progress, also minimized.
             quests::logic(ctx, &mut self.state, &mut self.view, &self.backend.cmd);
             // Like messages: not in Do Not Disturb, only with desktop notifications on, and the

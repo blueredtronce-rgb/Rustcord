@@ -71,6 +71,9 @@ pub struct AddedGame {
 pub enum ActivityCommand {
     /// My game in op 3 (None: no game), keeping my status and custom status.
     SetGame(Option<GameActivity>),
+    SetListening(Option<Activity>),
+    #[cfg(windows)]
+    ProxyPulseCover(String),
     /// `GET /applications/public` for these ids (≤ 25) -> `ActivityEvent::Apps`.
     FetchApps(Vec<Id>),
     /// Save my added games (local only) and scan again.
@@ -83,6 +86,10 @@ pub enum ActivityCommand {
 pub enum ActivityEvent {
     #[cfg(windows)]
     PulseSync(Option<Activity>),
+    #[cfg(windows)]
+    PulseCover(Arc<egui::ColorImage>),
+    #[cfg(windows)]
+    PulseCoverProxy { original: String, asset: Option<String> },
     /// The games list (from disk, or fetched).
     Table(Arc<Table>),
     /// The game I am playing changed.
@@ -99,6 +106,10 @@ pub enum ActivityEvent {
 pub struct ActivityState {
     #[cfg(windows)]
     pub pulse_sync: Option<Activity>,
+    #[cfg(windows)]
+    pub pulse_cover: Option<Arc<egui::ColorImage>>,
+    #[cfg(windows)]
+    pulse_cover_proxy: Option<(String, Option<String>)>,
     pub table: Option<Arc<Table>>,
     /// The game running now (shared or not).
     pub detected: Option<GameActivity>,
@@ -111,13 +122,31 @@ pub struct ActivityState {
     wanted: Vec<Id>,
     /// The game my session's presence carries (the last `SetGame`).
     sent: Option<GameActivity>,
+    sent_listening: Option<Activity>,
+    listening_dirty: bool,
+    listening_shared: bool,
 }
 
 impl ActivityState {
     pub fn apply(&mut self, ev: ActivityEvent) {
         match ev {
             #[cfg(windows)]
-            ActivityEvent::PulseSync(activity) => self.pulse_sync = activity,
+            ActivityEvent::PulseSync(activity) => {
+                if self.pulse_sync != activity {
+                    self.pulse_cover = None;
+                    self.listening_dirty = true;
+                }
+                self.pulse_sync = activity;
+            }
+            #[cfg(windows)]
+            ActivityEvent::PulseCover(cover) => self.pulse_cover = Some(cover),
+            #[cfg(windows)]
+            ActivityEvent::PulseCoverProxy { original, asset } => {
+                if let Some((url, proxy)) = self.pulse_cover_proxy.as_mut() && *url == original {
+                    *proxy = asset;
+                    self.listening_dirty = true;
+                }
+            }
             ActivityEvent::Table(t) => self.table = Some(t),
             ActivityEvent::Detected(g) => self.detected = g,
             ActivityEvent::Added(a) => self.added = a,
@@ -138,6 +167,9 @@ impl ActivityState {
             table: self.table, detected: self.detected, added: self.added,
             #[cfg(windows)]
             pulse_sync: self.pulse_sync,
+            #[cfg(windows)]
+            pulse_cover: self.pulse_cover,
+            listening_dirty: true,
             ..Default::default()
         }
     }
@@ -190,6 +222,12 @@ fn online(state: &AppState) -> bool {
 /// else its application's icon; None = draw the type icon. An unknown application is asked
 /// for once (batched by `logic` on the next frame).
 pub fn art_url(ctx: &egui::Context, state: &mut AppState, a: &Activity, px: u32) -> Option<String> {
+    #[cfg(windows)]
+    if state.activity.pulse_sync.as_ref() == Some(a)
+        && let Some(url) = a.rich.as_ref().and_then(|r| r.large_image.as_ref()).filter(|url| pulse_rpc::cover_url(url))
+    {
+        return Some(url.clone());
+    }
     if let Some(url) = cdn::activity_image_url(a, false, px) {
         return Some(url);
     }
@@ -204,7 +242,7 @@ pub fn art_url(ctx: &egui::Context, state: &mut AppState, a: &Activity, px: u32)
 
 /// Each frame (`App::logic`, also while minimized), only while connected (READY's settings are
 /// in by then): one op 3 when the game to share changed, and the batched app-icon request.
-pub fn logic(state: &mut AppState, cmd: &CommandSender) {
+pub fn logic(state: &mut AppState, cmd: &CommandSender, share_listening: bool) {
     if !online(state) {
         return;
     }
@@ -213,6 +251,22 @@ pub fn logic(state: &mut AppState, cmd: &CommandSender) {
         state.activity.sent = want.clone();
         cmd.send(Command::Activity(ActivityCommand::SetGame(want)));
     }
+    let allow_listening = share_listening && sharing(state);
+    let activity = &mut state.activity;
+    let dirty = std::mem::take(&mut activity.listening_dirty);
+    if dirty || allow_listening != activity.listening_shared {
+        activity.listening_shared = allow_listening;
+        let listening: Option<Activity> = if allow_listening {
+            #[cfg(windows)]
+            { listening_activity(activity, cmd) }
+            #[cfg(not(windows))]
+            { None }
+        } else { None };
+        if listening != activity.sent_listening {
+            activity.sent_listening = listening.clone();
+            cmd.send(Command::Activity(ActivityCommand::SetListening(listening)));
+        }
+    }
     let a = &mut state.activity;
     if !a.wanted.is_empty() {
         let ids: Vec<Id> = a.wanted.drain(..a.wanted.len().min(crate::api::apps::MAX_APP_IDS)).collect();
@@ -220,6 +274,21 @@ pub fn logic(state: &mut AppState, cmd: &CommandSender) {
         a.icons.extend(ids.iter().map(|&id| (id, None)));
         cmd.send(Command::Activity(ActivityCommand::FetchApps(ids)));
     }
+}
+
+#[cfg(windows)]
+fn listening_activity(state: &mut ActivityState, cmd: &CommandSender) -> Option<Activity> {
+    let mut activity = state.pulse_sync.clone()?;
+    if let Some(rich) = &mut activity.rich
+        && let Some(url) = rich.large_image.as_ref().filter(|url| pulse_rpc::cover_url(url))
+    {
+        if state.pulse_cover_proxy.as_ref().is_none_or(|(asked, _)| asked != url) {
+            state.pulse_cover_proxy = Some((url.clone(), None));
+            cmd.send(Command::Activity(ActivityCommand::ProxyPulseCover(url.clone())));
+        }
+        rich.large_image = state.pulse_cover_proxy.as_ref().and_then(|(_, asset)| asset.clone());
+    }
+    Some(activity)
 }
 
 #[cfg(test)]
@@ -231,6 +300,26 @@ mod tests {
         std::iter::from_fn(|| rx.try_recv().ok()).map(|c| format!("{c:?}")).collect()
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn pulse_sync_is_only_published_with_both_sharing_controls() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cmd = CommandSender(tx);
+        let mut s = AppState::default();
+        s.conn = ConnState::Connected;
+        let activity = Activity { kind: 2, name: "Yandex Music".into(), rich: Some(Box::new(RichPresence {
+            details: Some("Track".into()), application_id: Some(Id(1124055337234858005)), ..Default::default()
+        })) };
+        s.activity.apply(ActivityEvent::PulseSync(Some(activity.clone())));
+        logic(&mut s, &cmd, false);
+        assert!(sent(&mut rx).is_empty());
+        logic(&mut s, &cmd, true);
+        assert!(matches!(rx.try_recv(), Ok(Command::Activity(ActivityCommand::SetListening(Some(a)))) if a == activity));
+        s.account.settings.set_local(11, &[(vec![3], SettingValue::Wrapped(0))]);
+        logic(&mut s, &cmd, true);
+        assert!(matches!(rx.try_recv(), Ok(Command::Activity(ActivityCommand::SetListening(None)))));
+    }
+
     #[test]
     fn op3_once_per_change_and_only_while_shared() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -238,28 +327,28 @@ mod tests {
         let mut s = AppState::default();
         let game = GameActivity { name: "Factorio".into(), application_id: Some(Id(7)), start_ms: 5 };
         s.activity.apply(ActivityEvent::Detected(Some(game.clone())));
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert!(sent(&mut rx).is_empty(), "not connected: READY's settings may not be in");
         s.conn = ConnState::Connected;
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert_eq!(sent(&mut rx), [format!("{:?}", Command::Activity(ActivityCommand::SetGame(Some(game.clone()))))]);
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert!(sent(&mut rx).is_empty(), "no change, no op 3");
         // Sharing switched off: the game goes, once.
         s.account.settings.set_local(11, &[(vec![3], SettingValue::Wrapped(0))]);
         assert!(my_game(&s).is_none());
-        logic(&mut s, &cmd);
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
+        logic(&mut s, &cmd, false);
         assert_eq!(sent(&mut rx), ["Activity(SetGame(None))"]);
         // While off, a new game sends nothing.
         s.activity.apply(ActivityEvent::Detected(Some(GameActivity { name: "Celeste".into(), ..game })));
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert!(sent(&mut rx).is_empty());
         // A new login starts without a game: sent again once sharing is on.
         s.account.settings.set_local(11, &[(vec![3], SettingValue::Wrapped(1))]);
         s.activity = std::mem::take(&mut s.activity).after_logout();
         assert!(s.activity.table.is_none() && s.activity.detected.is_some());
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert_eq!(sent(&mut rx).len(), 1);
     }
 
@@ -274,12 +363,12 @@ mod tests {
         for id in [1, 2, 1, 3, 2] {
             assert_eq!(art_url(&ctx, &mut s, &game(id), 64), None);
         }
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert_eq!(sent(&mut rx), ["Activity(FetchApps([1, 2, 3]))"]);
         for id in [1, 2, 3] {
             assert_eq!(art_url(&ctx, &mut s, &game(id), 64), None);
         }
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert!(sent(&mut rx).is_empty(), "asked: not again, even before the answer");
         s.activity.apply(ActivityEvent::Apps(vec![(Id(1), Some("abc".into())), (Id(2), None)]));
         assert_eq!(art_url(&ctx, &mut s, &game(1), 64).as_deref(), Some("https://cdn.discordapp.com/app-icons/1/abc.png?size=64"));
@@ -294,7 +383,7 @@ mod tests {
         s.conn = ConnState::Offline;
         assert_eq!(art_url(&ctx, &mut s, &game(5), 64), None);
         s.conn = ConnState::Connected;
-        logic(&mut s, &cmd);
+        logic(&mut s, &cmd, false);
         assert!(sent(&mut rx).is_empty());
     }
 }

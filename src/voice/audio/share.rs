@@ -184,7 +184,9 @@ fn run(
         client.SetEventHandle(ready.0)?;
     }
     let capture: IAudioCaptureClient = unsafe { client.GetService()? };
-    let mut pcm = Vec::with_capacity(unsafe { client.GetBufferSize()? } as usize * CHANNELS);
+    // The virtual loopback device can report invalid endpoint capacity. Size this scratch
+    // buffer for the usual packet and use the actual packet size when draining.
+    let mut pcm = Vec::with_capacity(FRAME_SAMPLES * CHANNELS);
     let mut pack = StereoFrames::new().map_err(|e| Error::new(E_FAIL, e))?;
     unsafe { client.Start()? };
     let handles = [stop.0, ready.0];
@@ -197,6 +199,10 @@ fn run(
         while unsafe { capture.GetNextPacketSize()? } != 0 {
             let (mut data, mut frames, mut flags) = (std::ptr::null_mut(), 0, 0);
             unsafe { capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)? };
+            if frames > SAMPLE_RATE {
+                unsafe { capture.ReleaseBuffer(frames)? };
+                return Err(Error::new(E_FAIL, "Unexpectedly large screen audio packet"));
+            }
             let samples = frames as usize * CHANNELS;
             pcm.clear();
             if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {

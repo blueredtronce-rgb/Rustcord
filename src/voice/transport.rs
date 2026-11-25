@@ -22,6 +22,7 @@ mod video;
 
 use self::packet::{Crypt, Mode, OPUS_PT, RTP_HEADER, RtpHeader, discovery_request, parse_discovery, parse_rtp, uuid_v4, write_rtp_header};
 use super::audio::{Captured, FRAME_SAMPLES, MediaLink, Playback, SAMPLE_RATE};
+use super::video::trace::Trace;
 use super::dave::{self, Dave, Reply};
 use super::video::{H264_PT, H264_RTX_PT, StreamKind, VideoCtl, VideoLink, receive::VideoRx};
 use crate::api::props::ClientProps;
@@ -339,6 +340,10 @@ impl Conn {
                 }
                 if let Some(s) = data::<Speaking>(text) {
                     lock(&self.users).insert(s.ssrc, s.user_id);
+                    if let Some(v) = &mut self.video {
+                        v.set_stream_audio(s.user_id, self.info.user_id, s.ssrc);
+                        if let Some(wants) = v.wants() { send(ws, wants).await?; }
+                    }
                 }
             }
             6 => self.acked = true,
@@ -369,6 +374,7 @@ impl Conn {
                     lock(&self.dave).on_client_disconnect(user_id);
                     if let Some(v) = &mut self.video {
                         v.on_client_disconnect(user_id);
+                        if let Some(wants) = v.wants() { send(ws, wants).await?; }
                     }
                     lock(&self.users).retain(|&ssrc, user| {
                         let gone = *user == user_id;
@@ -392,6 +398,7 @@ impl Conn {
                         d["audio_ssrc"].as_u64().and_then(|ssrc| u32::try_from(ssrc).ok()).filter(|&ssrc| ssrc != 0),
                     ) {
                         lock(&self.users).insert(ssrc, user);
+                        v.set_stream_audio(user, self.info.user_id, ssrc);
                     }
                     if let Some(wants) = v.on_op12(&d) {
                         send(ws, wants).await?;
@@ -473,6 +480,7 @@ impl Conn {
             let on = *self.speaking.borrow();
             self.send_speaking(ws, on).await?;
         }
+        if let Some(wants) = self.video.as_mut().and_then(video::VideoConn::wants) { send(ws, wants).await?; }
         if let Some(connected) = self.connected.take() {
             connected();
         }
@@ -659,9 +667,10 @@ impl Receiver {
     async fn run(self) {
         let mut buf = vec![0u8; MTU];
         let mut held = Held::default();
+        let mut trace = self.stream_owner.and_then(|_| Trace::new("stream audio", &["rtp", "transport_open", "dave_open", "mixer_queue"]));
         loop {
             match self.sock.recv(&mut buf).await {
-                Ok(n) => self.on_packet(&mut buf[..n], &mut held),
+                Ok(n) => self.on_packet(&mut buf[..n], &mut held, trace.as_mut()),
                 // Windows reports an ICMP "port unreachable" as a recv error: keep going.
                 Err(_) => sleep(Duration::from_millis(20)).await,
             }
@@ -670,32 +679,41 @@ impl Receiver {
 
     /// Demux (§2.6): discovery and ping replies and RTCP fail `parse_rtp`; Opus is played, the
     /// rest goes to the video hooks.
-    fn on_packet(&self, pkt: &mut [u8], held: &mut Held) {
+    fn on_packet(&self, pkt: &mut [u8], held: &mut Held, mut trace: Option<&mut Trace>) {
+        if let Some(trace) = trace.as_deref_mut() { trace.flush(std::time::Instant::now()); }
         let rtp = parse_rtp(pkt);
-        let Some(h) = rtp.filter(|h| h.payload_type == OPUS_PT) else {
+        let Some(h) = rtp.filter(|h| h.payload_type == OPUS_PT || self.stream_owner.is_some_and(|owner| {
+            (96..=127).contains(&h.payload_type) && lock(&self.users).get(&h.ssrc) == Some(&owner)
+        })) else {
             if let Some(v) = &self.video {
                 video::on_packet(v, &self.crypt, pkt, rtp.as_ref());
             }
             return;
         };
+        if let Some(trace) = trace.as_deref_mut() { trace.record(0, Duration::ZERO); }
         let Some(plain) = lock(&self.crypt).open(pkt, h.clear_len) else { return };
         let Some(frame) = h.payload(plain) else { return };
+        if let Some(trace) = trace.as_deref_mut() { trace.record(1, Duration::ZERO); }
         let now = std::time::Instant::now();
-        let user = lock(&self.users).get(&h.ssrc).copied().or(self.stream_owner);
+        let user = self.stream_owner.or_else(|| lock(&self.users).get(&h.ssrc).copied());
         match user {
             None => held.hold(now, h, frame),
             Some(user) => {
                 for (_, early, early_frame) in held.take(now, h.ssrc) {
-                    self.deliver(user, &early, &early_frame);
+                    self.deliver(user, &early, &early_frame, None);
                 }
-                self.deliver(user, &h, frame);
+                self.deliver(user, &h, frame, trace);
             }
         }
     }
 
-    fn deliver(&self, user: Id, h: &RtpHeader, frame: &[u8]) {
+    fn deliver(&self, user: Id, h: &RtpHeader, frame: &[u8], trace: Option<&mut Trace>) {
         let Some(opus) = lock(&self.dave).decrypt(user, frame) else { return };
-        self.playback.push(user, h.ssrc, h.seq, opus);
+        let queued = self.playback.push(user, h.ssrc, h.seq, opus);
+        if let Some(trace) = trace {
+            trace.record(2, Duration::ZERO);
+            if queued { trace.record(3, Duration::ZERO); }
+        }
     }
 }
 
@@ -999,15 +1017,20 @@ mod tests {
     /// jitter buffer -> Opus decode -> mixer.
     #[tokio::test]
     async fn media_loopback_plays_a_tone() {
-        media_loopback(None).await;
+        media_loopback(None, OPUS_PT).await;
     }
 
     #[tokio::test]
     async fn stream_loopback_plays_audio_without_a_speaking_event() {
-        media_loopback(Some(Id(5))).await;
+        media_loopback(Some(Id(5)), OPUS_PT).await;
     }
 
-    async fn media_loopback(stream_owner: Option<Id>) {
+    #[tokio::test]
+    async fn stream_loopback_accepts_an_announced_audio_ssrc_with_remapped_payload() {
+        media_loopback(Some(Id(5)), 111).await;
+    }
+
+    async fn media_loopback(stream_owner: Option<Id>, payload_type: u8) {
         use crate::voice::audio::{CAPTURE_QUEUE, StreamGain, test_hooks};
         let sfu = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut socks = Vec::new();
@@ -1021,7 +1044,10 @@ mod tests {
         let dave = Arc::new(Mutex::new(Dave::new(Id(1), Id(2))));
         let (playback, mut speaker) = test_hooks::speaker();
         let (playback, users) = match stream_owner {
-            Some(_) => (playback.for_stream(1, StreamGain::default()), HashMap::new()),
+            Some(owner) => {
+                let users = if payload_type == OPUS_PT { HashMap::new() } else { HashMap::from([(77, owner)]) };
+                (playback.for_stream(1, StreamGain::default()), users)
+            }
             None => (playback, HashMap::from([(77, Id(5))])),
         };
         let users = Arc::new(Mutex::new(users));
@@ -1039,10 +1065,21 @@ mod tests {
             frames.send(Captured::Frame(encode(&tone))).await.unwrap();
         }
         let (mut buf, mut relayed) = ([0u8; MTU], 0);
+        let inbound = crypt();
+        let rewritten = crypt();
         while relayed < FRAMES {
             let n = sfu.recv(&mut buf).await.unwrap();
             if buf[..4] != [0x13, 0x37, 0xCA, 0xFE] {
-                sfu.send_to(&buf[..n], rx_sock.local_addr().unwrap()).await.unwrap();
+                let target = rx_sock.local_addr().unwrap();
+                if payload_type == OPUS_PT {
+                    sfu.send_to(&buf[..n], target).await.unwrap();
+                } else {
+                    let mut packet = buf[..RTP_HEADER].to_vec();
+                    packet[1] = payload_type;
+                    packet.extend_from_slice(lock(&inbound).open(&mut buf[..n], RTP_HEADER).unwrap());
+                    lock(&rewritten).seal(&mut packet, RTP_HEADER).unwrap();
+                    sfu.send_to(&packet, target).await.unwrap();
+                }
                 relayed += 1;
             }
         }

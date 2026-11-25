@@ -376,7 +376,10 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
     if cx.state.voice.video.screen_share.is_some() {
         let w = live_pill(ui.painter(), pos2(x, cy), cx.theme.tokens().danger_fill);
         let pill = Rect::from_min_size(pos2(x, cy - 8.0), vec2(w, 16.0));
-        ui.interact(pill, ui.make_persistent_id("call_live"), Sense::hover()).on_hover_text("You are sharing your screen");
+        let resp = ui.interact(pill, ui.make_persistent_id("call_live"), Sense::click()).on_hover_text("Change stream source");
+        if cx.state.voice.video.share_source.is_some() && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            screen_share::open(cx);
+        }
     }
     let chat = cx.view.call_ui.chat;
     if stage_button(ui, toggle, "call_chat_toggle", Icon::Message, if chat { "Hide chat" } else { "Show chat" }, chat).clicked() {
@@ -573,6 +576,9 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
     if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
         cx.view.call_ui.focus = if focused { None } else { Some(t.key.clone()) };
     }
+    if t.mine && t.stream.is_some() {
+        share_preview_actions(ui, cx, rect);
+    }
     if let Some(key) = watch {
         let joining = cx.view.call_ui.watching.get(key);
         if let Some(Some(clicked)) = joining {
@@ -608,6 +614,45 @@ fn tile(ui: &mut egui::Ui, cx: &mut UiCx<'_>, t: &Tile, rect: Rect) {
             cx.cmd.send(video(VideoCommand::StopWatching { stream_key: key.clone() }));
         }
     }
+}
+
+fn share_preview_actions(ui: &mut egui::Ui, cx: &mut UiCx<'_>, tile: Rect) {
+    if tile.width() < 100.0 { return }
+    let viewers = &cx.state.voice.video.share_viewers;
+    let count = viewers.len();
+    let color = Color32::from_black_alpha(190);
+    let count_text = count.to_string();
+    let width = 28.0 + 8.0 * count_text.len() as f32;
+    let rect = Rect::from_min_size(pos2(tile.right() - width - 8.0, tile.top() + 8.0), vec2(width, 28.0));
+    let button = ui.interact(rect, ui.make_persistent_id("share_viewers"), Sense::click())
+        .on_hover_text("Stream viewers").on_hover_cursor(CursorIcon::PointingHand);
+    button.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("Viewers: {count}")));
+    let p = ui.painter();
+    p.rect_filled(rect, 6, color);
+    icons::paint(p, Icon::Eye, Rect::from_center_size(pos2(rect.left() + 12.0, rect.center().y), Vec2::splat(16.0)), FG, color);
+    p.text(pos2(rect.left() + 24.0, rect.center().y), egui::Align2::LEFT_CENTER, count_text, egui::FontId::proportional(12.0), FG);
+    let mut switch = false;
+    egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(152.0);
+        ui.label(egui::RichText::new("Stream viewers").strong());
+        if viewers.is_empty() {
+            ui.label("No viewers yet");
+        } else {
+            let guild = cx.state.voice.channel_id.and_then(|id| cx.state.channels.get(&id)).and_then(|c| c.guild_id);
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                for id in viewers {
+                    let name = cx.state.users.get(id).map(|u| cx.state.member_display_name(guild, u, None)).unwrap_or_else(|| "Unknown user".into());
+                    ui.label(name);
+                }
+            });
+        }
+        if cx.state.voice.video.share_source.is_some() {
+            ui.separator();
+            switch = ui.button("Change source…").clicked();
+            if switch { ui.close(); }
+        }
+    });
+    if switch { screen_share::open(cx); }
 }
 
 /// Bottom-left label: mute / deafen marks (red when by a moderator), the name, LIVE or a muted
@@ -746,7 +791,11 @@ fn controls(ui: &mut egui::Ui, cx: &mut UiCx<'_>, bar: Rect) {
     let mut clicked = None;
     for (i, b) in buttons.iter().enumerate() {
         let rect = Rect::from_min_size(pos2(x, bar.center().y - 24.0 * s), vec2(widths[i], 48.0 * s));
-        if b.show(ui, rect, 24.0 * s, &format!("call_control_{i}"), colors).clicked() {
+        let button = b.show(ui, rect, 24.0 * s, &format!("call_control_{i}"), colors);
+        if matches!(i, 2 | 3) {
+            super::sidebar::voice_context_menu(cx, &button, i == 3);
+        }
+        if button.clicked() {
             clicked = Some(i);
         }
         if outline {

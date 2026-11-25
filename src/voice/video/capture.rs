@@ -20,6 +20,7 @@ mod camera;
 mod screen;
 
 use super::codec::{self, Encoder, I420};
+use super::trace::Trace;
 use super::{CameraInfo, ENCODED_QUEUE, EncodedFrame, FrameWriter, MonitorInfo, RawFrame, ScreenSource, SendLimits, StreamKind, VideoSend, WindowInfo, lock};
 use openh264::formats::YUVSource;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,7 +85,13 @@ pub struct Sending {
     _stop: std_mpsc::Sender<()>,
     /// Set on drop, before `_stop` disconnects: the pipeline hands out no frame after it.
     stopped: Arc<AtomicBool>,
-    preview: Arc<Mutex<Option<FrameWriter>>>,
+    preview: Arc<Mutex<Preview>>,
+}
+
+#[derive(Default)]
+struct Preview {
+    writer: Option<FrameWriter>,
+    refresh: bool,
 }
 
 impl Drop for Sending {
@@ -96,7 +103,7 @@ impl Drop for Sending {
 impl Sending {
     /// Also write each (scaled) frame to my own preview tile, or stop doing so (`None`).
     pub fn set_preview(&self, preview: Option<FrameWriter>) {
-        *lock(&self.preview) = preview;
+        *lock(&self.preview) = Preview { refresh: preview.is_some(), writer: preview };
     }
 }
 
@@ -104,10 +111,10 @@ impl Sending {
 /// transport half; opening the device happens on the thread. When capture stops by itself
 /// (no such camera, device unplugged, window closed) the thread calls `failed` once with
 /// user-facing text and ends; the manager then turns the video off and tells the UI.
-pub fn start(source: Source, limits: SendLimits, failed: impl FnOnce(String) + Send + 'static) -> Result<(Sending, VideoSend), String> {
+pub fn start(source: Source, limits: SendLimits, ready: Option<Box<dyn FnOnce() + Send>>, failed: impl FnOnce(String) + Send + 'static) -> Result<(Sending, VideoSend), String> {
     #[cfg(not(windows))]
     {
-        let _ = (source, limits, failed);
+        let _ = (source, limits, ready, failed);
         Err(UNSUPPORTED.into())
     }
     #[cfg(windows)]
@@ -118,10 +125,11 @@ pub fn start(source: Source, limits: SendLimits, failed: impl FnOnce(String) + S
         };
         let (tx, frames) = mpsc::channel(ENCODED_QUEUE);
         let keyframe = Arc::new(AtomicBool::new(false));
-        let preview = Arc::new(Mutex::new(None));
+        let preview = Arc::new(Mutex::new(Preview::default()));
         let (stop_tx, stop_rx) = std_mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
-        let pipe = Pipeline::new(limits, kind, tx, keyframe.clone(), preview.clone(), stopped.clone());
+        let mut pipe = Pipeline::new(limits, kind, tx, keyframe.clone(), preview.clone(), stopped.clone());
+        pipe.ready = ready;
         let stop = Stop(stop_rx, stopped.clone());
         std::thread::Builder::new()
             .name("rustcord-video-tx".into())
@@ -188,7 +196,10 @@ struct Pipeline {
     pacer: Pacer,
     tx: mpsc::Sender<EncodedFrame>,
     keyframe: Arc<AtomicBool>,
-    preview: Arc<Mutex<Option<FrameWriter>>>,
+    preview: Arc<Mutex<Preview>>,
+    ready: Option<Box<dyn FnOnce() + Send>>,
+    next_preview: Option<Instant>,
+    trace: Option<Trace>,
     /// The encoder and the last converted picture (send size), from the first frame on.
     enc: Option<(Encoder, I420)>,
     /// A different send size than the encoder's and since when frames have it (`RESIZE_SETTLE`).
@@ -204,11 +215,12 @@ impl Pipeline {
         kind: StreamKind,
         tx: mpsc::Sender<EncodedFrame>,
         keyframe: Arc<AtomicBool>,
-        preview: Arc<Mutex<Option<FrameWriter>>>,
+        preview: Arc<Mutex<Preview>>,
         stopped: Arc<AtomicBool>,
     ) -> Pipeline {
         let screen = kind == StreamKind::Screen;
-        Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, enc: None, pending_size: None, last_encoded: None, stopped }
+        let trace = screen.then(|| Trace::new("capture", &["arrived", "gpu_readback", "cpu_readback", "converted", "encoded", "queue_full"])).flatten();
+        Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, ready: None, next_preview: None, trace, enc: None, pending_size: None, last_encoded: None, stopped }
     }
 
     /// The transport is gone or the user stopped this capture.
@@ -222,7 +234,13 @@ impl Pipeline {
         if self.closed() {
             return Err(CLOSED.into());
         }
-        Ok(self.tx.capacity() > 0 && self.pacer.due(now))
+        let room = self.tx.capacity() > 0;
+        if let Some(trace) = &mut self.trace {
+            trace.flush(now);
+            trace.record(0, Duration::ZERO);
+            if !room { trace.record(5, Duration::ZERO); }
+        }
+        Ok(room && self.pacer.due(now))
     }
 
     /// A frame `due` accepted.
@@ -247,13 +265,27 @@ impl Pipeline {
             self.pending_size = None;
         }
         let Some((_, picture)) = &mut self.enc else { return Ok(()) };
+        let at = self.trace.as_ref().map(|_| Instant::now());
         codec::to_i420(frame, picture); // stretched into the running size until a restart
+        if let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(3, at.elapsed()); }
+        self.encode(now)?;
+        self.draw_preview(now, false);
+        Ok(())
+    }
+
+    fn draw_preview(&mut self, now: Instant, idle: bool) {
+        if self.next_preview.is_some_and(|next| now < next) { return }
+        let Some((_, picture)) = self.enc.as_ref() else { return };
         let (w, h) = picture.dimensions();
         let (w, h) = (w as u32, h as u32);
-        if let Some(preview) = lock(&self.preview).as_ref() {
-            preview.write(w, h, |rgba| codec::i420_to_rgba(picture, (w, h), rgba));
+        let mut preview = lock(&self.preview);
+        if (!idle || preview.refresh) && let Some(writer) = preview.writer.as_ref()
+        {
+            let (w, h) = if self.screen { codec::fit_within(w, h, 640, 360) } else { (w, h) };
+            writer.write(w, h, |rgba| codec::i420_to_rgba(picture, (w, h), rgba));
+            preview.refresh = false;
+            self.next_preview = self.screen.then(|| now + Duration::from_millis(200));
         }
-        self.encode(now)
     }
 
     /// Screen share between frames: Windows only delivers changes, so on a static screen a
@@ -262,6 +294,8 @@ impl Pipeline {
         if self.closed() {
             return Err(CLOSED.into());
         }
+        self.draw_preview(now, true);
+        if let Some(trace) = &mut self.trace { trace.flush(now); }
         let idle = self.last_encoded.is_some_and(|t| now >= t + self.pacer.interval);
         if idle && self.keyframe.load(Ordering::Acquire) && self.tx.capacity() > 0 { self.encode(now) } else { Ok(()) }
     }
@@ -272,13 +306,19 @@ impl Pipeline {
         };
         let keyframe = self.keyframe.swap(false, Ordering::AcqRel);
         self.last_encoded = Some(now);
+        let at = self.trace.as_ref().map(|_| Instant::now());
         let encoded = encoder.encode(picture, keyframe, now)?;
+        if encoded.is_some() && let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(4, at.elapsed()); }
         if self.stopped.load(Ordering::Acquire) {
             return Err(CLOSED.into()); // stopped meanwhile: a frame captured after Stop is never sent
         }
         match encoded {
             Some(frame) => match self.tx.try_send(frame) {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let Some(ready) = self.ready.take() {
+                        ready();
+                    }
+                }
                 // A lost frame breaks the reference chain: the next one must be a keyframe.
                 Err(TrySendError::Full(_)) => self.keyframe.store(true, Ordering::Release),
                 Err(TrySendError::Closed(_)) => return Err(CLOSED.into()),
@@ -338,12 +378,12 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(ENCODED_QUEUE);
         let keyframe = Arc::new(AtomicBool::new(false));
-        let preview = Arc::new(Mutex::new(None));
+        let preview = Arc::new(Mutex::new(Preview::default()));
         let stopped = Arc::new(AtomicBool::new(false));
         let mut pipe = Pipeline::new(SendLimits::screen(10, 360), StreamKind::Screen, tx, keyframe.clone(), preview.clone(), stopped.clone());
         let frames = VideoFrames::default();
         let me = VideoKey::User(Id(1));
-        *lock(&preview) = frames.writer(me.clone());
+        lock(&preview).writer = frames.writer(me.clone());
 
         let data = vec![200u8; 1280 * 720 * 4];
         let frame = RawFrame { width: 1280, height: 720, stride: 1280 * 4, format: PixelFormat::Bgra, data: &data };

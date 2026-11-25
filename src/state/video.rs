@@ -3,7 +3,8 @@
 //!
 //! OWNERSHIP: contract owner of docs/VIDEO_DESIGN.md.
 
-use crate::voice::video::{CameraInfo, MonitorInfo, VideoEvent, VideoKey, WindowInfo};
+use crate::model::Id;
+use crate::voice::video::{CameraInfo, MonitorInfo, ShareSource, VideoEvent, VideoKey, WindowInfo};
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -11,6 +12,9 @@ pub struct VideoStatus {
     pub camera_on: bool,
     /// My Go Live's stream key while I share my screen.
     pub screen_share: Option<String>,
+    pub share_source: Option<ShareSource>,
+    /// Sorted IDs for the active share, shared by the call view and the overlay.
+    pub share_viewers: Vec<Id>,
     /// Go Live clicked, `ScreenShareStarted` not here yet (connecting can take ~10 s): the
     /// screen button is lit already, so a click cancels it (`sharing`).
     pub share_starting: bool,
@@ -32,8 +36,18 @@ impl VideoStatus {
         match ev {
             VideoEvent::CameraStarted => self.camera_on = true,
             VideoEvent::CameraStopped => self.camera_on = false,
-            VideoEvent::ScreenShareStarted { stream_key } => (self.screen_share, self.share_starting) = (Some(stream_key), false),
-            VideoEvent::ScreenShareStopped => (self.screen_share, self.share_starting) = (None, false),
+            VideoEvent::ScreenShareStarted { stream_key, source } => {
+                if self.screen_share.as_deref() != Some(&stream_key) {
+                    self.share_viewers.clear();
+                }
+                (self.screen_share, self.share_source, self.share_starting) = (Some(stream_key), Some(source), false);
+            }
+            VideoEvent::ScreenShareStopped => self.end_share(),
+            VideoEvent::StreamViewers { stream_key, viewer_ids } => {
+                if self.screen_share.as_deref() == Some(&stream_key) {
+                    self.share_viewers = viewer_ids;
+                }
+            }
             VideoEvent::Sources { monitors, windows } => (self.monitors, self.windows) = (monitors, windows),
             VideoEvent::Cameras(cameras) => self.cameras = cameras,
             VideoEvent::RemoteVideo { key, width, height } => _ = self.remote.insert(key, (width, height)),
@@ -49,9 +63,15 @@ impl VideoStatus {
     /// Out of voice: nothing of the call is on any more; the device lists stay.
     pub fn end_call(&mut self) {
         self.camera_on = false;
-        self.screen_share = None;
-        self.share_starting = false;
+        self.end_share();
         self.remote.clear();
+    }
+
+    fn end_share(&mut self) {
+        self.screen_share = None;
+        self.share_source = None;
+        self.share_starting = false;
+        self.share_viewers.clear();
     }
 
     /// Sharing or about to (the screen button is lit and stops it).
@@ -63,13 +83,17 @@ impl VideoStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Id;
+    use crate::voice::video::{ScreenSource, SendLimits};
+
+    fn source() -> ShareSource {
+        ShareSource { source: ScreenSource::Monitor(1), limits: SendLimits::screen(30, 720), audio: false }
+    }
 
     #[test]
     fn video_events_update_status() {
         let mut s = VideoStatus::default();
         assert_eq!(s.apply(VideoEvent::CameraStarted), None);
-        s.apply(VideoEvent::ScreenShareStarted { stream_key: "call:1:2".into() });
+        s.apply(VideoEvent::ScreenShareStarted { stream_key: "call:1:2".into(), source: source() });
         s.apply(VideoEvent::RemoteVideo { key: VideoKey::User(Id(5)), width: 0, height: 0 });
         s.apply(VideoEvent::RemoteVideo { key: VideoKey::User(Id(5)), width: 640, height: 360 });
         s.apply(VideoEvent::RemoteVideo { key: VideoKey::Stream("call:1:3".into()), width: 0, height: 0 });
@@ -88,10 +112,16 @@ mod tests {
         // A pending Go Live counts as sharing until it starts or stops.
         s.share_starting = true;
         assert!(s.sharing());
-        s.apply(VideoEvent::ScreenShareStarted { stream_key: "call:1:2".into() });
+        s.apply(VideoEvent::ScreenShareStarted { stream_key: "call:1:2".into(), source: source() });
+        s.apply(VideoEvent::StreamViewers { stream_key: "call:1:2".into(), viewer_ids: vec![Id(5)] });
+        let changed = ShareSource { source: ScreenSource::Monitor(2), ..source() };
+        s.apply(VideoEvent::ScreenShareStarted { stream_key: "call:1:2".into(), source: changed });
+        assert_eq!(s.share_viewers, [Id(5)]);
+        assert_eq!(s.share_source, Some(changed));
         assert!(!s.share_starting && s.sharing());
         s.apply(VideoEvent::ScreenShareStopped);
         assert!(!s.sharing());
+        assert!(s.share_viewers.is_empty());
         s.share_starting = true;
         s.end_call();
         assert!(!s.sharing());

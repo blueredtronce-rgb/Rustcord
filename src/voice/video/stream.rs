@@ -14,7 +14,9 @@
 
 use super::capture::{self, Sending, Source};
 use super::receive::VideoRx;
-use super::{FrameWriter, MAX_FRAME_SLOTS, ScreenSource, SendLimits, StreamKind, VideoCommand, VideoCtl, VideoEvent, VideoFrames, VideoKey, VideoLink};
+use super::{FrameWriter, MAX_FRAME_SLOTS, SendLimits, ShareSource, StreamKind, VideoCommand, VideoCtl, VideoEvent, VideoFrames, VideoKey, VideoLink, VideoSend};
+#[cfg(any(windows, test))]
+use super::ScreenSource;
 use crate::auth::Secret;
 use crate::gateway::{GatewayCommand, StreamOp};
 use crate::model::{GatewayEvent, Id};
@@ -38,6 +40,7 @@ const MAX_WATCHED: usize = 4;
 /// Remote videos shown (decoded) at once: every frame slot but my two previews'. More are refused.
 const MAX_REMOTE_SHOWN: usize = MAX_FRAME_SLOTS - 2;
 const NOT_IN_CALL: &str = "Join a voice channel first.";
+const SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Go Live stream key: `guild:{guild_id}:{channel_id}:{owner}`, or `call:{channel_id}:{owner}`
 /// for DM/group calls (VOICE_NOTES §5.4). The UI builds watch keys with it from voice states
@@ -84,6 +87,8 @@ pub(in crate::voice) enum StreamMsg {
     Timeout { stream_key: String, id: u64 },
     /// A capture stopped by itself (`capture::start`'s `failed`).
     CaptureFailed { kind: StreamKind, id: u64, reason: String },
+    SourceReady(u64),
+    SourceTimeout(u64),
 }
 
 /// Attempt and capture ids, unique for the process.
@@ -102,6 +107,12 @@ fn post(tx: &mpsc::WeakUnboundedSender<Msg>, msg: StreamMsg) {
 struct Capture {
     sending: Sending,
     id: u64,
+}
+
+struct PendingSource {
+    source: ShareSource,
+    capture: Capture,
+    send: VideoSend,
 }
 
 /// One Go Live (my screen share or a watched stream), from op 18/20 until it ends.
@@ -129,6 +140,7 @@ struct StreamConn {
     connected: bool,
     /// My screen (my own share, once connected).
     capture: Option<Capture>,
+    pending: Option<PendingSource>,
 }
 
 impl Drop for StreamConn {
@@ -173,10 +185,13 @@ impl GoLive {
 /// My screen share: its Go Live and what to capture.
 struct Share {
     live: GoLive,
-    source: ScreenSource,
-    limits: SendLimits,
-    #[cfg(windows)]
-    audio: bool,
+    source: ShareSource,
+    viewers: Vec<Id>,
+}
+
+#[cfg(windows)]
+fn same_audio_source(a: ScreenSource, b: ScreenSource) -> bool {
+    a == b || (!matches!(a, ScreenSource::Window(_)) && !matches!(b, ScreenSource::Window(_)))
 }
 
 /// Toast text for a STREAM_DELETE reason; None when I asked for it.
@@ -249,8 +264,9 @@ impl Video {
                 self.list(|| capture::list_screen_sources().map(|(monitors, windows)| VideoEvent::Sources { monitors, windows }));
             }
             VideoCommand::StartScreenShare { source, fps, max_height, audio } => {
-                self.start_share(source, SendLimits::screen(fps, max_height), audio, &ctx);
+                self.start_share(ShareSource { source, limits: SendLimits::screen(fps, max_height), audio }, &ctx);
             }
+            VideoCommand::SwitchScreenShare(source) => self.switch_source(source),
             VideoCommand::StopScreenShare => {
                 if let Some(key) = self.share.as_ref().map(|s| s.live.key.clone()) {
                     self.end_live(&key, &ctx, None, true);
@@ -275,10 +291,14 @@ impl Video {
     /// server update carries a token). Keys that are not mine or watched are ignored.
     pub(in crate::voice) fn on_gateway(&mut self, ev: GatewayEvent, ctx: Ctx) {
         match ev {
-            GatewayEvent::StreamCreate { stream_key, rtc_server_id, rtc_channel_id, .. } => {
+            GatewayEvent::StreamCreate { stream_key, rtc_server_id, rtc_channel_id, viewer_ids, .. } => {
+                self.update_viewers(&stream_key, viewer_ids, ctx.me);
                 let Some(live) = self.live_mut(&stream_key) else { return };
                 live.server = Some((rtc_server_id, rtc_channel_id));
                 self.try_connect(&stream_key, &ctx);
+            }
+            GatewayEvent::StreamUpdate { stream_key, viewer_ids: Some(viewers) } => {
+                self.update_viewers(&stream_key, viewers, ctx.me);
             }
             GatewayEvent::StreamServerUpdate { stream_key, endpoint, token } => {
                 let tx = self.tx.clone();
@@ -329,9 +349,23 @@ impl Video {
                 }
             }
             StreamMsg::CaptureFailed { kind: StreamKind::Screen, id, reason } => {
-                let capturing = |s: &&Share| s.live.conn.as_ref().and_then(|c| c.capture.as_ref()).is_some_and(|c| c.id == id);
-                if let Some(key) = self.share.as_ref().filter(capturing).map(|s| s.live.key.clone()) {
+                if self.take_pending(id).is_some() {
+                    self.error(reason);
+                } else if let Some(key) = self.share.as_ref()
+                    .filter(|s| s.live.conn.as_ref().and_then(|c| c.capture.as_ref()).is_some_and(|c| c.id == id))
+                    .map(|s| s.live.key.clone())
+                {
                     self.end_live(&key, &ctx, Some(reason), true);
+                }
+            }
+            StreamMsg::SourceReady(id) => {
+                if let Some(source) = self.take_pending(id) {
+                    self.attach_source(source);
+                }
+            }
+            StreamMsg::SourceTimeout(id) => {
+                if self.take_pending(id).is_some() {
+                    self.error("The new source did not produce a frame. Your current source is still sharing.");
                 }
             }
         }
@@ -402,7 +436,7 @@ impl Video {
         self.stop_camera(ctx.me, None); // another device: off, then on
         let (id, tx) = (next_id(), self.tx.clone());
         let failed = move |reason: String| post(&tx, StreamMsg::CaptureFailed { kind: StreamKind::Camera, id, reason });
-        match capture::start(Source::Camera { device }, SendLimits::CAMERA, failed) {
+        match capture::start(Source::Camera { device }, SendLimits::CAMERA, None, failed) {
             Ok((sending, send)) => {
                 let _ = ctl.send(VideoCtl::Send(send));
                 sending.set_preview(self.preview(&VideoKey::User(ctx.me)));
@@ -427,56 +461,103 @@ impl Video {
         self.send(VideoEvent::CameraStopped);
     }
 
-    fn start_share(&mut self, source: ScreenSource, limits: SendLimits, audio: bool, ctx: &Ctx) {
-        if audio && !cfg!(windows) {
+    fn start_share(&mut self, source: ShareSource, ctx: &Ctx) {
+        if source.audio && !cfg!(windows) {
             return self.error("Sharing application audio is only available on Windows.");
         }
         let (Some(gw), Some((guild_id, channel_id))) = (&ctx.gateway, ctx.call) else { return self.error(NOT_IN_CALL) };
-        if let Some(share) = &mut self.share {
-            // Another source while sharing: same stream, new capture.
-            (share.source, share.limits) = (source, limits);
-            #[cfg(windows)]
-            { share.audio = audio; }
-            return self.start_capture(ctx);
+        if self.share.is_some() {
+            return self.switch_source(source);
         }
         let key = stream_key(guild_id, channel_id, ctx.me);
         let _ = gw.send(GatewayCommand::Stream(StreamOp::Create { guild_id, channel_id }));
         // Other clients follow op 18 with "not paused" (whether it is needed is UNCONFIRMED).
         let _ = gw.send(GatewayCommand::Stream(StreamOp::SetPaused { stream_key: key.clone(), paused: false }));
         self.share = Some(Share {
-            live: GoLive::new(key, &self.tx), source, limits,
-            #[cfg(windows)]
-            audio,
+            live: GoLive::new(key, &self.tx), source, viewers: Vec::new(),
         });
     }
 
-    /// My share's connection is up or its source changed: (re)start the screen capture on it.
+    /// My share's connection is up: start capture on it.
     fn start_capture(&mut self, ctx: &Ctx) {
-        let Some(key) = self.share.as_ref().filter(|s| s.live.connected()).map(|s| s.live.key.clone()) else { return };
-        let preview = self.preview(&VideoKey::Stream(key.clone()));
+        let Some(share) = self.share.as_ref().filter(|s| s.live.connected()) else { return };
+        let (key, source) = (share.live.key.clone(), share.source);
+        match self.open_source(source, false) {
+            Ok(capture) => self.attach_source(capture),
+            Err(e) => self.end_live(&key, ctx, Some(e), true),
+        }
+    }
+
+    fn open_source(&self, source: ShareSource, switching: bool) -> Result<PendingSource, String> {
         let (id, tx) = (next_id(), self.tx.clone());
+        let ready = switching.then(|| {
+            let tx = tx.clone();
+            Box::new(move || post(&tx, StreamMsg::SourceReady(id))) as Box<dyn FnOnce() + Send>
+        });
         let failed = move |reason: String| post(&tx, StreamMsg::CaptureFailed { kind: StreamKind::Screen, id, reason });
+        let (sending, send) = capture::start(Source::Screen(source.source), source.limits, ready, failed)?;
+        Ok(PendingSource { source, capture: Capture { sending, id }, send })
+    }
+
+    fn switch_source(&mut self, source: ShareSource) {
+        let Some(share) = &mut self.share else { return };
+        let Some(conn) = share.live.conn.as_mut().filter(|c| c.connected && c.capture.is_some()) else { return };
+        conn.pending = None;
+        if share.source == source { return }
+        match self.open_source(source, true) {
+            Ok(pending) => {
+                let (tx, id) = (self.tx.clone(), pending.capture.id);
+                if let Some(conn) = self.share.as_mut().and_then(|s| s.live.conn.as_mut()) {
+                    conn.pending = Some(pending);
+                }
+                tokio::spawn(async move {
+                    tokio::time::sleep(SOURCE_TIMEOUT).await;
+                    post(&tx, StreamMsg::SourceTimeout(id));
+                });
+            }
+            Err(e) => self.error(e),
+        }
+    }
+
+    fn take_pending(&mut self, id: u64) -> Option<PendingSource> {
+        let conn = self.share.as_mut()?.live.conn.as_mut()?;
+        conn.pending.as_ref().filter(|p| p.capture.id == id)?;
+        conn.pending.take()
+    }
+
+    fn attach_source(&mut self, PendingSource { source, capture, send }: PendingSource) {
+        let Some(key) = self.share.as_ref().map(|s| s.live.key.clone()) else { return };
+        let preview = self.preview(&VideoKey::Stream(key.clone()));
         let Some(share) = &mut self.share else { return };
         let Some(conn) = &mut share.live.conn else { return };
-        conn.capture = None; // a new source replaces the running capture
+        if conn.ctl.send(VideoCtl::Send(send)).is_err() { return }
+        conn.capture = Some(capture);
+        if let Some(capture) = &conn.capture { capture.sending.set_preview(preview); }
         #[cfg(windows)]
-        { conn.audio = None; }
-        match capture::start(Source::Screen(share.source), share.limits, failed) {
-            Ok((sending, send)) => {
-                let _ = conn.ctl.send(VideoCtl::Send(send));
-                sending.set_preview(preview);
-                conn.capture = Some(Capture { sending, id });
-                #[cfg(windows)]
-                if share.audio {
-                    let events = self.events.clone();
-                    match ShareAudio::start(share.source, conn._audio_tx.clone(), move |error| events.send(VoiceEvent::Error(error))) {
-                        Ok(audio) => conn.audio = Some(audio),
-                        Err(error) => self.error(error),
-                    }
+        if !source.audio || !share.source.audio || !same_audio_source(share.source.source, source.source) || conn.audio.is_none() {
+            conn.audio = None;
+            if source.audio {
+                let events = self.events.clone();
+                match ShareAudio::start(source.source, conn._audio_tx.clone(), move |error| events.send(VoiceEvent::Error(error))) {
+                    Ok(audio) => conn.audio = Some(audio),
+                    Err(error) => self.events.send(VoiceEvent::Error(error)),
                 }
-                self.send(VideoEvent::ScreenShareStarted { stream_key: key });
             }
-            Err(e) => self.end_live(&key, ctx, Some(e), true),
+        }
+        share.source = source;
+        let viewers = share.viewers.clone();
+        self.send(VideoEvent::ScreenShareStarted { stream_key: key.clone(), source });
+        self.send(VideoEvent::StreamViewers { stream_key: key, viewer_ids: viewers });
+    }
+
+    fn update_viewers(&mut self, key: &str, mut viewers: Vec<Id>, me: Id) {
+        let Some(share) = self.share.as_mut().filter(|s| s.live.key == key) else { return };
+        viewers.retain(|id| !id.is_zero() && *id != me);
+        viewers.sort_unstable();
+        viewers.dedup();
+        if share.viewers != viewers {
+            share.viewers.clone_from(&viewers);
+            self.send(VideoEvent::StreamViewers { stream_key: key.into(), viewer_ids: viewers });
         }
     }
 
@@ -518,7 +599,7 @@ impl Video {
         let playback = playback.for_stream(live.id, live.gain.clone());
         let stop = spawn(tx, info, MediaLink { captured, playback }, key.to_owned(), live.id);
         live.conn = Some(StreamConn {
-            _stop: stop, _audio_tx: audio, ctl, rx, connected: false, capture: None,
+            _stop: stop, _audio_tx: audio, ctl, rx, connected: false, capture: None, pending: None,
             #[cfg(windows)]
             audio: None,
         });
@@ -727,9 +808,9 @@ mod tests {
             ops(&mut gw),
             [StreamOp::Create { guild_id: Some(Id(1)), channel_id: Id(2) }, StreamOp::SetPaused { stream_key: MINE.into(), paused: false }]
         );
-        assert_eq!(v.share.as_ref().map(|s| s.limits), Some(SendLimits::screen(30, 1080)));
+        assert_eq!(v.share.as_ref().map(|s| s.source.limits), Some(SendLimits::screen(30, 1080)));
         #[cfg(windows)]
-        assert!(v.share.as_ref().is_some_and(|s| s.audio));
+        assert!(v.share.as_ref().is_some_and(|s| s.source.audio));
         v.on_gateway(server(MINE, Some("127.0.0.1:9")), ctx(&gw_tx));
         v.on_gateway(create(KEY), ctx(&gw_tx));
         assert!(v.share.as_ref().unwrap().live.conn.is_none(), "waits for its own STREAM_CREATE");

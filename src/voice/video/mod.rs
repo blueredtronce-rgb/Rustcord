@@ -17,6 +17,7 @@ pub mod codec;
 pub mod receive;
 pub mod rtp_h264;
 pub mod stream;
+pub(crate) mod trace;
 
 use crate::model::{Id, null_default};
 use serde::Deserialize;
@@ -53,9 +54,10 @@ pub enum VideoCommand {
     /// Answered with `VideoEvent::Cameras`.
     ListCameras,
     /// Go Live in the connected call with a monitor or window from `ListScreenSources`.
-    /// `fps` is clamped to 1..=30, `max_height` to 360..=1080 (`SendLimits::screen`). `audio`
-    /// (application audio) is not supported yet: `true` is answered with `Error`.
+    /// `fps` is clamped to 1..=30 and `max_height` to 360..=1080 (`SendLimits::screen`).
     StartScreenShare { source: ScreenSource, fps: u8, max_height: u32, audio: bool },
+    /// Replace the capture in my active Go Live session.
+    SwitchScreenShare(ShareSource),
     /// Answered with `ScreenShareStopped` (nothing when not sharing).
     StopScreenShare,
     /// Answered with `VideoEvent::Sources`.
@@ -80,8 +82,9 @@ pub enum VideoEvent {
     /// Off: by the user, at the end of the call, or after an `Error` (camera unplugged …).
     CameraStopped,
     /// My Go Live is running under this stream key.
-    ScreenShareStarted { stream_key: String },
+    ScreenShareStarted { stream_key: String, source: ShareSource },
     ScreenShareStopped,
+    StreamViewers { stream_key: String, viewer_ids: Vec<Id> },
     /// Answer to `ListScreenSources`.
     Sources { monitors: Vec<MonitorInfo>, windows: Vec<WindowInfo> },
     /// Answer to `ListCameras`.
@@ -94,6 +97,13 @@ pub enum VideoEvent {
     RemoteVideoEnded { key: VideoKey },
     /// User-facing text for a toast (no secrets).
     Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShareSource {
+    pub source: ScreenSource,
+    pub limits: SendLimits,
+    pub audio: bool,
 }
 
 /// A screen-share source from `ListScreenSources`: the raw `HMONITOR` / `HWND` value, valid

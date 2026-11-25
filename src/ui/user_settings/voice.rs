@@ -52,6 +52,9 @@ pub(in crate::ui) fn restore(s: &Settings, cmd: &CommandSender) {
     if s.noise_suppression != NoiseSuppression::default() {
         cmd.send(Command::SetNoiseSuppression(s.noise_suppression));
     }
+    if (s.mic_volume, s.playback_volume) != (100, 100) {
+        cmd.send(Command::SetVoiceVolume { mic: s.mic_volume, playback: s.playback_volume });
+    }
 }
 
 /// The page. True when `Settings` should be saved now.

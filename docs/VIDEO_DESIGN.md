@@ -226,9 +226,14 @@ hand like `voice/mod.rs` does.
 ## UNCONFIRMED (VOICE_NOTES §5)
 `video: true` needed to receive; op 15 `any` semantics and the default without wants; mandatory
 video RTP extensions (transport-cc ID 5); PT rewriting per receiver; Go Live quality caps and
-preview cadence (`POST /streams/{key}/preview` is not implemented); STREAM_UPDATE (viewers,
-paused) is not handled.
+preview cadence (`POST /streams/{key}/preview` is not implemented). Viewer IDs come from
+`STREAM_CREATE` and `STREAM_UPDATE` and are cleared with the share.
 
 Go Live audio is opt-in on Windows. Window capture sends the selected process tree. Monitor
 capture sends the system mix excluding the Rustcord process tree. Both use WASAPI process
 loopback and send stereo Opus on the separate Go Live connection with the SOUNDSHARE flag.
+
+The local screen preview is capped at 640 × 360 and 5 FPS. An active share can change source
+after the replacement captures its first frame. A monitor-to-monitor switch reuses system audio.
+Set `RUSTCORD_TRACE_MEDIA` to a local file path before launching to record aggregate capture,
+readback, encoder, RTP send and stream audio receive rates. The log contains timing and counters.

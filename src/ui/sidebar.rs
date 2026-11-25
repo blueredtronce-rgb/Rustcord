@@ -1993,7 +1993,9 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
         cx.cmd.send(Command::ListVoiceDevices);
     }
     let more = if open { more } else { more.on_hover_text(label) };
-    device_menu(cx, &more.on_hover_cursor(egui::CursorIcon::PointingHand), output);
+    let more = more.on_hover_cursor(egui::CursorIcon::PointingHand);
+    device_menu(cx, egui::Popup::menu(&more).align(egui::RectAlign::TOP_START).gap(8.0), output);
+    voice_context_menu(cx, &resp, output);
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, slashed, tip));
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
@@ -2001,20 +2003,36 @@ fn voice_button(ui: &mut egui::Ui, cx: &mut UiCx<'_>, group: Rect, output: bool,
 /// The ∨ menu of the microphone / headphones (`output`): the devices of the last
 /// `ListVoiceDevices`, Default first and the pick ticked (a pick goes to the voice task and is
 /// saved, like on the Voice & Video page), then a link to that page.
-fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
+pub(super) fn voice_context_menu(cx: &mut UiCx<'_>, button: &egui::Response, output: bool) {
+    if button.secondary_clicked() {
+        cx.cmd.send(Command::ListVoiceDevices);
+    }
+    device_menu(cx, egui::Popup::context_menu(button), output);
+}
+
+fn device_menu(cx: &mut UiCx<'_>, popup: egui::Popup<'_>, output: bool) {
     let (text, muted) = (cx.theme.colors.text.to_color32(), cx.theme.colors.text_muted.to_color32());
     let (list, current) = if output { (&cx.state.voice.outputs, &cx.settings.voice_output) } else { (&cx.state.voice.inputs, &cx.settings.voice_input) };
     let (mut pick, mut page) = (None, false);
     let mut noise = cx.settings.noise_suppression;
-    egui::Popup::menu(chevron).align(egui::RectAlign::TOP_START).gap(8.0).show(|ui| {
+    let mut volume = if output { cx.settings.playback_volume } else { cx.settings.mic_volume };
+    let (mut volume_changed, mut save_volume) = (false, false);
+    popup.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         menu_setup(ui);
         ui.set_max_width(280.0);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let title = if output { "Output volume" } else { "Microphone volume" };
+        ui.label(egui::RichText::new(title).size(12.0).color(muted));
+        let slider = ui.add(egui::Slider::new(&mut volume, 0..=100).suffix("%"));
+        volume_changed = slider.changed();
+        save_volume = slider.drag_stopped() || (volume_changed && !slider.dragged());
+        ui.separator();
         ui.label(egui::RichText::new(if output { "Output device" } else { "Input device" }).size(12.0).color(muted));
         for name in std::iter::once(None).chain(list.iter().map(Some)) {
             let glyph = if current.as_ref() == name { "✔" } else { "" };
             if menu_item(ui, name.map_or("Default", String::as_str), MenuIcon::Glyph(glyph), text) {
                 pick = Some(name.cloned());
+                ui.close();
             }
         }
         if !output {
@@ -2024,12 +2042,18 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
                 let glyph = if noise == mode { "✔" } else { "" };
                 if menu_item(ui, mode.label(), MenuIcon::Glyph(glyph), text) {
                     noise = mode;
+                    ui.close();
                 }
             }
         }
         ui.separator();
         page = menu_item(ui, "Voice settings", MenuIcon::Glyph("⚙"), text);
+        if page { ui.close(); }
     });
+    if volume_changed {
+        *(if output { &mut cx.settings.playback_volume } else { &mut cx.settings.mic_volume }) = volume;
+        cx.cmd.send(Command::SetVoiceVolume { mic: cx.settings.mic_volume, playback: cx.settings.playback_volume });
+    }
     if let Some(name) = pick {
         *(if output { &mut cx.settings.voice_output } else { &mut cx.settings.voice_input }) = name;
         cx.cmd.send(Command::SetVoiceDevices { input: cx.settings.voice_input.clone(), output: cx.settings.voice_output.clone() });
@@ -2047,6 +2071,9 @@ fn device_menu(cx: &mut UiCx<'_>, chevron: &egui::Response, output: bool) {
     if page {
         cx.view.settings_page = super::user_settings::Page::VoiceVideo;
         cx.view.settings_open = true;
+    }
+    if save_volume && let Err(e) = cx.settings.save() {
+        cx.view.toast(format!("Could not save settings: {e}"), true);
     }
 }
 

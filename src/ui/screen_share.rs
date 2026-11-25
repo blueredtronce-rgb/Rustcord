@@ -9,7 +9,7 @@ use super::messages::{Pal, vector_button};
 use super::icons::{self, Icon};
 use super::{Modal, UiCx, dialog, dialog_buttons, one_line};
 use crate::backend::Command;
-use crate::voice::video::{ScreenSource, VideoCommand};
+use crate::voice::video::{ScreenSource, SendLimits, ShareSource, VideoCommand};
 use egui::{Color32, FontId, Rect, Role, Sense, Stroke, StrokeKind, Vec2, WidgetInfo, pos2, vec2};
 
 /// The picker's choices (`CallUi::share`), reset on every opening.
@@ -24,11 +24,27 @@ pub struct ShareForm {
     low_fps: bool,
     desktop_duplication: bool,
     audio: bool,
+    switching: bool,
 }
 
 /// Opens the picker and lists the screens and windows (local, no request).
 pub(super) fn open(cx: &mut UiCx<'_>) {
-    cx.view.call_ui.share = ShareForm::default();
+    cx.view.call_ui.share = cx.state.voice.video.share_source.map_or_else(ShareForm::default, |share| {
+        let desktop_duplication = matches!(share.source, ScreenSource::DesktopDuplication(_));
+        let pick = match share.source {
+            ScreenSource::DesktopDuplication(monitor) => ScreenSource::Monitor(monitor),
+            source => source,
+        };
+        ShareForm {
+            switching: true,
+            pick: Some(pick),
+            windows: matches!(pick, ScreenSource::Window(_)),
+            hd: share.limits.max_height > 720,
+            low_fps: share.limits.fps <= 15,
+            desktop_duplication,
+            audio: share.audio,
+        }
+    });
     cx.cmd.send(Command::Video(VideoCommand::ListScreenSources));
     cx.view.modal = Some(Modal::ScreenShare);
 }
@@ -46,7 +62,8 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
     let connected = cx.state.voice.connected;
     let f = &mut cx.view.call_ui.share;
     let mut refresh = false;
-    let resp = dialog(ctx, theme, "rc_screen_share", 602.0, "Share your screen", |ui| {
+    let (title, action) = if f.switching { ("Change stream source", "Switch source") } else { ("Share your screen", "Go live") };
+    let resp = dialog(ctx, theme, "rc_screen_share", 602.0, title, |ui| {
         ui.horizontal(|ui| {
             // Screens | Windows: the shared segmented control (§9).
             let mut windows = f.windows;
@@ -103,8 +120,8 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             ui.checkbox(&mut f.audio, label).on_hover_text(tip);
         }
         // A picked source must still be listed (⟳ may have dropped it).
-        let ok = connected && f.pick.is_some_and(|p| rows.iter().any(|r| r.0 == p));
-        dialog_buttons(ui, theme, "Go live", false, ok)
+        let ok = connected && (!f.switching || v.screen_share.is_some()) && f.pick.is_some_and(|p| rows.iter().any(|r| r.0 == p));
+        dialog_buttons(ui, theme, action, false, ok)
     });
     if refresh {
         cx.cmd.send(Command::Video(VideoCommand::ListScreenSources));
@@ -116,8 +133,13 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
                 source => source,
             };
             let (fps, max_height) = (if f.low_fps { 15 } else { 30 }, if f.hd { 1080 } else { 720 });
-            cx.cmd.send(Command::Video(VideoCommand::StartScreenShare { source, fps, max_height, audio: f.audio }));
-            cx.state.voice.video.share_starting = true;
+            let cmd = if f.switching {
+                VideoCommand::SwitchScreenShare(ShareSource { source, limits: SendLimits::screen(fps, max_height), audio: f.audio })
+            } else {
+                cx.state.voice.video.share_starting = true;
+                VideoCommand::StartScreenShare { source, fps, max_height, audio: f.audio }
+            };
+            cx.cmd.send(Command::Video(cmd));
             cx.view.modal = None;
         }
         Some(_) => cx.view.modal = None,

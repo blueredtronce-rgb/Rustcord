@@ -1849,8 +1849,9 @@ pub enum GatewayEvent {
     // ----- Go Live (VOICE_NOTES §5.4). The gateway routes these to the voice module only.
     /// STREAM_CREATE: my stream or one I watch got its RTC server (Identify `server_id` /
     /// `channel_id` of the stream connection; DAVE group `rtc_server_id - 1`).
-    #[allow(dead_code, reason = "viewer_ids and paused are for STREAM_UPDATE / viewer UI, not handled yet")]
+    #[allow(dead_code, reason = "paused describes stream signalling, no paused UI yet")]
     StreamCreate { stream_key: String, rtc_server_id: Id, rtc_channel_id: Option<Id>, viewer_ids: Vec<Id>, paused: bool },
+    StreamUpdate { stream_key: String, viewer_ids: Option<Vec<Id>> },
     /// STREAM_SERVER_UPDATE: the stream connection's voice server.
     StreamServerUpdate {
         stream_key: String,

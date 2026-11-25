@@ -168,6 +168,8 @@ pub(crate) fn cache_path(url: &str) -> PathBuf {
 /// https on a Discord CDN/media host, the GIF picker host (FEATURES_NOTES §1.8) or Spotify's
 /// album-art host only.
 pub(crate) fn host_allowed(url: &reqwest::Url) -> bool {
+    #[cfg(windows)]
+    if crate::activity::pulse_rpc::cover_host(url) { return true }
     url.scheme() == "https"
         && url.port().is_none()
         && url.host_str().is_some_and(|h| {

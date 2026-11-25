@@ -525,6 +525,7 @@ impl AppState {
             // Routed to the voice module by the gateway; nothing to keep here.
             GatewayEvent::VoiceServerUpdate { .. }
             | GatewayEvent::StreamCreate { .. }
+            | GatewayEvent::StreamUpdate { .. }
             | GatewayEvent::StreamServerUpdate { .. }
             | GatewayEvent::StreamDelete { .. } => return None,
             GatewayEvent::TypingStart { channel_id, user_id, member, .. } => {

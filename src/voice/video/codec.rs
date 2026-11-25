@@ -7,7 +7,7 @@
 //! Spec: VOICE_NOTES §5.1/§5.3, docs/VIDEO_DESIGN.md "Codec".
 
 use super::{EncodedFrame, FrameWriter, MAX_FRAME_SIZE, PixelFormat, RawFrame, SendLimits};
-use openh264::encoder::{BitRate, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, RateControlMode, UsageType};
+use openh264::encoder::{BitRate, Complexity, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, RateControlMode, UsageType};
 use openh264::formats::YUVSource;
 use openh264::{OpenH264API, Timestamp};
 use std::time::Instant;
@@ -87,6 +87,7 @@ impl Encoder {
         let config = EncoderConfig::new()
             .profile(Profile::Baseline)
             .usage_type(if screen { UsageType::ScreenContentRealTime } else { UsageType::CameraVideoRealTime })
+            .complexity(if screen { Complexity::Low } else { Complexity::Medium })
             .rate_control_mode(RateControlMode::Bitrate)
             .bitrate(BitRate::from_bps(limits.max_bitrate))
             .max_frame_rate(FrameRate::from_hz(fps as f32))
