@@ -8,6 +8,8 @@
 
 pub mod autocomplete;
 pub mod call;
+#[cfg(feature = "media-diagnostics")]
+mod stream_diagnostics;
 pub mod chrome;
 pub mod composer;
 pub mod cosmetics;
@@ -942,6 +944,8 @@ impl eframe::App for RustcordApp {
                 profile::show_popup(&ctx, &mut cx);
                 show_modals(&ctx, &mut cx);
                 viewer::end_frame(&ctx, &mut cx);
+                #[cfg(feature = "media-diagnostics")]
+                stream_diagnostics::show(&ctx, &mut cx);
                 crate::plugins::frame(&ctx, &mut cx);
                 dm_call::incoming(&ctx, &mut cx, accept);
             }

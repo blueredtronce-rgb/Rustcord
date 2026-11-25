@@ -66,6 +66,10 @@ pub struct CallUi {
     remote: usize,
     /// Texture and frame generation of each visible video.
     textures: HashMap<VideoKey, (u64, TextureHandle)>,
+    #[cfg(feature = "media-diagnostics")]
+    display_traces: HashMap<VideoKey, crate::voice::video::trace::Trace>,
+    #[cfg(feature = "media-diagnostics")]
+    pub(super) diagnostics_open: bool,
     /// `BackendHandle::video`, handed over by `sync` (a reset view gets it again).
     frames: Option<Arc<VideoFrames>>,
     /// Screen share picker form (screen_share.rs).
@@ -128,15 +132,23 @@ pub fn sync(view: &mut ViewState, state: &mut AppState, cmd: &CommandSender, fra
         ui.visible.remove(&key);
         want.remove(&key);
         ui.textures.remove(&key);
+        #[cfg(feature = "media-diagnostics")]
+        ui.display_traces.remove(&key);
     }
     for key in ui.visible.difference(&want) {
         cmd.send(video(VideoCommand::SetVideoVisible { key: key.clone(), visible: false }));
         ui.textures.remove(key);
+        #[cfg(feature = "media-diagnostics")]
+        ui.display_traces.remove(key);
     }
     for key in want.difference(&ui.visible) {
         cmd.send(video(VideoCommand::SetVideoVisible { key: key.clone(), visible: true }));
     }
     ui.visible = want;
+    #[cfg(feature = "media-diagnostics")]
+    for trace in ui.display_traces.values_mut() {
+        trace.flush(Instant::now());
+    }
     match state.voice.channel_id {
         // The call ended: the backend stopped everything.
         None => {
@@ -183,6 +195,8 @@ pub(super) fn paint_video(p: &egui::Painter, call: &mut CallUi, key: &VideoKey, 
     }
     // `latest` is None while a writer holds the slot: keep the last texture then.
     if let Some((generation, image)) = frames.latest(key) {
+        #[cfg(feature = "media-diagnostics")]
+        let previous = call.textures.get(key).map(|(generation, _)| *generation);
         match call.textures.get_mut(key) {
             Some((g, tex)) => {
                 if *g != generation {
@@ -193,6 +207,16 @@ pub(super) fn paint_video(p: &egui::Painter, call: &mut CallUi, key: &VideoKey, 
             None => {
                 let tex = p.ctx().load_texture("video", image, egui::TextureOptions::LINEAR);
                 call.textures.insert(key.clone(), (generation, tex));
+            }
+        }
+        #[cfg(feature = "media-diagnostics")]
+        if !mine && let VideoKey::Stream(stream_key) = key && previous != Some(generation) {
+            use crate::voice::video::trace::{self, Metric, Trace};
+            let trace = call.display_traces.entry(key.clone())
+                .or_insert_with(|| Trace::for_stream("Viewer display", trace::DISPLAY, stream_key));
+            trace.hit(Metric::Displayed);
+            if let Some(previous) = previous {
+                trace.add(Metric::DisplaySkipped, generation.saturating_sub(previous).saturating_sub(1));
             }
         }
     }
@@ -370,7 +394,8 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
     icons::paint_channel(ui.painter(), icon, Rect::from_center_size(pos2(rect.left() + 26.0, cy), Vec2::splat(20.0)), FG_MUTED, STAGE);
     let toggle = Rect::from_center_size(pos2(rect.right() - 32.0, cy), Vec2::splat(32.0));
     let left = rect.left() + 44.0;
-    let g = one_line(ui, cx.state.channel_name(ch), bold(size + 1.5), FG, (toggle.left() - 64.0 - left).max(80.0));
+    let (stats_width, min_name_width) = if cfg!(feature = "media-diagnostics") { (63.0, 20.0) } else { (0.0, 80.0) };
+    let g = one_line(ui, cx.state.channel_name(ch), bold(size + 1.5), FG, (toggle.left() - 64.0 - stats_width - left).max(min_name_width));
     let x = left + g.size().x + 12.0;
     ui.painter().galley(pos2(left, cy - g.size().y / 2.0), g, FG);
     if cx.state.voice.video.screen_share.is_some() {
@@ -384,6 +409,15 @@ fn header(ui: &mut egui::Ui, cx: &mut UiCx<'_>, ch: Id) {
     let chat = cx.view.call_ui.chat;
     if stage_button(ui, toggle, "call_chat_toggle", Icon::Message, if chat { "Hide chat" } else { "Show chat" }, chat).clicked() {
         cx.view.call_ui.chat = !chat;
+    }
+    #[cfg(feature = "media-diagnostics")]
+    {
+        let stats = Rect::from_center_size(pos2(toggle.left() - 34.0, cy), vec2(58.0, 25.0));
+        if ui.put(stats, egui::Button::new("Stats").selected(cx.view.call_ui.diagnostics_open))
+            .on_hover_text("Go Live diagnostics").clicked()
+        {
+            cx.view.call_ui.diagnostics_open = !cx.view.call_ui.diagnostics_open;
+        }
     }
 }
 

@@ -22,7 +22,7 @@ mod video;
 
 use self::packet::{Crypt, Mode, OPUS_PT, RTP_HEADER, RtpHeader, discovery_request, parse_discovery, parse_rtp, uuid_v4, write_rtp_header};
 use super::audio::{Captured, FRAME_SAMPLES, MediaLink, Playback, SAMPLE_RATE};
-use super::video::trace::Trace;
+use super::video::trace::{self, Metric, Trace};
 use super::dave::{self, Dave, Reply};
 use super::video::{H264_PT, H264_RTX_PT, StreamKind, VideoCtl, VideoLink, receive::VideoRx};
 use crate::api::props::ClientProps;
@@ -667,7 +667,7 @@ impl Receiver {
     async fn run(self) {
         let mut buf = vec![0u8; MTU];
         let mut held = Held::default();
-        let mut trace = self.stream_owner.and_then(|_| Trace::new("stream audio", &["rtp", "transport_open", "dave_open", "mixer_queue"]));
+        let mut trace = self.stream_owner.and_then(|_| Trace::new("Viewer audio", trace::AUDIO));
         loop {
             match self.sock.recv(&mut buf).await {
                 Ok(n) => self.on_packet(&mut buf[..n], &mut held, trace.as_mut()),
@@ -690,10 +690,10 @@ impl Receiver {
             }
             return;
         };
-        if let Some(trace) = trace.as_deref_mut() { trace.record(0, Duration::ZERO); }
+        if let Some(trace) = trace.as_deref_mut() { trace.hit(Metric::AudioRtp); }
         let Some(plain) = lock(&self.crypt).open(pkt, h.clear_len) else { return };
         let Some(frame) = h.payload(plain) else { return };
-        if let Some(trace) = trace.as_deref_mut() { trace.record(1, Duration::ZERO); }
+        if let Some(trace) = trace.as_deref_mut() { trace.hit(Metric::AudioTransportOpen); }
         let now = std::time::Instant::now();
         let user = self.stream_owner.or_else(|| lock(&self.users).get(&h.ssrc).copied());
         match user {
@@ -711,8 +711,8 @@ impl Receiver {
         let Some(opus) = lock(&self.dave).decrypt(user, frame) else { return };
         let queued = self.playback.push(user, h.ssrc, h.seq, opus);
         if let Some(trace) = trace {
-            trace.record(2, Duration::ZERO);
-            if queued { trace.record(3, Duration::ZERO); }
+            trace.hit(Metric::AudioDecrypted);
+            if queued { trace.hit(Metric::AudioMixerQueued); }
         }
     }
 }

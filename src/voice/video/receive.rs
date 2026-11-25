@@ -15,6 +15,8 @@ use super::codec::Decoder;
 use super::rtp_h264::{self, Depacketizer, Feedback, RtpPacket};
 use super::stream::parse_stream_key;
 use super::{FrameWriter, RemoteVideo, VideoEvent, VideoFrames, VideoKey, lock};
+#[cfg(feature = "media-diagnostics")]
+use super::trace::{self, Metric, Trace};
 use crate::model::Id;
 use crate::voice::dave::Dave;
 use crate::voice::{VoiceEvent, VoiceEvents};
@@ -58,6 +60,8 @@ struct State {
     queue: Option<std_mpsc::SyncSender<Item>>,
     /// `end` was called: nothing is decoded or reported any more.
     ended: bool,
+    #[cfg(feature = "media-diagnostics")]
+    trace: Option<Trace>,
 }
 
 /// A connection's DAVE and where plain RTCP goes.
@@ -78,6 +82,8 @@ struct Item {
     timestamp: u32,
     marker: bool,
     payload: Vec<u8>,
+    #[cfg(feature = "media-diagnostics")]
+    queued: Instant,
 }
 
 impl State {
@@ -134,6 +140,8 @@ impl VideoRx {
         let state = State {
             frames,
             events,
+            #[cfg(feature = "media-diagnostics")]
+            trace: stream_key.as_deref().map(|key| Trace::for_stream("Viewer network", trace::NETWORK, key)),
             stream_key,
             wanted: HashSet::new(),
             remote: HashMap::new(),
@@ -240,6 +248,9 @@ impl VideoRx {
     /// One wanted video packet, transport-decrypted. `rtx`: PT 104 (unwrap and map to the video
     /// SSRC first).
     pub fn push(&self, rtx: bool, p: RtpPacket<'_>) {
+        #[cfg(feature = "media-diagnostics")]
+        let mut s = lock(&self.inner);
+        #[cfg(not(feature = "media-diagnostics"))]
         let s = lock(&self.inner);
         let (Some(route), Some(queue)) = (s.routes.get(&p.ssrc), &s.queue) else { return };
         if rtx == (p.ssrc == route.video_ssrc) {
@@ -251,8 +262,27 @@ impl VideoRx {
         } else {
             (p.seq, p.payload)
         };
-        let item = Item { ssrc: route.video_ssrc, seq, timestamp: p.timestamp, marker: p.marker, payload: payload.to_vec() };
-        let _ = queue.try_send(item); // full: dropped, NACKed later
+        let item = Item {
+            ssrc: route.video_ssrc, seq, timestamp: p.timestamp, marker: p.marker, payload: payload.to_vec(),
+            #[cfg(feature = "media-diagnostics")]
+            queued: Instant::now(),
+        };
+        let _result = queue.try_send(item); // full: dropped, NACKed later
+        #[cfg(feature = "media-diagnostics")]
+        if let Some(trace) = &mut s.trace {
+            trace.hit(Metric::RxPackets);
+            trace.add(Metric::RxBytes, p.payload.len() as u64);
+            if rtx { trace.hit(Metric::RxRtx); }
+            if p.marker && !rtx { trace.hit(Metric::RxMarkers); }
+            if _result.is_err() { trace.hit(Metric::RxQueueDrop); }
+        }
+    }
+
+    #[cfg(feature = "media-diagnostics")]
+    pub fn bad_packet(&self) {
+        if let Some(trace) = &mut lock(&self.inner).trace {
+            trace.hit(Metric::RxInvalidPacket);
+        }
     }
 
     /// The manager is done with this connection (call ended, Go Live stopped): ends every
@@ -268,6 +298,8 @@ impl VideoRx {
                 }
             }
             s.ended = true;
+            #[cfg(feature = "media-diagnostics")]
+            { s.trace = None; }
             s.update(me);
         });
     }
@@ -285,6 +317,8 @@ struct Decoding {
     /// Last size reported to the UI.
     size: (u32, u32),
     last_packet: Option<Instant>,
+    #[cfg(feature = "media-diagnostics")]
+    trace: Option<Trace>,
 }
 
 /// The "rustcord-video-rx" thread of one connection.
@@ -331,7 +365,12 @@ impl RxThread {
     fn sync(&mut self) -> bool {
         let Some(state) = self.state.upgrade() else { return false };
         let routes: HashMap<u32, (VideoKey, Id)> = {
+            #[cfg(feature = "media-diagnostics")]
+            let mut s = lock(&state);
+            #[cfg(not(feature = "media-diagnostics"))]
             let s = lock(&state);
+            #[cfg(feature = "media-diagnostics")]
+            if let Some(trace) = &mut s.trace { trace.flush(Instant::now()); }
             if self.version == Some(s.version) {
                 return true;
             }
@@ -348,6 +387,11 @@ impl RxThread {
                 writer: None,
                 size: (0, 0),
                 last_packet: None,
+                #[cfg(feature = "media-diagnostics")]
+                trace: match &key {
+                    VideoKey::Stream(key) => Some(Trace::for_stream("Viewer decoder", trace::DECODE, key)),
+                    _ => None,
+                },
             });
             // The slot may have been freed and re-created meanwhile (hidden and shown again).
             let writer = self.frames.writer(key);
@@ -366,14 +410,20 @@ impl RxThread {
         let Some(d) = self.videos.get_mut(&item.ssrc) else { return };
         let now = Instant::now();
         d.last_packet = Some(now);
+        #[cfg(feature = "media-diagnostics")]
+        if let Some(trace) = &mut d.trace { trace.record(Metric::RxQueueDelay, now.saturating_duration_since(item.queued)); }
         let p = RtpPacket { ssrc: item.ssrc, seq: item.seq, timestamp: item.timestamp, marker: item.marker, payload: &item.payload };
         d.depack.push(p, now);
         while let Some(frame) = d.depack.next_frame() {
+            #[cfg(feature = "media-diagnostics")]
+            if let Some(trace) = &mut d.trace { trace.hit(Metric::Reassembled); }
             if let Some(size) = decode(d, &self.dave, &frame)
                 && size != d.size
                 && let Some(state) = self.state.upgrade()
             {
                 d.size = size;
+                #[cfg(feature = "media-diagnostics")]
+                if let Some(trace) = &mut d.trace { trace.details(format!("decoded {}x{}", size.0, size.1)); }
                 // Through the state: silent once `end` was called.
                 lock(&state).report(VideoEvent::RemoteVideo { key: d.key.clone(), width: size.0, height: size.1 });
             }
@@ -386,6 +436,8 @@ impl RxThread {
             return false;
         }
         for (&ssrc, d) in &mut self.videos {
+            #[cfg(feature = "media-diagnostics")]
+            if let Some(trace) = &mut d.trace { trace.flush(now); }
             if d.writer.is_none() {
                 // A frame slot came free: the decoder missed frames, restart at a keyframe.
                 d.writer = self.frames.writer(d.key.clone());
@@ -395,10 +447,14 @@ impl RxThread {
             }
             let lost = d.depack.take_nacks(now);
             if !lost.is_empty() {
+                #[cfg(feature = "media-diagnostics")]
+                if let Some(trace) = &mut d.trace { trace.add(Metric::Nacks, lost.len() as u64); }
                 let _ = self.rtcp.send(rtp_h264::nack(0, ssrc, &lost));
             }
             let flowing = d.last_packet.is_some_and(|t| now.saturating_duration_since(t) < FLOWING);
             if flowing && d.depack.take_keyframe_request(now) {
+                #[cfg(feature = "media-diagnostics")]
+                if let Some(trace) = &mut d.trace { trace.hit(Metric::Plis); }
                 let _ = self.rtcp.send(rtp_h264::pli(0, ssrc));
             }
         }
@@ -410,15 +466,37 @@ impl RxThread {
 /// report. A frame that does not decrypt or decode waits for the next keyframe.
 fn decode(d: &mut Decoding, dave: &Mutex<Dave>, frame: &[u8]) -> Option<(u32, u32)> {
     // No frame slot: not even decrypted; `tick` resyncs at a keyframe once one frees.
-    d.writer.as_ref()?;
+    if d.writer.is_none() {
+        #[cfg(feature = "media-diagnostics")]
+        if let Some(trace) = &mut d.trace { trace.hit(Metric::NoDecoderSlot); }
+        return None;
+    }
     // The DAVE lock is held for the decryption only, never across decoding.
     let plain = lock(dave).decrypt_video(d.user, frame);
     let Some(plain) = plain else {
+        #[cfg(feature = "media-diagnostics")]
+        if let Some(trace) = &mut d.trace { trace.hit(Metric::DecryptFailed); }
         d.depack.wait_for_keyframe();
         return None;
     };
-    let (Some(writer), Some(decoder)) = (&d.writer, &mut d.decoder) else { return None };
-    match decoder.decode(&plain, writer) {
+    let (Some(writer), Some(decoder)) = (&d.writer, &mut d.decoder) else {
+        #[cfg(feature = "media-diagnostics")]
+        if let Some(trace) = &mut d.trace { trace.hit(Metric::DecodeError); }
+        return None;
+    };
+    #[cfg(feature = "media-diagnostics")]
+    let started = d.trace.as_ref().map(|_| Instant::now());
+    let result = decoder.decode(&plain, writer);
+    #[cfg(feature = "media-diagnostics")]
+    if let (Some(trace), Some(started)) = (&mut d.trace, started) {
+        let metric = match result {
+            Ok(Some(_)) => Metric::Decoded,
+            Ok(None) => Metric::DecodeEmpty,
+            Err(_) => Metric::DecodeError,
+        };
+        trace.record(metric, started.elapsed());
+    }
+    match result {
         Ok(Some(size)) if size != d.size => Some(size),
         Ok(_) => None,
         Err(_) => {

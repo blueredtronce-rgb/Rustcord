@@ -11,7 +11,7 @@ use crate::model::Id;
 use crate::voice::dave::Dave;
 use crate::voice::video::receive::VideoRx;
 use crate::voice::video::rtp_h264::{self, Feedback, MAX_PAYLOAD, RtpPacket, RtxHistory};
-use crate::voice::video::trace::Trace;
+use crate::voice::video::trace::{self, Metric, Trace};
 use crate::voice::video::{EncodedFrame, H264_PT, H264_RTX_PT, StreamKind, VIDEO_CLOCK_HZ, VideoCtl, VideoLink, VideoSend, op12_payload, op15_payload, parse_op12};
 use serde::Deserialize;
 use serde_json::Value;
@@ -183,8 +183,16 @@ pub(super) fn on_packet(rx: &VideoRx, crypt: &Mutex<Crypt>, pkt: &mut [u8], h: O
                 return;
             }
             let marker = pkt[1] & 0x80 != 0;
-            let Some(plain) = lock(crypt).open(pkt, h.clear_len) else { return };
-            let Some(payload) = h.payload(plain) else { return };
+            let Some(plain) = lock(crypt).open(pkt, h.clear_len) else {
+                #[cfg(feature = "media-diagnostics")]
+                rx.bad_packet();
+                return;
+            };
+            let Some(payload) = h.payload(plain) else {
+                #[cfg(feature = "media-diagnostics")]
+                rx.bad_packet();
+                return;
+            };
             let p = RtpPacket { ssrc: h.ssrc, seq: h.seq, timestamp: h.timestamp, marker, payload };
             rx.push(h.payload_type == H264_RTX_PT, p);
         }
@@ -225,6 +233,7 @@ struct SendTask {
     /// A frame was dropped: deltas would decode into garbage (the sequence numbers have no
     /// gap), so only a keyframe goes out next.
     wait_keyframe: bool,
+    trace: Option<Trace>,
 }
 
 impl SendTask {
@@ -250,14 +259,16 @@ impl SendTask {
             pkt,
             last_keyframe_request: None,
             wait_keyframe: false,
+            trace: None,
         }
     }
 
     async fn run(mut self, mut sends: mpsc::UnboundedReceiver<SendReq>, mut rtcp: mpsc::UnboundedReceiver<Vec<u8>>, mut feedback: mpsc::UnboundedReceiver<Feedback>) {
         let mut current: Option<VideoSend> = None;
-        let mut trace = self.screen.then(|| Trace::new("send", &["from_capture", "sent", "dropped"])).flatten();
         let mut reports = tokio::time::interval_at(tokio::time::Instant::now() + SR_INTERVAL, SR_INTERVAL);
         reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut diagnostics = tokio::time::interval(Duration::from_secs(1));
+        diagnostics.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 req = sends.recv() => match req {
@@ -265,6 +276,7 @@ impl SendTask {
                         send.keyframe.store(true, Ordering::Relaxed); // receivers start with a keyframe
                         self.wait_keyframe = true;
                         self.history = RtxHistory::default();
+                        self.trace = (send.kind == StreamKind::Screen).then(|| Trace::new("Sender transport", trace::SEND)).flatten();
                         current = Some(send);
                     }
                     Some(None) => current = self.stopped(),
@@ -272,12 +284,14 @@ impl SendTask {
                 },
                 frame = next_frame(&mut current) => match frame {
                     Some(f) => {
-                        let at = trace.as_ref().map(|_| Instant::now());
-                        let sent = self.send_frame(&f).await;
-                        if let (Some(trace), Some(at)) = (&mut trace, at) {
+                        let at = self.trace.as_ref().map(|_| Instant::now());
+                        if let (Some(trace), Some(at)) = (&mut self.trace, at) {
                             trace.flush(at);
-                            trace.record(0, at.saturating_duration_since(f.captured));
-                            trace.record(if sent { 1 } else { 2 }, at.elapsed());
+                            trace.record(Metric::FrameAge, at.saturating_duration_since(f.captured));
+                        }
+                        let sent = self.send_frame(&f).await;
+                        if let (Some(trace), Some(at)) = (&mut self.trace, at) {
+                            trace.record(if sent { Metric::Sent } else { Metric::SendDrop }, at.elapsed());
                         }
                         if !sent
                             && let Some(c) = &current
@@ -288,6 +302,9 @@ impl SendTask {
                     None => current = self.stopped(), // the pipeline stopped
                 },
                 _ = reports.tick(), if current.is_some() => self.send_report().await,
+                _ = diagnostics.tick(), if self.trace.is_some() => {
+                    if let Some(trace) = &mut self.trace { trace.flush(Instant::now()); }
+                },
                 Some(plain) = rtcp.recv() => self.send_rtcp(plain).await,
                 Some(fb) = feedback.recv() => self.on_feedback(fb, current.as_ref()).await,
             }
@@ -299,6 +316,7 @@ impl SendTask {
     /// new `current`.
     fn stopped(&mut self) -> Option<VideoSend> {
         self.history = RtxHistory::default();
+        self.trace = None;
         None
     }
 
@@ -313,17 +331,22 @@ impl SendTask {
     /// clear; or a delta after a dropped frame).
     async fn send_frame(&mut self, f: &EncodedFrame) -> bool {
         if self.wait_keyframe && !f.keyframe {
+            if let Some(trace) = &mut self.trace { trace.hit(Metric::WaitKeyframe); }
             return false;
         }
         let encrypted = lock(&self.dave).encrypt_h264(&f.annexb);
         let Some(frame) = encrypted else {
+            if let Some(trace) = &mut self.trace { trace.hit(Metric::EncryptFailed); }
             self.wait_keyframe = true;
             return false;
         };
         self.wait_keyframe = false;
         let ts = self.timestamp(f.captured);
         let payloads = rtp_h264::packetize(&frame, MAX_PAYLOAD);
-        if payloads.is_empty() { return false }
+        if payloads.is_empty() {
+            if let Some(trace) = &mut self.trace { trace.hit(Metric::PacketFailed); }
+            return false;
+        }
         let mut sent = true;
         let now = Instant::now();
         for (i, payload) in payloads.iter().enumerate() {
@@ -334,10 +357,16 @@ impl SendTask {
             self.seq = self.seq.wrapping_add(1);
             self.packets = self.packets.wrapping_add(1);
             self.octets = self.octets.wrapping_add(payload.len() as u32);
-            if lock(&self.crypt).seal(&mut self.pkt, clear).is_ok() {
-                sent &= self.sock.send(&self.pkt).await.is_ok();
-            } else {
-                sent = false;
+            let sealed = lock(&self.crypt).seal(&mut self.pkt, clear).is_ok();
+            let ok = sealed && self.sock.send(&self.pkt).await.is_ok();
+            sent &= ok;
+            if let Some(trace) = &mut self.trace {
+                if ok {
+                    trace.hit(Metric::SentPackets);
+                    trace.add(Metric::SentBytes, self.pkt.len() as u64);
+                } else {
+                    trace.hit(Metric::PacketFailed);
+                }
             }
         }
         self.wait_keyframe = !sent;
@@ -371,6 +400,7 @@ impl SendTask {
     async fn on_feedback(&mut self, fb: Feedback, current: Option<&VideoSend>) {
         match fb {
             Feedback::Pli { media_ssrc } if media_ssrc == self.ssrcs.video => {
+                if let Some(trace) = &mut self.trace { trace.hit(Metric::Plis); }
                 let now = Instant::now();
                 if let Some(c) = current
                     && self.last_keyframe_request.is_none_or(|t| now.saturating_duration_since(t) >= MIN_KEYFRAME_GAP)
@@ -380,9 +410,12 @@ impl SendTask {
                 }
             }
             Feedback::Nack { media_ssrc, lost } if current.is_some() && media_ssrc == self.ssrcs.video && self.ssrcs.rtx != 0 => {
+                if let Some(trace) = &mut self.trace { trace.add(Metric::Nacks, lost.len() as u64); }
                 for osn in lost {
-                    if self.rtx_packet(osn) {
-                        let _ = self.sock.send(&self.pkt).await;
+                    let found = self.rtx_packet(osn);
+                    let sent = found && self.sock.send(&self.pkt).await.is_ok();
+                    if let Some(trace) = &mut self.trace {
+                        trace.hit(if sent { Metric::RtxSent } else { Metric::RtxUnavailable });
                     }
                 }
             }

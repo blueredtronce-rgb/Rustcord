@@ -20,7 +20,7 @@ mod camera;
 mod screen;
 
 use super::codec::{self, Encoder, I420};
-use super::trace::Trace;
+use super::trace::{self, Metric, Trace};
 use super::{CameraInfo, ENCODED_QUEUE, EncodedFrame, FrameWriter, MonitorInfo, RawFrame, ScreenSource, SendLimits, StreamKind, VideoSend, WindowInfo, lock};
 use openh264::formats::YUVSource;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -219,7 +219,7 @@ impl Pipeline {
         stopped: Arc<AtomicBool>,
     ) -> Pipeline {
         let screen = kind == StreamKind::Screen;
-        let trace = screen.then(|| Trace::new("capture", &["arrived", "gpu_readback", "cpu_readback", "converted", "encoded", "queue_full", "encoder_skipped"])).flatten();
+        let trace = screen.then(|| Trace::new("Capture & encoder", trace::CAPTURE)).flatten();
         Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, ready: None, next_preview: None, trace, enc: None, pending_size: None, last_encoded: None, stopped }
     }
 
@@ -235,12 +235,16 @@ impl Pipeline {
             return Err(CLOSED.into());
         }
         let room = self.tx.capacity() > 0;
+        let due = room && self.pacer.due(now);
         if let Some(trace) = &mut self.trace {
             trace.flush(now);
-            trace.record(0, Duration::ZERO);
-            if !room { trace.record(5, Duration::ZERO); }
+            if !room {
+                trace.hit(Metric::CaptureBackpressure);
+            } else if !due {
+                trace.hit(Metric::CapturePaced);
+            }
         }
-        Ok(room && self.pacer.due(now))
+        Ok(due)
     }
 
     /// A frame `due` accepted.
@@ -274,7 +278,7 @@ impl Pipeline {
         let Some((_, picture)) = &mut self.enc else { return Ok(()) };
         let at = self.trace.as_ref().map(|_| Instant::now());
         codec::to_i420(frame, picture); // stretched into the running size until a restart
-        if let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(3, at.elapsed()); }
+        if let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(Metric::Convert, at.elapsed()); }
         Ok(())
     }
 
@@ -293,7 +297,11 @@ impl Pipeline {
         if (!idle || preview.refresh) && let Some(writer) = preview.writer.as_ref()
         {
             let (w, h) = if self.screen { codec::fit_within(w, h, 640, 360) } else { (w, h) };
+            let at = self.trace.as_ref().map(|_| Instant::now());
             writer.write(w, h, |rgba| codec::i420_to_rgba(picture, (w, h), rgba));
+            if let (Some(trace), Some(at)) = (&mut self.trace, at) {
+                trace.record(Metric::Preview, at.elapsed());
+            }
             preview.refresh = false;
             self.next_preview = self.screen.then(|| now + Duration::from_millis(200));
         }
@@ -318,10 +326,20 @@ impl Pipeline {
         let keyframe = self.keyframe.swap(false, Ordering::AcqRel);
         self.last_encoded = Some(now);
         let at = self.trace.as_ref().map(|_| Instant::now());
-        let encoded = encoder.encode(picture, keyframe, now)?;
+        let encoded = encoder.encode(picture, keyframe, now);
         if let (Some(trace), Some(at)) = (&mut self.trace, at) {
-            trace.record(if encoded.is_some() { 4 } else { 6 }, at.elapsed());
+            let metric = match &encoded {
+                Ok(Some(frame)) => {
+                    trace.add(Metric::EncodedBytes, frame.annexb.len() as u64);
+                    if frame.keyframe { trace.hit(Metric::Keyframes); }
+                    Metric::Encoded
+                }
+                Ok(None) => Metric::EncoderSkipped,
+                Err(_) => Metric::EncoderError,
+            };
+            trace.record(metric, at.elapsed());
         }
+        let encoded = encoded?;
         if self.stopped.load(Ordering::Acquire) {
             return Err(CLOSED.into()); // stopped meanwhile: a frame captured after Stop is never sent
         }
@@ -333,7 +351,10 @@ impl Pipeline {
                     }
                 }
                 // A lost frame breaks the reference chain: the next one must be a keyframe.
-                Err(TrySendError::Full(_)) => self.keyframe.store(true, Ordering::Release),
+                Err(TrySendError::Full(_)) => {
+                    if let Some(trace) = &mut self.trace { trace.hit(Metric::QueueDrop); }
+                    self.keyframe.store(true, Ordering::Release);
+                }
                 Err(TrySendError::Closed(_)) => return Err(CLOSED.into()),
             },
             // Skipped by the rate control: keep the keyframe request for the next frame.

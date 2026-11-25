@@ -7,6 +7,7 @@ mod cursor;
 mod scale;
 
 use super::{Pipeline, Stop};
+use crate::voice::video::trace::Metric;
 use crate::voice::video::{MonitorInfo, PixelFormat, RawFrame, ScreenSource, WindowInfo};
 use std::ffi::c_void;
 use std::sync::mpsc::RecvTimeoutError;
@@ -79,6 +80,21 @@ fn cloaked(hwnd: *mut c_void) -> bool {
 
 /// Capture until `stop` (Ok) or the capture ends by itself (Err with user-facing text).
 pub(super) fn run(source: ScreenSource, pipe: Pipeline, stop: &Stop) -> Result<(), String> {
+    #[cfg(feature = "media-diagnostics")]
+    let pipe = {
+        let mut pipe = pipe;
+        let backend = match source {
+            ScreenSource::Monitor(_) => "Windows Graphics Capture / monitor",
+            ScreenSource::DesktopDuplication(_) => "Desktop Duplication / monitor",
+            ScreenSource::Window(_) => "Windows Graphics Capture / window",
+        };
+        if let Some(trace) = &mut pipe.trace {
+            let limits = pipe.limits;
+            trace.details(format!("{backend}; target {}x{} at {} FPS, {} kbit/s; OpenH264 CPU",
+                limits.max_width, limits.max_height, limits.fps, limits.max_bitrate / 1000));
+        }
+        pipe
+    };
     let interval = pipe.pacer.interval;
     let control = match source {
         ScreenSource::Monitor(h) => start(Monitor::from_raw_hmonitor(h as usize as *mut c_void), pipe, interval)?,
@@ -137,9 +153,12 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
             Ok(frame) => {
                 retry = true;
                 let now = Instant::now();
+                if let Some(trace) = &mut pipe.trace { trace.hit(Metric::CaptureArrived); }
                 cursor.update(&frame);
                 let info = frame.frame_info();
-                if (info.LastPresentTime == 0 && info.LastMouseUpdateTime == 0 && pipe.last_encoded.is_some()) || !pipe.due(now)? {
+                let unchanged = info.LastPresentTime == 0 && info.LastMouseUpdateTime == 0 && pipe.last_encoded.is_some();
+                if unchanged && let Some(trace) = &mut pipe.trace { trace.hit(Metric::CaptureUnchanged); }
+                if unchanged || !pipe.due(now)? {
                     drop(frame);
                     next_capture = now + Duration::from_millis(4);
                     pipe.repeat(now)?;
@@ -152,6 +171,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
                 false
             }
             Err(DuplicationError::Timeout) => {
+                if let Some(trace) = &mut pipe.trace { trace.hit(Metric::CaptureTimeout); }
                 pipe.repeat(Instant::now())?;
                 false
             }
@@ -234,6 +254,7 @@ impl GraphicsCaptureApiHandler for Capture {
 
     fn on_frame_arrived(&mut self, frame: &mut Frame, _: InternalCaptureControl) -> Result<(), String> {
         let now = Instant::now();
+        if let Some(trace) = &mut self.pipe.trace { trace.hit(Metric::CaptureArrived); }
         // Before the copy: the GPU → CPU copy is the expensive part.
         if !self.pipe.due(now)? {
             return Ok(());
@@ -279,7 +300,7 @@ impl Readback {
             context.CopyResource(staging.texture(), texture);
             context.Map(staging.texture(), 0, mode, 0, Some(&mut mapped)).map_err(|e| read_failed(&e))?;
             if let (Some(trace), Some(at)) = (&mut pipe.trace, at) {
-                trace.record(if self.scale.is_some() { 1 } else { 2 }, at.elapsed());
+                trace.record(if self.scale.is_some() { Metric::GpuScaleReadback } else { Metric::CpuReadback }, at.elapsed());
             }
             let stride = mapped.RowPitch as usize;
             if let Some(cursor) = cursor {
