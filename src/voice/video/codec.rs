@@ -76,7 +76,7 @@ impl Encoder {
     /// Encoder for `width × height` (even, from `fit_within`) at `limits.fps` and at most
     /// `limits.max_bitrate`: Constrained Baseline (every receiver decodes it), no B-frames,
     /// SPS/PPS before every IDR, an IDR every few seconds and on `keyframe`. Screen content
-    /// uses the screen usage type.
+    /// uses lower encoding complexity.
     pub fn new(width: u32, height: u32, limits: SendLimits, screen: bool) -> Result<Encoder, String> {
         let (max_w, max_h) = MAX_ENCODE_SIZE;
         if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2) || width.max(height) > max_w || width.min(height) > max_h {
@@ -86,7 +86,10 @@ impl Encoder {
         // Baseline + openh264's constraint_set0/1 flags = Constrained Baseline (profile-level-id 42c0..).
         let config = EncoderConfig::new()
             .profile(Profile::Baseline)
-            .usage_type(if screen { UsageType::ScreenContentRealTime } else { UsageType::CameraVideoRealTime })
+            // The desktop preset turns motion-heavy updates into repeated IDRs. With a
+            // capped rate that can leave very few frames. The real-time motion preset
+            // retains inter-frame prediction even for a screen source.
+            .usage_type(UsageType::CameraVideoRealTime)
             .complexity(if screen { Complexity::Low } else { Complexity::Medium })
             .rate_control_mode(RateControlMode::Bitrate)
             .bitrate(BitRate::from_bps(limits.max_bitrate))
@@ -406,6 +409,37 @@ mod tests {
     use super::*;
     use crate::model::Id;
     use crate::voice::video::{VideoFrames, VideoKey};
+
+    #[test]
+    fn screen_motion_keeps_inter_frames_within_the_bitrate_budget() {
+        use std::time::Duration;
+
+        let (width, height) = (1280, 720);
+        let mut image = I420::new(width, height);
+        let mut encoder = Encoder::new(width, height, SendLimits::screen(30, height), true).unwrap();
+        let start = Instant::now();
+        let (mut frames, mut keyframes, mut bytes) = (0, 0, 0);
+        for n in 0..90 {
+            let (y, u, v) = image.planes_mut();
+            for (row, pixels) in y.chunks_exact_mut(width as usize).enumerate() {
+                for (column, pixel) in pixels.iter_mut().enumerate() {
+                    let stripe = (((column + n * 7) / 13) ^ ((row + n * 5) / 15)) % 8;
+                    *pixel = (stripe * 23 + 30) as u8;
+                }
+            }
+            u.fill(128);
+            v.fill(128);
+            let captured = start + Duration::from_millis(n as u64 * 1000 / 30);
+            if let Some(encoded) = encoder.encode(&image, false, captured).unwrap() {
+                frames += 1;
+                keyframes += usize::from(encoded.keyframe);
+                bytes += encoded.annexb.len();
+            }
+        }
+        assert!(frames >= 72, "only {frames} of 90 frames were encoded");
+        assert!(keyframes <= 18, "{keyframes} of {frames} frames were keyframes");
+        assert!(bytes <= 1_500_000, "{bytes} bytes exceeded the bitrate budget");
+    }
 
     #[test]
     fn fit_within_keeps_aspect_even_and_never_upscales() {

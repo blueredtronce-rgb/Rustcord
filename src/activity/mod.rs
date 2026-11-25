@@ -90,6 +90,7 @@ pub enum ActivityEvent {
     PulseCover(Arc<egui::ColorImage>),
     #[cfg(windows)]
     PulseCoverProxy { original: String, asset: Option<String> },
+    ListeningConfirmation(Option<bool>),
     /// The games list (from disk, or fetched).
     Table(Arc<Table>),
     /// The game I am playing changed.
@@ -108,6 +109,7 @@ pub struct ActivityState {
     pub pulse_sync: Option<Activity>,
     #[cfg(windows)]
     pub pulse_cover: Option<Arc<egui::ColorImage>>,
+    pub listening_confirmation: Option<bool>,
     #[cfg(windows)]
     pulse_cover_proxy: Option<(String, Option<String>)>,
     pub table: Option<Arc<Table>>,
@@ -147,6 +149,7 @@ impl ActivityState {
                     self.listening_dirty = true;
                 }
             }
+            ActivityEvent::ListeningConfirmation(confirmation) => self.listening_confirmation = confirmation,
             ActivityEvent::Table(t) => self.table = Some(t),
             ActivityEvent::Detected(g) => self.detected = g,
             ActivityEvent::Added(a) => self.added = a,
@@ -263,6 +266,7 @@ pub fn logic(state: &mut AppState, cmd: &CommandSender, share_listening: bool) {
             { None }
         } else { None };
         if listening != activity.sent_listening {
+            activity.listening_confirmation = None;
             activity.sent_listening = listening.clone();
             cmd.send(Command::Activity(ActivityCommand::SetListening(listening)));
         }

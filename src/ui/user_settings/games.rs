@@ -71,6 +71,22 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
         )).inner && let Err(error) = cx.settings.save() {
             cx.view.toast(format!("Could not save settings: {error}"), true);
         }
+        if cx.settings.pulse_sync_rpc && cx.settings.share_pulse_sync {
+            let text = if !crate::activity::sharing(cx.state) {
+                "Enable Share detected activity in Activity Privacy."
+            } else if cx.state.chat.my_status == Some(crate::model::UserStatus::Invisible) {
+                "Your status is Invisible. Switch to Online to share listening activity."
+            } else if cx.state.activity.pulse_sync.is_none() {
+                "Play a track to share it."
+            } else {
+                match cx.state.activity.listening_confirmation {
+                    Some(true) => "Discord included this track in your account's presence.",
+                    Some(false) => "Discord's latest presence update did not include this track.",
+                    None => "Waiting for Discord to confirm this track.",
+                }
+            };
+            ui.label(RichText::new(text).color(pal.muted).size(pal.meta()));
+        }
     }
     let on = crate::activity::sharing(cx.state);
     let text = if on { "Others see the game you play while Share detected activity is on." } else { "Share detected activity is off: nobody sees your game." };

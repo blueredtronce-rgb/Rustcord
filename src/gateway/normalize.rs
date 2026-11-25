@@ -699,10 +699,18 @@ pub(super) fn sessions_replace(b: &[u8], mine: &str) -> serde_json::Result<Statu
 
 /// SESSIONS_REPLACE: my presence as others see it (the `all` session, e.g. a game another client
 /// of mine detected); PRESENCE_UPDATE never comes for me. None without an `all` entry.
-pub(super) fn my_presence(b: &[u8]) -> serde_json::Result<Option<UserPresence>> {
+pub(super) fn my_presence(b: &[u8], listening: Option<&Activity>) -> serde_json::Result<Option<(UserPresence, Option<bool>)>> {
     let sessions: Vec<SessionWire> = data(b)?;
     let all = sessions.into_iter().find(|s| s.session_id == "all");
-    Ok(all.map(|s| PresenceWire { status: s.status, activities: s.activities, ..Default::default() }.into_presence()))
+    Ok(all.map(|s| {
+        let confirmed = listening.and_then(|a| a.rich.as_deref()).map(|expected| {
+            !matches!(presence(&s.status), Presence::Offline) && s.activities.iter().any(|activity| {
+                activity.kind == 2 && Id::deserialize(&activity.application_id).ok() == expected.application_id
+                    && activity.details.as_str() == expected.details.as_deref() && activity.state == expected.state
+            })
+        });
+        (PresenceWire { status: s.status, activities: s.activities, ..Default::default() }.into_presence(), confirmed)
+    }))
 }
 
 pub(super) fn members_chunk(b: &[u8]) -> serde_json::Result<MembersChunk> {
@@ -1288,9 +1296,30 @@ mod tests {
         assert_eq!(sessions_replace(&wrap(r#"[{"session_id":"other","status":"dnd"}]"#), "mine").unwrap(), StatusPatch::default());
         // My presence: the `all` session's game and custom status; none without `all`.
         let game = r#"[{"session_id":"all","status":"online","activities":[{"type":0,"name":"Factorio"},{"type":4,"name":"Custom Status","state":"zz"}]}]"#;
-        let me = my_presence(&wrap(game)).unwrap().unwrap();
+        let (me, _) = my_presence(&wrap(game), None).unwrap().unwrap();
         assert_eq!((me.status, me.activity.unwrap().name.as_str(), me.custom_status.unwrap().text.as_deref()), (Presence::Online, "Factorio", Some("zz")));
-        assert!(my_presence(&wrap(r#"[{"session_id":"mine","status":"dnd"}]"#)).unwrap().is_none());
+        assert!(my_presence(&wrap(r#"[{"session_id":"mine","status":"dnd"}]"#), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn confirms_listening_from_the_aggregate_even_when_a_game_is_playing() {
+        let track = Activity {
+            kind: 2,
+            name: "Yandex Music".into(),
+            rich: Some(Box::new(RichPresence {
+                application_id: Some(Id(1124055337234858005)),
+                details: Some("Track".into()),
+                state: Some("Artist".into()),
+                ..Default::default()
+            })),
+        };
+        let echo = r#"[{"session_id":"all","status":"online","activities":[{"type":0,"name":"Game"},{"type":2,"name":"Yandex Music","application_id":"1124055337234858005","details":"Track","state":"Artist"}]}]"#;
+        let (presence, confirmed) = my_presence(&wrap(echo), Some(&track)).unwrap().unwrap();
+        assert_eq!(presence.activity.unwrap().name, "Game");
+        assert_eq!(confirmed, Some(true));
+        for missing in [echo.replace("Track", "Old track"), echo.replace("online", "offline")] {
+            assert_eq!(my_presence(&wrap(&missing), Some(&track)).unwrap().unwrap().1, Some(false));
+        }
     }
 
     #[test]

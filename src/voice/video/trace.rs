@@ -9,8 +9,8 @@ pub(crate) struct Trace {
     name: &'static str,
     stages: &'static [&'static str],
     at: Instant,
-    count: [u32; 6],
-    elapsed: [Duration; 6],
+    count: [u32; 7],
+    elapsed: [Duration; 7],
 }
 
 fn path() -> Option<&'static PathBuf> {
@@ -30,8 +30,8 @@ impl Trace {
             name,
             stages,
             at: Instant::now(),
-            count: [0; 6],
-            elapsed: [Duration::ZERO; 6],
+            count: [0; 7],
+            elapsed: [Duration::ZERO; 7],
         })
     }
 

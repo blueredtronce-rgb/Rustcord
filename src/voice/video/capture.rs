@@ -219,7 +219,7 @@ impl Pipeline {
         stopped: Arc<AtomicBool>,
     ) -> Pipeline {
         let screen = kind == StreamKind::Screen;
-        let trace = screen.then(|| Trace::new("capture", &["arrived", "gpu_readback", "cpu_readback", "converted", "encoded", "queue_full"])).flatten();
+        let trace = screen.then(|| Trace::new("capture", &["arrived", "gpu_readback", "cpu_readback", "converted", "encoded", "queue_full", "encoder_skipped"])).flatten();
         Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, ready: None, next_preview: None, trace, enc: None, pending_size: None, last_encoded: None, stopped }
     }
 
@@ -244,7 +244,14 @@ impl Pipeline {
     }
 
     /// A frame `due` accepted.
+    #[cfg(any(windows, test))]
     fn push(&mut self, frame: &RawFrame<'_>, now: Instant) -> Result<(), String> {
+        self.prepare(frame, now)?;
+        self.submit(now)
+    }
+
+    /// Convert while the source buffer is mapped; the desktop backend releases it before encoding.
+    fn prepare(&mut self, frame: &RawFrame<'_>, now: Instant) -> Result<(), String> {
         let (w, h) = codec::fit_within(frame.width, frame.height, self.limits.max_width, self.limits.max_height);
         let restart = match &self.enc {
             None => true,
@@ -268,6 +275,10 @@ impl Pipeline {
         let at = self.trace.as_ref().map(|_| Instant::now());
         codec::to_i420(frame, picture); // stretched into the running size until a restart
         if let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(3, at.elapsed()); }
+        Ok(())
+    }
+
+    fn submit(&mut self, now: Instant) -> Result<(), String> {
         self.encode(now)?;
         self.draw_preview(now, false);
         Ok(())
@@ -308,7 +319,9 @@ impl Pipeline {
         self.last_encoded = Some(now);
         let at = self.trace.as_ref().map(|_| Instant::now());
         let encoded = encoder.encode(picture, keyframe, now)?;
-        if encoded.is_some() && let (Some(trace), Some(at)) = (&mut self.trace, at) { trace.record(4, at.elapsed()); }
+        if let (Some(trace), Some(at)) = (&mut self.trace, at) {
+            trace.record(if encoded.is_some() { 4 } else { 6 }, at.elapsed());
+        }
         if self.stopped.load(Ordering::Acquire) {
             return Err(CLOSED.into()); // stopped meanwhile: a frame captured after Stop is never sent
         }

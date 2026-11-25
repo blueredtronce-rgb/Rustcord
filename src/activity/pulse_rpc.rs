@@ -18,7 +18,8 @@ use windows::Media::Control::{
 };
 use windows::Storage::Streams::DataReader;
 
-const PIPE: &str = r"\\.\pipe\discord-ipc-0";
+// PulseSync probes the standard slots in order. Let a local Discord client take priority.
+const PIPE: &str = r"\\.\pipe\discord-ipc-9";
 pub(crate) const PULSESYNC_ID: &str = "1124055337234858005";
 const PULSESYNC_APP: Id = Id(1124055337234858005);
 
@@ -316,6 +317,8 @@ fn listening_activity(value: &Value) -> Option<Activity> {
         value["state"].as_str(),
     )?;
     let rich = activity.rich.as_mut()?;
+    rich.start = value["timestamps"]["start"].as_u64().filter(|&ms| (946_684_800_000..=32_503_680_000_000).contains(&ms));
+    rich.end = value["timestamps"]["end"].as_u64().filter(|&ms| rich.start.is_some_and(|start| ms > start && ms - start < 86_400_000));
     rich.large_image = value["assets"]["large_image"]
         .as_str()
         .filter(|image| {

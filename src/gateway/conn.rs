@@ -274,6 +274,8 @@ struct Gateway {
     /// My detected game (`SetGame`): op 3 carries it next to the custom status.
     my_game: Option<crate::activity::GameActivity>,
     my_listening: Option<crate::model::Activity>,
+    listening_sent: bool,
+    listening_confirmation: Option<bool>,
     /// Op 3 not sent yet (newest wins), and its `afk`.
     want_presence: Option<UserStatus>,
     afk: bool,
@@ -369,6 +371,8 @@ impl Gateway {
             settings_custom: None,
             my_game: None,
             my_listening: None,
+            listening_sent: false,
+            listening_confirmation: None,
             want_presence: None,
             afk: false,
             presence_limiter: SendLimiter::new(PRESENCE_LIMIT, PRESENCE_WINDOW),
@@ -431,8 +435,12 @@ impl Gateway {
                 true
             }
             Some(GatewayCommand::SetListening(listening)) => {
-                if listening != self.my_listening && self.session.is_some() {
-                    self.want_presence = Some(self.want_presence.unwrap_or(self.my_status));
+                if listening != self.my_listening {
+                    if self.session.is_some() {
+                        self.want_presence = Some(self.want_presence.unwrap_or(self.my_status));
+                    }
+                    self.listening_sent = false;
+                    self.listening_confirmation = None;
                 }
                 self.my_listening = listening;
                 true
@@ -696,6 +704,10 @@ impl Gateway {
                     self.on_new_session(r.data.user.id);
                     self.voice.session(self.my_id, r.session_id.clone());
                     self.session = Some((r.session_id, url));
+                    self.listening_sent = false;
+                    if self.listening_confirmation.take().is_some() {
+                        self.sink.send(BackendEvent::Activity(crate::activity::ActivityEvent::ListeningConfirmation(None)));
+                    }
                     self.server_sub = None; // new session: nothing subscribed yet
                     self.sink.send(BackendEvent::Gateway(GatewayEvent::Ready(Box::new(r.data))));
                     if let Some(settings) = r.settings {
@@ -739,8 +751,13 @@ impl Gateway {
                     Err(e) => eprintln!("gateway: failed to parse {t}: {e}"),
                 }
                 // My activity (user panel, my card) when no member list carries me.
-                if !follow && let Ok(Some(p)) = normalize::my_presence(bytes) {
+                let listening = self.my_listening.as_ref().filter(|_| self.listening_sent);
+                if !follow && let Ok(Some((p, confirmation))) = normalize::my_presence(bytes, listening) {
                     self.sink.send(BackendEvent::Gateway(GatewayEvent::PresenceUpdate(vec![(self.my_id, p)])));
+                    if listening.is_some() && self.listening_confirmation != confirmation {
+                        self.listening_confirmation = confirmation;
+                        self.sink.send(BackendEvent::Activity(crate::activity::ActivityEvent::ListeningConfirmation(confirmation)));
+                    }
                 }
             }
             "GUILD_MEMBERS_CHUNK" => match normalize::members_chunk(bytes) {
@@ -903,6 +920,7 @@ impl Gateway {
             Ok(()) => {
                 self.want_presence = None;
                 self.my_status = status;
+                self.listening_sent = self.my_listening.is_some();
                 self.emit_status();
             }
             Err(SendError::Limited(at)) => link.flush_by(at),
@@ -1052,20 +1070,24 @@ fn presence_payload(status: UserStatus, afk: bool, custom: Option<&CustomStatus>
             a
         })
         .into_iter()
+        .chain(listening.and_then(|a| {
+            let r = a.rich.as_ref()?;
+            let mut payload = json!({"type": 2, "name": a.name, "application_id": r.application_id?, "platform": "desktop", "status_display_type": 0});
+            if let Some(details) = &r.details { payload["details"] = json!(details); }
+            if let Some(state) = &r.state { payload["state"] = json!(state); }
+            if let Some(image) = &r.large_image { payload["assets"] = json!({"large_image": image}); }
+            if let Some(start) = r.start {
+                payload["timestamps"] = json!({"start": start});
+                if let Some(end) = r.end { payload["timestamps"]["end"] = json!(end); }
+            }
+            Some(payload)
+        }))
         .chain(game.map(|g| {
             let mut a = json!({"type": 0, "name": g.name, "timestamps": {"start": g.start_ms}});
             if let Some(id) = g.application_id {
                 a["application_id"] = json!(id);
             }
             a
-        }))
-        .chain(listening.and_then(|a| {
-            let r = a.rich.as_ref()?;
-            let mut payload = json!({"type": 2, "name": a.name, "application_id": r.application_id?});
-            if let Some(details) = &r.details { payload["details"] = json!(details); }
-            if let Some(state) = &r.state { payload["state"] = json!(state); }
-            if let Some(image) = &r.large_image { payload["assets"] = json!({"large_image": image}); }
-            Some(payload)
         }))
         .collect();
     let since = if status == UserStatus::Idle { now_ms } else { 0 };

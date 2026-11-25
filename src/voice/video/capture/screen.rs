@@ -137,14 +137,18 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
             Ok(frame) => {
                 retry = true;
                 let now = Instant::now();
-                next_capture = now + pipe.pacer.interval;
                 cursor.update(&frame);
                 let info = frame.frame_info();
                 if (info.LastPresentTime == 0 && info.LastMouseUpdateTime == 0 && pipe.last_encoded.is_some()) || !pipe.due(now)? {
+                    drop(frame);
+                    next_capture = now + Duration::from_millis(4);
                     pipe.repeat(now)?;
                     continue;
                 }
-                readback.push(&mut pipe, frame.device(), frame.device_context(), frame.texture(), Some(&cursor), now)?;
+                next_capture = pipe.pacer.next.unwrap_or(now);
+                readback.prepare(&mut pipe, frame.device(), frame.device_context(), frame.texture(), Some(&cursor), now)?;
+                drop(frame);
+                pipe.submit(now)?;
                 false
             }
             Err(DuplicationError::Timeout) => {
@@ -234,7 +238,8 @@ impl GraphicsCaptureApiHandler for Capture {
         if !self.pipe.due(now)? {
             return Ok(());
         }
-        self.readback.push(&mut self.pipe, frame.device(), frame.device_context(), frame.as_raw_texture(), None, now)
+        self.readback.prepare(&mut self.pipe, frame.device(), frame.device_context(), frame.as_raw_texture(), None, now)?;
+        self.pipe.submit(now)
     }
 }
 
@@ -246,7 +251,7 @@ struct Readback {
 }
 
 impl Readback {
-    fn push(&mut self, pipe: &mut Pipeline, device: &ID3D11Device, context: &ID3D11DeviceContext, texture: &ID3D11Texture2D, cursor: Option<&cursor::Cursor>, now: Instant) -> Result<(), String> {
+    fn prepare(&mut self, pipe: &mut Pipeline, device: &ID3D11Device, context: &ID3D11DeviceContext, texture: &ID3D11Texture2D, cursor: Option<&cursor::Cursor>, now: Instant) -> Result<(), String> {
         let at = pipe.trace.as_ref().map(|_| Instant::now());
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { texture.GetDesc(&mut desc) };
@@ -282,7 +287,7 @@ impl Readback {
                 cursor.paint(original, (width, height), stride, data);
             }
             let data = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), stride * height as usize);
-            let result = pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now);
+            let result = pipe.prepare(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now);
             context.Unmap(staging.texture(), 0);
             result
         }
