@@ -2027,16 +2027,7 @@ fn device_menu(cx: &mut UiCx<'_>, popup: egui::Popup<'_>, output: bool) {
         volume_changed = slider.changed();
         save_volume = slider.drag_stopped() || (volume_changed && !slider.dragged());
         ui.separator();
-        ui.label(egui::RichText::new(if output { "Output device" } else { "Input device" }).size(12.0).color(muted));
-        for name in std::iter::once(None).chain(list.iter().map(Some)) {
-            let glyph = if current.as_ref() == name { "✔" } else { "" };
-            if menu_item(ui, name.map_or("Default", String::as_str), MenuIcon::Glyph(glyph), text) {
-                pick = Some(name.cloned());
-                ui.close();
-            }
-        }
         if !output {
-            ui.separator();
             ui.label(egui::RichText::new("Noise suppression").size(12.0).color(muted));
             for mode in crate::voice::NoiseSuppression::OPTIONS {
                 let glyph = if noise == mode { "✔" } else { "" };
@@ -2045,7 +2036,18 @@ fn device_menu(cx: &mut UiCx<'_>, popup: egui::Popup<'_>, output: bool) {
                     ui.close();
                 }
             }
+            ui.separator();
         }
+        ui.label(egui::RichText::new(if output { "Output device" } else { "Input device" }).size(12.0).color(muted));
+        egui::ScrollArea::vertical().max_height(174.0).auto_shrink([false, true]).show(ui, |ui| {
+            for name in std::iter::once(None).chain(list.iter().map(Some)) {
+                let glyph = if current.as_ref() == name { "✔" } else { "" };
+                if menu_item(ui, name.map_or("Default", String::as_str), MenuIcon::Glyph(glyph), text) {
+                    pick = Some(name.cloned());
+                    ui.close();
+                }
+            }
+        });
         ui.separator();
         page = menu_item(ui, "Voice settings", MenuIcon::Glyph("⚙"), text);
         if page { ui.close(); }
