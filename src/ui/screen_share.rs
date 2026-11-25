@@ -1,7 +1,7 @@
 //! Screen share picker (`Modal::ScreenShare`, opened by a screen-share button while I don't
 //! share): Screens / Windows tabs filled by the `ListScreenSources` its opening sends (⟳ lists
 //! again), the sources by name (no thumbnails), quality (720p / 1080p, 15 / 30 fps) and Go Live
-//! → `StartScreenShare` (no application audio). The user picks the source; nothing is
+//! → `StartScreenShare` (optional Windows audio). The user picks the source; nothing is
 //! preselected.
 //! OWNERSHIP: video-ui engineer.
 
@@ -23,6 +23,7 @@ pub struct ShareForm {
     /// 15 fps (else 30).
     low_fps: bool,
     desktop_duplication: bool,
+    audio: bool,
 }
 
 /// Opens the picker and lists the screens and windows (local, no request).
@@ -51,7 +52,7 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             let mut windows = f.windows;
             ui.allocate_ui(vec2(240.0, 36.0), |ui| crate::ui::login::segmented(ui, theme, &mut windows, &[(false, "Screens"), (true, "Windows")]));
             if windows != f.windows {
-                (f.windows, f.pick) = (windows, None);
+                (f.windows, f.pick, f.audio) = (windows, None, false);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 refresh = vector_button(ui, &pal, Icon::Refresh, "Refresh the list", 32.0, false, pal.text).clicked();
@@ -93,6 +94,14 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
             ui.checkbox(&mut f.desktop_duplication, "Desktop Duplication (monitor without a border)")
                 .on_hover_text("Shares the entire selected monitor. Use the default mode for individual windows, HDR or rotated displays.");
         }
+        if cfg!(windows) {
+            let (label, tip) = if f.windows {
+                ("Share application audio", "Viewers can hear the selected app and any audio from processes it starts.")
+            } else {
+                ("Share system audio", "Viewers can hear sounds from other apps and notifications. Audio played by Rustcord is excluded.")
+            };
+            ui.checkbox(&mut f.audio, label).on_hover_text(tip);
+        }
         // A picked source must still be listed (⟳ may have dropped it).
         let ok = connected && f.pick.is_some_and(|p| rows.iter().any(|r| r.0 == p));
         dialog_buttons(ui, theme, "Go live", false, ok)
@@ -107,7 +116,7 @@ pub fn modal(ctx: &egui::Context, cx: &mut UiCx<'_>) {
                 source => source,
             };
             let (fps, max_height) = (if f.low_fps { 15 } else { 30 }, if f.hd { 1080 } else { 720 });
-            cx.cmd.send(Command::Video(VideoCommand::StartScreenShare { source, fps, max_height, audio: false }));
+            cx.cmd.send(Command::Video(VideoCommand::StartScreenShare { source, fps, max_height, audio: f.audio }));
             cx.state.voice.video.share_starting = true;
             cx.view.modal = None;
         }

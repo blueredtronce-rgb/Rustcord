@@ -58,7 +58,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut UiCx<'_>) {
     section(ui, cx.theme, "Activity sharing");
     #[cfg(windows)]
     {
-        if super::switch_row(ui, cx.theme, "Show PulseSync activity", Some("Reads PulseSync's local Rich Presence. Visible in your profile on this device."), &mut cx.settings.pulse_sync_rpc) {
+        if super::switch_row(ui, cx.theme, "Show PulseSync activity", Some("Shows PulseSync or Yandex Music playback in your profile on this device."), &mut cx.settings.pulse_sync_rpc) {
             cx.cmd.send(Command::SetPulseSyncRpc(cx.settings.pulse_sync_rpc));
             if let Err(error) = cx.settings.save() {
                 cx.view.toast(format!("Could not save settings: {error}"), true);

@@ -17,6 +17,8 @@
 
 mod device;
 mod dsp;
+#[cfg(windows)]
+pub(super) mod share;
 
 use super::{InputMode, VoiceEvent, VoiceEvents};
 use crate::model::Id;
@@ -127,13 +129,13 @@ impl Playback {
         Self { tx: self.tx.clone(), connection, gain: Some(gain) }
     }
 
-    /// One received Opus frame, already transport- and E2EE-decrypted. `seq`/`timestamp` are
-    /// the RTP fields (u16 wraparound ordering in the jitter buffer). Emits
+    /// One received Opus frame, already transport- and E2EE-decrypted. `seq` is
+    /// the RTP sequence number (u16 wraparound ordering in the jitter buffer). Emits
     /// `VoiceEvent::Speaking` for `user_id` when its activity starts/stops (~250 ms rule).
-    pub fn push(&self, user_id: Id, ssrc: u32, seq: u16, _timestamp: u32, opus: &[u8]) {
+    pub fn push(&self, user_id: Id, ssrc: u32, seq: u16, opus: std::borrow::Cow<'_, [u8]>) {
         // Full queue (audio thread behind): drop, the jitter buffer conceals it.
         let track = (self.connection, ssrc);
-        let _ = self.tx.try_send(Packet::Opus { user_id, track, gain: self.gain.clone(), seq, opus: opus.to_vec() });
+        let _ = self.tx.try_send(Packet::Opus { user_id, track, gain: self.gain.clone(), seq, opus: opus.into_owned() });
     }
 
     /// The SSRC is gone (op 13 client disconnect): drop its buffer and decoder.
@@ -499,6 +501,9 @@ fn mix_frame(streams: &mut HashMap<Track, Remote>, decoded: &mut [f32], mix: &mu
             let pcm = &mut decoded[..n.min(FRAME_SAMPLES) * CHANNELS];
             // Plugins (VolumeBooster): the user's local volume; the mix is clipped below.
             let gain = r.gain.as_ref().map_or_else(|| crate::plugins::voice::gain(r.user_id), StreamGain::get);
+            if gain == 0.0 {
+                continue; // Keep the Opus history current, but skip scaling and mixing silence.
+            }
             if gain != 1.0 {
                 pcm.iter_mut().for_each(|s| *s *= gain);
             }
@@ -556,12 +561,12 @@ mod tests {
         let tone = std::array::from_fn(|i| (i as f32 * 0.1).sin() * 0.4);
         let packets: Vec<_> = (0..3).map(|_| encode(&tone)).collect();
         for (seq, packet) in packets.iter().enumerate() {
-            stream.push(Id(10), 55, seq as u16, 0, packet);
+            stream.push(Id(10), 55, seq as u16, packet.as_slice().into());
         }
         gain.set(0);
         assert!(speaker().unwrap().iter().all(|&sample| sample == 0.0));
         for (seq, packet) in packets.iter().enumerate() {
-            voice.push(Id(10), 55, seq as u16, 0, packet);
+            voice.push(Id(10), 55, seq as u16, packet.as_slice().into());
         }
         assert!(speaker().unwrap().iter().any(|&sample| sample.abs() > 0.005));
     }

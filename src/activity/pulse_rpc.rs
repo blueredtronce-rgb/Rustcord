@@ -1,5 +1,5 @@
-//! Opt-in Windows IPC adapter for PulseSync's listening activity.
-//! Reads only SET_ACTIVITY, never authenticates or handles account credentials.
+//! Opt-in local listening activity from PulseSync IPC or the Yandex Music Windows media session.
+//! Reads only listening metadata. It never authenticates or handles account credentials.
 
 use crate::activity::ActivityEvent;
 use crate::backend::{BackendEvent, EventSink};
@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 use std::{io, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::sync::watch;
+use windows::Media::Control::{
+    GlobalSystemMediaTransportControlsSession as MediaSession,
+    GlobalSystemMediaTransportControlsSessionManager as MediaSessionManager,
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+};
 
 const PIPE: &str = r"\\.\pipe\discord-ipc-0";
 const PULSESYNC_ID: &str = "1124055337234858005";
@@ -17,6 +23,7 @@ const FRAME: u32 = 1;
 const CLOSE: u32 = 2;
 const PING: u32 = 3;
 const PONG: u32 = 4;
+const MEDIA_REFRESH: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(crate) struct Service(Option<tokio::task::JoinHandle<()>>);
@@ -45,6 +52,11 @@ impl Drop for Service {
 }
 
 async fn serve(sink: EventSink) {
+    let (write, read) = watch::channel(None);
+    tokio::join!(serve_pipe(write), display_activity(sink, read));
+}
+
+async fn serve_pipe(activity: watch::Sender<Option<Activity>>) {
     loop {
         // The first instance flag keeps this bridge from joining or taking over Discord's pipe.
         if let Ok(mut pipe) = ServerOptions::new()
@@ -52,24 +64,116 @@ async fn serve(sink: EventSink) {
             .reject_remote_clients(true)
             .max_instances(1)
             .create(PIPE)
-            && pipe.connect().await.is_ok()
         {
-            let _ = session(&mut pipe, &sink).await;
-            sink.send(BackendEvent::Activity(ActivityEvent::PulseSync(None)));
+            while pipe.connect().await.is_ok() {
+                let _ = session(&mut pipe, |next| {
+                    activity.send_replace(next);
+                })
+                .await;
+                activity.send_if_modified(|current| current.take().is_some());
+                if pipe.disconnect().is_err() {
+                    break;
+                }
+            }
         }
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(MEDIA_REFRESH).await;
     }
 }
 
-async fn read_frame(pipe: &mut (impl AsyncReadExt + Unpin)) -> io::Result<(u32, Vec<u8>)> {
+async fn display_activity(sink: EventSink, mut ipc: watch::Receiver<Option<Activity>>) {
+    let mut manager = None;
+    let mut displayed = None;
+    loop {
+        let rpc_activity = ipc.borrow_and_update().clone();
+        let has_rpc = rpc_activity.is_some();
+        let next = match rpc_activity {
+            Some(activity) => Some(activity),
+            None => tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(2), windows_activity(&mut manager)) => {
+                    match result {
+                        Ok(Ok(activity)) => activity,
+                        Ok(Err(_)) => {
+                            manager = None;
+                            None
+                        }
+                        Err(_) => displayed.clone(),
+                    }
+                }
+                _ = ipc.changed() => continue,
+            },
+        };
+        if next != displayed {
+            sink.send(BackendEvent::Activity(ActivityEvent::PulseSync(
+                next.clone(),
+            )));
+            displayed = next;
+        }
+        if has_rpc {
+            if ipc.changed().await.is_err() {
+                break;
+            }
+        } else if let Ok(Err(_)) = tokio::time::timeout(MEDIA_REFRESH, ipc.changed()).await {
+            break;
+        }
+    }
+}
+
+fn is_yandex_music(source: &str) -> bool {
+    [
+        "ru.yandex.desktop.music",
+        "com.squirrel.YandexMusic.YandexMusic",
+        "YandexMusic",
+        "YandexMusic.exe",
+        "Yandex Music.exe",
+        "Яндекс Музыка.exe",
+    ]
+    .iter()
+    .any(|id| source.eq_ignore_ascii_case(id))
+}
+
+async fn windows_activity(
+    manager: &mut Option<MediaSessionManager>,
+) -> windows::core::Result<Option<Activity>> {
+    if manager.is_none() {
+        *manager = Some(MediaSessionManager::RequestAsync()?.await?);
+    }
+    let Some(manager) = manager else {
+        return Ok(None);
+    };
+    let Some(session) = playing_yandex_session(manager)? else {
+        return Ok(None);
+    };
+    let properties = session.TryGetMediaPropertiesAsync()?.await?;
+    let title = properties.Title()?.to_string_lossy();
+    let artist = properties.Artist()?.to_string_lossy();
+    Ok(make_activity("Yandex Music", Some(&title), Some(&artist)))
+}
+
+fn playing_yandex_session(
+    manager: &MediaSessionManager,
+) -> windows::core::Result<Option<MediaSession>> {
+    Ok(manager.GetSessions()?.into_iter().find(|session| {
+        session
+            .SourceAppUserModelId()
+            .is_ok_and(|id| is_yandex_music(&id.to_string_lossy()))
+            && matches!(
+                session
+                    .GetPlaybackInfo()
+                    .and_then(|info| info.PlaybackStatus()),
+                Ok(PlaybackStatus::Playing)
+            )
+    }))
+}
+
+async fn read_frame(pipe: &mut (impl AsyncReadExt + Unpin), body: &mut Vec<u8>) -> io::Result<u32> {
     let op = pipe.read_u32_le().await?;
     let len = pipe.read_u32_le().await? as usize;
     if len > MAX_BODY {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let mut body = vec![0; len];
-    pipe.read_exact(&mut body).await?;
-    Ok((op, body))
+    body.resize(len, 0);
+    pipe.read_exact(body).await?;
+    Ok(op)
 }
 
 async fn write_frame(
@@ -93,19 +197,24 @@ fn is_pulse_sync(hello: &Value) -> bool {
     hello["v"].as_u64() == Some(1) && hello["client_id"].as_str() == Some(PULSESYNC_ID)
 }
 
-async fn session(pipe: &mut NamedPipeServer, sink: &EventSink) -> io::Result<()> {
-    let (op, body) = tokio::time::timeout(Duration::from_secs(3), read_frame(pipe)).await??;
+async fn session(
+    pipe: &mut NamedPipeServer,
+    mut display: impl FnMut(Option<Activity>),
+) -> io::Result<()> {
+    let mut body = Vec::new();
+    let op = tokio::time::timeout(Duration::from_secs(3), read_frame(pipe, &mut body)).await??;
     if op != HANDSHAKE || !is_pulse_sync(&parse(&body)?) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let ready = json!({
         "cmd": "DISPATCH", "evt": "READY", "nonce": null,
-        "data": {"v": 1, "user": {"id": "0", "username": "Rustcord", "discriminator": "0", "avatar": null}}
+        "data": {"v": 1, "config": {"cdn_host": "cdn.discordapp.com", "api_endpoint": "//discord.com/api", "environment": "production"},
+            "user": {"id": "0", "username": "Rustcord", "discriminator": "0", "avatar": null}}
     });
     write_frame(pipe, FRAME, ready.to_string().as_bytes()).await?;
     let mut current = None;
     loop {
-        let (op, body) = read_frame(pipe).await?;
+        let op = read_frame(pipe, &mut body).await?;
         match op {
             CLOSE => return Ok(()),
             PING => write_frame(pipe, PONG, &body).await?,
@@ -116,9 +225,7 @@ async fn session(pipe: &mut NamedPipeServer, sink: &EventSink) -> io::Result<()>
                 }
                 let next = listening_activity(&command["args"]["activity"]);
                 if next != current {
-                    sink.send(BackendEvent::Activity(ActivityEvent::PulseSync(
-                        next.clone(),
-                    )));
+                    display(next.clone());
                     current = next;
                 }
                 let ack = json!({"cmd": "SET_ACTIVITY", "data": null, "evt": null, "nonce": command["nonce"].as_str()});
@@ -130,26 +237,34 @@ async fn session(pipe: &mut NamedPipeServer, sink: &EventSink) -> io::Result<()>
 }
 
 fn listening_activity(value: &Value) -> Option<Activity> {
-    fn text(value: &Value) -> Option<String> {
-        let label = value.as_str()?.trim();
+    if value["type"].as_u64() != Some(2) {
+        return None;
+    }
+    make_activity(
+        "Yandex Music · PulseSync",
+        value["details"].as_str(),
+        value["state"].as_str(),
+    )
+}
+
+fn make_activity(name: &str, title: Option<&str>, artist: Option<&str>) -> Option<Activity> {
+    fn text(label: &str) -> Option<String> {
         let label: String = label
+            .trim()
             .chars()
             .filter(|c| !c.is_control())
             .take(128)
             .collect();
         (!label.is_empty()).then_some(label)
     }
-    if value["type"].as_u64() != Some(2) {
-        return None;
-    }
-    let details = text(&value["details"]);
-    let state = text(&value["state"]);
+    let details = title.and_then(text);
+    let state = artist.and_then(text);
     if details.is_none() && state.is_none() {
         return None;
     }
     Some(Activity {
         kind: 2,
-        name: "Yandex Music · PulseSync".into(),
+        name: name.into(),
         rich: Some(Box::new(RichPresence {
             details,
             state,
@@ -178,6 +293,15 @@ mod tests {
         assert!(listening_activity(&json!({"type": 0, "details": "Other"})).is_none());
     }
 
+    #[test]
+    fn recognizes_yandex_music_media_sessions() {
+        assert!(is_yandex_music("ru.yandex.desktop.music"));
+        assert!(is_yandex_music("YandexMusic.EXE"));
+        assert!(!is_yandex_music("YandexBrowser.exe"));
+        assert!(!is_yandex_music("com.squirrel.Discord.Discord"));
+        assert!(make_activity("Yandex Music", Some("\t"), None).is_none());
+    }
+
     #[tokio::test]
     async fn receives_and_clears_a_track_through_the_windows_pipe() {
         let name = format!(r"\\.\pipe\rustcord-pulse-test-{}", std::process::id());
@@ -187,10 +311,11 @@ mod tests {
             .create(&name)
             .unwrap();
         let (events, rx) = std::sync::mpsc::channel();
-        let sink = EventSink::new(events, egui::Context::default());
         let task = tokio::spawn(async move {
             server.connect().await.unwrap();
-            session(&mut server, &sink).await.unwrap();
+            session(&mut server, |activity| events.send(activity).unwrap())
+                .await
+                .unwrap();
         });
         let mut client = tokio::net::windows::named_pipe::ClientOptions::new()
             .open(name)
@@ -204,8 +329,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let (_, ready) = read_frame(&mut client).await.unwrap();
-        assert_eq!(parse(&ready).unwrap()["evt"], "READY");
+        let mut received = Vec::new();
+        assert_eq!(read_frame(&mut client, &mut received).await.unwrap(), FRAME);
+        assert_eq!(parse(&received).unwrap()["evt"], "READY");
         for (nonce, activity) in [
             (
                 "playing",
@@ -218,18 +344,13 @@ mod tests {
             write_frame(&mut client, FRAME, body.to_string().as_bytes())
                 .await
                 .unwrap();
-            let (_, ack) = read_frame(&mut client).await.unwrap();
-            assert_eq!(parse(&ack).unwrap()["nonce"], nonce);
+            assert_eq!(read_frame(&mut client, &mut received).await.unwrap(), FRAME);
+            assert_eq!(parse(&received).unwrap()["nonce"], nonce);
         }
         write_frame(&mut client, CLOSE, &[]).await.unwrap();
         task.await.unwrap();
-        assert!(
-            matches!(rx.recv().unwrap(), BackendEvent::Activity(ActivityEvent::PulseSync(Some(activity)))
-            if activity.rich.as_deref().and_then(|rich| rich.details.as_deref()) == Some("Test track"))
-        );
-        assert!(matches!(
-            rx.recv().unwrap(),
-            BackendEvent::Activity(ActivityEvent::PulseSync(None))
-        ));
+        assert!(matches!(rx.recv().unwrap(), Some(activity)
+            if activity.rich.as_deref().and_then(|rich| rich.details.as_deref()) == Some("Test track")));
+        assert!(rx.recv().unwrap().is_none());
     }
 }

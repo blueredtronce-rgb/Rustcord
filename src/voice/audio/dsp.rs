@@ -272,8 +272,12 @@ pub fn encode(enc: &mut OpusEncoder, mono: &[f32; FRAME_SAMPLES]) -> Option<Vec<
     for (pair, &s) in stereo.as_chunks_mut::<CHANNELS>().0.iter_mut().zip(mono) {
         *pair = [s; CHANNELS];
     }
+    encode_stereo(enc, &stereo)
+}
+
+pub fn encode_stereo(enc: &mut OpusEncoder, stereo: &[f32; FRAME_SAMPLES * CHANNELS]) -> Option<Vec<u8>> {
     let mut out = [0u8; MAX_PACKET];
-    let n = enc.encode(&stereo, FRAME_SAMPLES, &mut out).ok()?;
+    let n = enc.encode(stereo, FRAME_SAMPLES, &mut out).ok()?;
     Some(out[..n].to_vec())
 }
 

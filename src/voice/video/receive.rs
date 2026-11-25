@@ -173,6 +173,10 @@ impl VideoRx {
         lock(&self.inner).wanted_ssrcs()
     }
 
+    pub(crate) fn stream_owner(&self) -> Option<Id> {
+        lock(&self.inner).stream_key.as_deref().and_then(parse_stream_key).map(|key| key.2)
+    }
+
     /// Received op 12: emits `RemoteVideo` (0×0) when a video appears, `RemoteVideoEnded` when
     /// it stops. True = op 15 must be re-sent. On a Go Live connection only the owner's op 12
     /// counts and the stream's events come from `stream::Video`.

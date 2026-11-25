@@ -3,6 +3,8 @@
 //! the "rustcord-video-tx" thread supervises it: stop, end of the shared window / monitor, and
 //! keyframe requests while the picture is static (Windows only delivers changes).
 
+mod cursor;
+
 use super::{Pipeline, Stop};
 use crate::voice::video::{MonitorInfo, PixelFormat, RawFrame, ScreenSource, WindowInfo};
 use std::ffi::c_void;
@@ -122,13 +124,22 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
     };
     let mut api = open()?;
     let mut staging: Option<StagingTexture> = None;
+    let mut cursor = cursor::Cursor::default();
+    let mut next_capture = Instant::now();
     let mut retry = true;
     while matches!(stop.0.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+        let delay = next_capture.saturating_duration_since(Instant::now());
+        if !delay.is_zero() && !matches!(stop.0.recv_timeout(delay), Err(RecvTimeoutError::Timeout)) {
+            return Ok(());
+        }
         let lost = match api.acquire_next_frame(30) {
             Ok(mut frame) => {
                 retry = true;
                 let now = Instant::now();
-                if frame.frame_info().LastPresentTime == 0 || !pipe.due(now)? {
+                next_capture = now + pipe.pacer.interval;
+                cursor.update(&frame);
+                let info = frame.frame_info();
+                if (info.LastPresentTime == 0 && info.LastMouseUpdateTime == 0 && pipe.last_encoded.is_some()) || !pipe.due(now)? {
                     pipe.repeat(now)?;
                     continue;
                 }
@@ -139,7 +150,9 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
                 };
                 let mut buffer = frame.buffer_with(texture).map_err(error)?;
                 let stride = buffer.row_pitch() as usize;
-                pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data: buffer.as_raw_buffer() }, now)?;
+                let data = buffer.as_raw_buffer();
+                cursor.paint(width, height, stride, data);
+                pipe.push(&RawFrame { width, height, stride, format: PixelFormat::Bgra, data }, now)?;
                 false
             }
             Err(DuplicationError::Timeout) => {
@@ -152,6 +165,7 @@ fn duplicate(monitor: Monitor, mut pipe: Pipeline, stop: &Stop) -> Result<(), St
         if lost {
             retry = false;
             staging = None;
+            cursor = cursor::Cursor::default();
             drop(api);
             api = open()?;
         }

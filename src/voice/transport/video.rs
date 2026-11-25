@@ -534,7 +534,7 @@ mod tests {
         v.on_ready(&json!({"ssrc": ssrc, "streams": [{"ssrc": ssrc + 1, "rtx_ssrc": ssrc + 2}]}));
         v.start_media(tasks, sock.clone(), crypt(), dave.clone());
         let playback = crate::voice::audio::test_hooks::speaker().0;
-        let receiver = Receiver { sock, crypt: crypt(), dave, users: Arc::default(), playback, video: Some(rx) };
+        let receiver = Receiver { sock, crypt: crypt(), dave, users: Arc::default(), playback, video: Some(rx), stream_owner: None };
         tasks.spawn(receiver.run());
         v
     }

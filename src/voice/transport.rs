@@ -386,10 +386,16 @@ impl Conn {
                 }
             }
             12 => {
-                if let (Some(v), Some(d)) = (&mut self.video, data::<serde_json::Value>(text))
-                    && let Some(wants) = v.on_op12(&d)
-                {
-                    send(ws, wants).await?;
+                if let (Some(v), Some(d)) = (&mut self.video, data::<serde_json::Value>(text)) {
+                    if let (Some(user), Some(ssrc)) = (
+                        serde_json::from_value::<Id>(d["user_id"].clone()).ok(),
+                        d["audio_ssrc"].as_u64().and_then(|ssrc| u32::try_from(ssrc).ok()).filter(|&ssrc| ssrc != 0),
+                    ) {
+                        lock(&self.users).insert(ssrc, user);
+                    }
+                    if let Some(wants) = v.on_op12(&d) {
+                        send(ws, wants).await?;
+                    }
                 }
             }
             _ => {} // 9 Resumed, 14/15/18/20: nothing to do
@@ -474,13 +480,16 @@ impl Conn {
     }
 
     fn spawn_media(&mut self, sock: Arc<UdpSocket>, ssrc: u32, crypt: Arc<Mutex<Crypt>>) {
+        let video = self.video.as_ref().map(video::VideoConn::rx);
+        let stream_owner = video.as_ref().and_then(VideoRx::stream_owner).filter(|&owner| owner != self.info.user_id);
         let rx = Receiver {
             sock: sock.clone(),
             crypt: crypt.clone(),
             dave: self.dave.clone(),
             users: self.users.clone(),
             playback: self.playback.clone(),
-            video: self.video.as_ref().map(video::VideoConn::rx),
+            video,
+            stream_owner,
         };
         self.tasks.spawn(rx.run());
         if let Some(v) = &mut self.video {
@@ -504,7 +513,8 @@ impl Conn {
     async fn send_speaking(&mut self, ws: &mut Ws, on: bool) -> Result<(), Exit> {
         let Some((_, ssrc)) = self.udp else { return Ok(()) };
         if self.sent_speaking != Some(on) {
-            send(ws, speaking_payload(on, ssrc)).await?;
+            let soundshare = self.video.as_ref().is_some_and(|v| v.kind() == StreamKind::Screen);
+            send(ws, speaking_payload(on, ssrc, soundshare)).await?;
             self.sent_speaking = Some(on);
         }
         Ok(())
@@ -626,9 +636,10 @@ fn select_protocol_payload(ip: &str, port: u16, mode: Mode, rtc_connection_id: &
     .to_string()
 }
 
-/// Op 5 with flag 1 (VOICE) or 0.
-fn speaking_payload(on: bool, ssrc: u32) -> String {
-    json!({"op": 5, "d": {"speaking": u8::from(on), "delay": 0, "ssrc": ssrc}}).to_string()
+/// Op 5 with flag 1 (VOICE), 2 (SOUNDSHARE), or 0.
+fn speaking_payload(on: bool, ssrc: u32, soundshare: bool) -> String {
+    let flags = u8::from(on) << u8::from(soundshare);
+    json!({"op": 5, "d": {"speaking": flags, "delay": 0, "ssrc": ssrc}}).to_string()
 }
 
 /// UDP receive task.
@@ -639,6 +650,9 @@ struct Receiver {
     users: Arc<Mutex<HashMap<u32, Id>>>,
     playback: Playback,
     video: Option<VideoRx>,
+    /// A watched Go Live carries the selected owner's audio, even if no speaking event
+    /// arrived for that SSRC. Ordinary calls still require an announced sender.
+    stream_owner: Option<Id>,
 }
 
 impl Receiver {
@@ -667,7 +681,7 @@ impl Receiver {
         let Some(plain) = lock(&self.crypt).open(pkt, h.clear_len) else { return };
         let Some(frame) = h.payload(plain) else { return };
         let now = std::time::Instant::now();
-        let user = lock(&self.users).get(&h.ssrc).copied();
+        let user = lock(&self.users).get(&h.ssrc).copied().or(self.stream_owner);
         match user {
             None => held.hold(now, h, frame),
             Some(user) => {
@@ -681,7 +695,7 @@ impl Receiver {
 
     fn deliver(&self, user: Id, h: &RtpHeader, frame: &[u8]) {
         let Some(opus) = lock(&self.dave).decrypt(user, frame) else { return };
-        self.playback.push(user, h.ssrc, h.seq, h.timestamp, &opus);
+        self.playback.push(user, h.ssrc, h.seq, opus);
     }
 }
 
@@ -846,7 +860,8 @@ mod tests {
             select["d"]["codecs"][1],
             json!({"name":"H264","type":"video","priority":1000,"payload_type":103,"rtx_payload_type":104,"encode":true,"decode":true})
         );
-        assert_eq!(parse(speaking_payload(true, 9)), json!({"op":5,"d":{"speaking":1,"delay":0,"ssrc":9}}));
+        assert_eq!(parse(speaking_payload(true, 9, false)), json!({"op":5,"d":{"speaking":1,"delay":0,"ssrc":9}}));
+        assert_eq!(parse(speaking_payload(true, 9, true)), json!({"op":5,"d":{"speaking":2,"delay":0,"ssrc":9}}));
         assert!(!format!("{:?}", info()).contains("v-secret"), "token redacted in Debug");
     }
 
@@ -984,7 +999,16 @@ mod tests {
     /// jitter buffer -> Opus decode -> mixer.
     #[tokio::test]
     async fn media_loopback_plays_a_tone() {
-        use crate::voice::audio::{CAPTURE_QUEUE, test_hooks};
+        media_loopback(None).await;
+    }
+
+    #[tokio::test]
+    async fn stream_loopback_plays_audio_without_a_speaking_event() {
+        media_loopback(Some(Id(5))).await;
+    }
+
+    async fn media_loopback(stream_owner: Option<Id>) {
+        use crate::voice::audio::{CAPTURE_QUEUE, StreamGain, test_hooks};
         let sfu = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut socks = Vec::new();
         for _ in 0..2 {
@@ -996,8 +1020,12 @@ mod tests {
         let crypt = || Arc::new(Mutex::new(Crypt::new(Mode::Aes256Gcm, &[9; 32])));
         let dave = Arc::new(Mutex::new(Dave::new(Id(1), Id(2))));
         let (playback, mut speaker) = test_hooks::speaker();
-        let users = Arc::new(Mutex::new(HashMap::from([(77, Id(5))])));
-        let receiver = Receiver { sock: rx_sock.clone(), crypt: crypt(), dave: dave.clone(), users, playback, video: None };
+        let (playback, users) = match stream_owner {
+            Some(_) => (playback.for_stream(1, StreamGain::default()), HashMap::new()),
+            None => (playback, HashMap::from([(77, Id(5))])),
+        };
+        let users = Arc::new(Mutex::new(users));
+        let receiver = Receiver { sock: rx_sock.clone(), crypt: crypt(), dave: dave.clone(), users, playback, video: None, stream_owner };
         let sender = Sender { sock: tx_sock, ssrc: 77, crypt: crypt(), dave, clock: RtpClock::new(), speaking: watch::channel(false).0 };
         let (frames, captured) = mpsc::channel(CAPTURE_QUEUE);
         let mut tasks = JoinSet::new();

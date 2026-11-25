@@ -306,7 +306,7 @@ Measured 2026-11-11: each set added to a copy of the current `Cargo.toml`, resol
 | vpx-encode / env-libvpx-sys | system libvpx (vcpkg) |
 | songbird 0.6.1 | bot-oriented, 175 crates / **12.48 MiB**, duplicate tokio-tungstenite 0.26 — read `crypto.rs`/`udp_rx` only |
 | dave (cacophony) | AGPL-3.0 |
-Gaps: echo cancellation (official uses WebRTC AEC; no light Rust option verified → recommend headphones); Go Live system audio via WASAPI loopback (cpal loopback on an output device in 0.18 UNCONFIRMED; else `IAudioClient` + `AUDCLNT_STREAMFLAGS_LOOPBACK`; per-app `ActivateAudioInterfaceAsync` PROCESS_LOOPBACK, Win10 2004+).
+Gap: echo cancellation (official uses WebRTC AEC; no light Rust option verified → recommend headphones). Windows Go Live audio uses `ActivateAudioInterfaceAsync` process loopback with `IAudioClient` and `AUDCLNT_STREAMFLAGS_LOOPBACK`.
 
 ---
 

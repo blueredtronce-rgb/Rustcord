@@ -18,6 +18,8 @@ use super::{FrameWriter, MAX_FRAME_SLOTS, ScreenSource, SendLimits, StreamKind, 
 use crate::auth::Secret;
 use crate::gateway::{GatewayCommand, StreamOp};
 use crate::model::{GatewayEvent, Id};
+#[cfg(windows)]
+use crate::voice::audio::share::ShareAudio;
 use crate::voice::audio::{Captured, MediaLink, StreamGain};
 use crate::voice::{Msg, VoiceEvent, VoiceEvents, transport};
 use futures_util::FutureExt;
@@ -67,8 +69,7 @@ pub(in crate::voice) struct Ctx {
     /// The connected call `(guild_id, channel_id)`; None while joining or out of voice.
     pub call: Option<(Option<Id>, Id)>,
     /// The connected call's playback (Some with `call`): the `MediaLink::playback` of Go Live
-    /// connections, so stream audio plays in the call's mix. Their `captured` is a channel whose
-    /// sender `Video` keeps (nothing to send; the transport's keepalive keeps running).
+    /// connections, so stream audio plays in the call's mix.
     pub playback: Option<crate::voice::audio::Playback>,
 }
 
@@ -119,8 +120,10 @@ struct GoLive {
 /// A running Go Live connection. Dropping it stops the transport and my screen capture.
 struct StreamConn {
     _stop: oneshot::Sender<()>,
-    /// Kept open and unused: no application audio is sent.
-    _audio: mpsc::Sender<Captured>,
+    /// Keeps receive-only connections open and feeds optional audio on my share.
+    _audio_tx: mpsc::Sender<Captured>,
+    #[cfg(windows)]
+    audio: Option<ShareAudio>,
     ctl: mpsc::UnboundedSender<VideoCtl>,
     rx: VideoRx,
     connected: bool,
@@ -172,6 +175,8 @@ struct Share {
     live: GoLive,
     source: ScreenSource,
     limits: SendLimits,
+    #[cfg(windows)]
+    audio: bool,
 }
 
 /// Toast text for a STREAM_DELETE reason; None when I asked for it.
@@ -423,20 +428,26 @@ impl Video {
     }
 
     fn start_share(&mut self, source: ScreenSource, limits: SendLimits, audio: bool, ctx: &Ctx) {
-        if audio {
-            return self.error("Sharing application audio is not supported yet.");
+        if audio && !cfg!(windows) {
+            return self.error("Sharing application audio is only available on Windows.");
         }
         let (Some(gw), Some((guild_id, channel_id))) = (&ctx.gateway, ctx.call) else { return self.error(NOT_IN_CALL) };
         if let Some(share) = &mut self.share {
             // Another source while sharing: same stream, new capture.
             (share.source, share.limits) = (source, limits);
+            #[cfg(windows)]
+            { share.audio = audio; }
             return self.start_capture(ctx);
         }
         let key = stream_key(guild_id, channel_id, ctx.me);
         let _ = gw.send(GatewayCommand::Stream(StreamOp::Create { guild_id, channel_id }));
         // Other clients follow op 18 with "not paused" (whether it is needed is UNCONFIRMED).
         let _ = gw.send(GatewayCommand::Stream(StreamOp::SetPaused { stream_key: key.clone(), paused: false }));
-        self.share = Some(Share { live: GoLive::new(key, &self.tx), source, limits });
+        self.share = Some(Share {
+            live: GoLive::new(key, &self.tx), source, limits,
+            #[cfg(windows)]
+            audio,
+        });
     }
 
     /// My share's connection is up or its source changed: (re)start the screen capture on it.
@@ -445,13 +456,24 @@ impl Video {
         let preview = self.preview(&VideoKey::Stream(key.clone()));
         let (id, tx) = (next_id(), self.tx.clone());
         let failed = move |reason: String| post(&tx, StreamMsg::CaptureFailed { kind: StreamKind::Screen, id, reason });
-        let Some(Share { live: GoLive { conn: Some(conn), .. }, source, limits }) = &mut self.share else { return };
+        let Some(share) = &mut self.share else { return };
+        let Some(conn) = &mut share.live.conn else { return };
         conn.capture = None; // a new source replaces the running capture
-        match capture::start(Source::Screen(*source), *limits, failed) {
+        #[cfg(windows)]
+        { conn.audio = None; }
+        match capture::start(Source::Screen(share.source), share.limits, failed) {
             Ok((sending, send)) => {
                 let _ = conn.ctl.send(VideoCtl::Send(send));
                 sending.set_preview(preview);
                 conn.capture = Some(Capture { sending, id });
+                #[cfg(windows)]
+                if share.audio {
+                    let events = self.events.clone();
+                    match ShareAudio::start(share.source, conn._audio_tx.clone(), move |error| events.send(VoiceEvent::Error(error))) {
+                        Ok(audio) => conn.audio = Some(audio),
+                        Err(error) => self.error(error),
+                    }
+                }
                 self.send(VideoEvent::ScreenShareStarted { stream_key: key });
             }
             Err(e) => self.end_live(&key, ctx, Some(e), true),
@@ -479,7 +501,8 @@ impl Video {
     fn try_connect(&mut self, key: &str, ctx: &Ctx) {
         let (Some(session_id), Some(playback)) = (ctx.session_id.clone(), ctx.playback.clone()) else { return };
         let vkey = VideoKey::Stream(key.to_owned());
-        let decode = !self.is_share(key) && self.shown.contains(&vkey);
+        let mine = self.is_share(key);
+        let decode = !mine && self.shown.contains(&vkey);
         let (tx, frames, events) = (self.tx.clone(), self.frames.clone(), self.events.clone());
         let Some(live) = self.live_mut(key) else { return };
         let Some(mut info) = live.connect_info(ctx.me, session_id) else { return };
@@ -490,10 +513,15 @@ impl Video {
             let _ = ctl.send(VideoCtl::Wants);
         }
         info.video = Some(VideoLink { kind: StreamKind::Screen, rx: rx.clone(), ctl: ctl_rx });
-        let (audio, captured) = mpsc::channel(1);
+        let capacity = if mine { crate::voice::audio::CAPTURE_QUEUE } else { 1 };
+        let (audio, captured) = mpsc::channel(capacity);
         let playback = playback.for_stream(live.id, live.gain.clone());
         let stop = spawn(tx, info, MediaLink { captured, playback }, key.to_owned(), live.id);
-        live.conn = Some(StreamConn { _stop: stop, _audio: audio, ctl, rx, connected: false, capture: None });
+        live.conn = Some(StreamConn {
+            _stop: stop, _audio_tx: audio, ctl, rx, connected: false, capture: None,
+            #[cfg(windows)]
+            audio: None,
+        });
     }
 
     /// Ends my share or a watched stream: op 19 (unless the server ended it), stops its
@@ -683,7 +711,7 @@ mod tests {
         let (gw_tx, mut gw) = mpsc::unbounded_channel();
         let share = |audio| VideoCommand::StartScreenShare { source: ScreenSource::Monitor(1), fps: 60, max_height: 1080, audio };
 
-        v.command(share(true), ctx(&gw_tx));
+        v.command(share(true), Ctx { call: None, playback: None, ..ctx(&gw_tx) });
         v.command(share(false), Ctx { call: None, playback: None, ..ctx(&gw_tx) });
         v.command(VideoCommand::StartCamera { device: None }, ctx(&gw_tx));
         let evs = events(&ui);
@@ -694,12 +722,14 @@ mod tests {
         assert!(events(&ui).is_empty(), "stopping what is off says nothing");
 
         // Op 18 + op 22; the two dispatches in any order; the server's key decides.
-        v.command(share(false), ctx(&gw_tx));
+        v.command(share(cfg!(windows)), ctx(&gw_tx));
         assert_eq!(
             ops(&mut gw),
             [StreamOp::Create { guild_id: Some(Id(1)), channel_id: Id(2) }, StreamOp::SetPaused { stream_key: MINE.into(), paused: false }]
         );
         assert_eq!(v.share.as_ref().map(|s| s.limits), Some(SendLimits::screen(30, 1080)));
+        #[cfg(windows)]
+        assert!(v.share.as_ref().is_some_and(|s| s.audio));
         v.on_gateway(server(MINE, Some("127.0.0.1:9")), ctx(&gw_tx));
         v.on_gateway(create(KEY), ctx(&gw_tx));
         assert!(v.share.as_ref().unwrap().live.conn.is_none(), "waits for its own STREAM_CREATE");

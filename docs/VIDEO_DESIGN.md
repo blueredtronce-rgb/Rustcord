@@ -226,5 +226,9 @@ hand like `voice/mod.rs` does.
 ## UNCONFIRMED (VOICE_NOTES §5)
 `video: true` needed to receive; op 15 `any` semantics and the default without wants; mandatory
 video RTP extensions (transport-cc ID 5); PT rewriting per receiver; Go Live quality caps and
-preview cadence (`POST /streams/{key}/preview` is not implemented); Go Live application audio
-(not supported: `audio: true` is refused); STREAM_UPDATE (viewers, paused) is not handled.
+preview cadence (`POST /streams/{key}/preview` is not implemented); STREAM_UPDATE (viewers,
+paused) is not handled.
+
+Go Live audio is opt-in on Windows. Window capture sends the selected process tree. Monitor
+capture sends the system mix excluding the Rustcord process tree. Both use WASAPI process
+loopback and send stereo Opus on the separate Go Live connection with the SOUNDSHARE flag.
