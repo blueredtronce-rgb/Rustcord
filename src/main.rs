@@ -92,9 +92,8 @@ fn main() -> eframe::Result {
 
     // eframe's defaults are already the lean ones: no MSAA, depth or stencil buffer, vsync on
     // (measured: none of these, nor dithering, changes RAM; the GL driver's own ~80 MB does not move).
-    let title = if cfg!(feature = "media-diagnostics") { "Rustcord Diagnostics" } else { config::APP_NAME };
     let viewport = egui::ViewportBuilder::default()
-        .with_title(title)
+        .with_title(config::APP_NAME)
         .with_app_id("rustcord")
         .with_inner_size([1180.0, 760.0])
         .with_min_inner_size([720.0, 420.0])

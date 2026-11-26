@@ -200,6 +200,8 @@ struct Pipeline {
     ready: Option<Box<dyn FnOnce() + Send>>,
     next_preview: Option<Instant>,
     trace: Option<Trace>,
+    #[cfg(all(windows, feature = "media-diagnostics"))]
+    screen_method: &'static str,
     /// The encoder and the last converted picture (send size), from the first frame on.
     enc: Option<(Encoder, I420)>,
     /// A different send size than the encoder's and since when frames have it (`RESIZE_SETTLE`).
@@ -220,7 +222,10 @@ impl Pipeline {
     ) -> Pipeline {
         let screen = kind == StreamKind::Screen;
         let trace = screen.then(|| Trace::new("Capture & encoder", trace::CAPTURE)).flatten();
-        Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, ready: None, next_preview: None, trace, enc: None, pending_size: None, last_encoded: None, stopped }
+        Pipeline { limits, screen, pacer: Pacer::new(limits.fps), tx, keyframe, preview, ready: None, next_preview: None, trace,
+            #[cfg(all(windows, feature = "media-diagnostics"))]
+            screen_method: "",
+            enc: None, pending_size: None, last_encoded: None, stopped }
     }
 
     /// The transport is gone or the user stopped this capture.
@@ -327,6 +332,10 @@ impl Pipeline {
         self.last_encoded = Some(now);
         let at = self.trace.as_ref().map(|_| Instant::now());
         let encoded = encoder.encode(picture, keyframe, now);
+        self.send_encoded(encoded, keyframe, at)
+    }
+
+    fn send_encoded(&mut self, encoded: Result<Option<super::EncodedFrame>, String>, keyframe: bool, at: Option<Instant>) -> Result<(), String> {
         if let (Some(trace), Some(at)) = (&mut self.trace, at) {
             let metric = match &encoded {
                 Ok(Some(frame)) => {

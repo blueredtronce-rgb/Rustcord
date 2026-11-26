@@ -1,11 +1,12 @@
 [package]
 name = "rustcord"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 # src/bin/rustcord-setup is the installer (scripts/build-installer.ps1 packs the app into it).
 default-run = "rustcord"
 
 [features]
+default = ["media-diagnostics"]
 media-diagnostics = []
 
 [dependencies]
@@ -82,6 +83,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shel
 wry = { version = "=0.57.2", default-features = false }
 
 [target."cfg(windows)".build-dependencies]
+cc = "1"
 embed-resource = "3.0.12"
 
 [target.'cfg(unix)'.dependencies]

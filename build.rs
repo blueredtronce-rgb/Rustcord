@@ -6,6 +6,10 @@ fn main() {
         println!("cargo:rerun-if-changed=assets/rustcord.rc");
         println!("cargo:rerun-if-changed=assets/rustcord.ico");
         println!("cargo:rerun-if-changed=assets/rustcord-tray.ico");
+        let screen = "src/voice/video/capture/screen";
+        println!("cargo:rerun-if-changed={screen}/nvenc_driver.c");
+        println!("cargo:rerun-if-changed={screen}/vendor/nvEncodeAPI.h");
+        cc::Build::new().file(format!("{screen}/nvenc_driver.c")).compile("rustcord_nvenc");
         embed_resource::compile("assets/rustcord.rc", embed_resource::NONE)
             .manifest_optional()
             .expect("compiling assets/rustcord.rc");

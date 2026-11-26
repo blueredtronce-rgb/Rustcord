@@ -24,6 +24,17 @@ impl Scale {
         format: DXGI_FORMAT,
         fps: u32,
     ) -> Result<Self> {
+        Self::convert(device, context, src, dst, (format, format), fps)
+    }
+
+    pub(super) fn convert(
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        src: (u32, u32),
+        dst: (u32, u32),
+        formats: (DXGI_FORMAT, DXGI_FORMAT),
+        fps: u32,
+    ) -> Result<Self> {
         let video: ID3D11VideoDevice = device.cast()?;
         let context: ID3D11VideoContext = context.cast()?;
         let rate = DXGI_RATIONAL {
@@ -41,9 +52,10 @@ impl Scale {
             Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
         };
         let enumerator = unsafe { video.CreateVideoProcessorEnumerator(&content)? };
-        let required = (D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0
-            | D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0) as u32;
-        if unsafe { enumerator.CheckVideoProcessorFormat(format)? } & required != required {
+        let input = D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32;
+        let output_flag = D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32;
+        if unsafe { enumerator.CheckVideoProcessorFormat(formats.0)? } & input == 0
+            || unsafe { enumerator.CheckVideoProcessorFormat(formats.1)? } & output_flag == 0 {
             return Err(Error::from(E_FAIL));
         }
         let processor = unsafe { video.CreateVideoProcessor(&enumerator, 0)? };
@@ -60,7 +72,7 @@ impl Scale {
             Height: dst.1,
             MipLevels: 1,
             ArraySize: 1,
-            Format: format,
+            Format: formats.1,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,

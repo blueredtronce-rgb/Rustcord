@@ -56,7 +56,30 @@ impl Cursor {
         stride: usize,
         frame: &mut [u8],
     ) {
+        self.paint_region(source, target, (0, 0, target.0, target.1), stride, frame);
+    }
+
+    /// Bounds of the separately reported cursor, clipped to the original texture.
+    pub(super) fn bounds(&self, size: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
+        let (x, y) = self.position?;
+        let s = self.shape?;
+        let rows = if s.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 as u32 { s.Height / 2 } else { s.Height };
+        let clamp = |v: i64, max| v.clamp(0, i64::from(max)) as u32;
+        let (left, top) = (clamp(i64::from(x), size.0), clamp(i64::from(y), size.1));
+        let (right, bottom) = (clamp(i64::from(x) + i64::from(s.Width), size.0), clamp(i64::from(y) + i64::from(rows), size.1));
+        (left < right && top < bottom).then_some((left, top, right, bottom))
+    }
+
+    pub(super) fn paint_region(
+        &self,
+        source: (u32, u32),
+        target: (u32, u32),
+        region: (u32, u32, u32, u32),
+        stride: usize,
+        frame: &mut [u8],
+    ) {
         let (width, height) = target;
+        let (x0, y0, x1, y1) = region;
         let (Some((x, y)), Some(shape)) = (self.position, self.shape) else {
             return;
         };
@@ -80,9 +103,9 @@ impl Cursor {
         if pitch
             .checked_mul(rows)
             .is_none_or(|len| len > self.pixels.len())
-            || stride < width as usize * 4
+            || stride < (x1 - x0) as usize * 4
             || stride
-                .checked_mul(height as usize)
+                .checked_mul((y1 - y0) as usize)
                 .is_none_or(|len| len > frame.len())
         {
             return;
@@ -93,15 +116,15 @@ impl Cursor {
         let (tw, th) = (i64::from(width), i64::from(height));
         let ceil =
             |position: i64, target: i64, source: i64| -(-position * target).div_euclid(source);
-        let left = ceil(x, tw, sw).clamp(0, tw);
-        let top = ceil(y, th, sh).clamp(0, th);
-        let right = ceil(x + w as i64, tw, sw).clamp(left, tw);
-        let bottom = ceil(y + visible_rows as i64, th, sh).clamp(top, th);
+        let left = ceil(x, tw, sw).clamp(i64::from(x0), i64::from(x1));
+        let top = ceil(y, th, sh).clamp(i64::from(y0), i64::from(y1));
+        let right = ceil(x + w as i64, tw, sw).clamp(left, i64::from(x1));
+        let bottom = ceil(y + visible_rows as i64, th, sh).clamp(top, i64::from(y1));
         for dst_y in top..bottom {
             let row = (dst_y * sh / th - y) as usize * pitch;
             for dst_x in left..right {
                 let src_x = (dst_x * sw / tw - x) as usize;
-                let offset = dst_y as usize * stride + dst_x as usize * 4;
+                let offset = (dst_y as usize - y0 as usize) * stride + (dst_x as usize - x0 as usize) * 4;
                 let dst = &mut frame[offset..offset + 3];
                 if shape.Type == monochrome {
                     let bit = 0x80 >> (src_x % 8);

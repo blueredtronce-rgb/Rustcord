@@ -119,9 +119,6 @@ fn mode(vars: &[(String, String)], debug: bool) -> Mode {
 /// < 1 ms (env, argv, one registry read or a few `stat`s, state.toml); sets Status (incl. the
 /// screen for an update applied at start) before the first frame.
 pub fn start(rt: &tokio::runtime::Handle, ctx: &egui::Context, auto: bool) {
-    if cfg!(feature = "media-diagnostics") {
-        return;
-    }
     let vars: Vec<(String, String)> = std::env::vars_os()
         .map(|(k, v)| (k.to_string_lossy().to_ascii_uppercase(), v.to_string_lossy().into_owned()))
         .filter(|(k, _)| k.starts_with("RUSTCORD_"))
