@@ -117,6 +117,9 @@ RcNvenc *rc_nvenc_open(void *device, void *texture, uint32_t width, uint32_t hei
     config->rcParams.zeroReorderDelay = 1;
     config->encodeCodecConfig.h264Config.idrPeriod = config->gopLength;
     config->encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+    /* DAVE authenticates SPS bytes. Provide the decoder limits before encryption
+       so WebRTC does not have to rewrite the SPS on the receiving side. */
+    config->encodeCodecConfig.h264Config.h264VUIParameters.bitstreamRestrictionFlag = 1;
 
     NV_ENC_INITIALIZE_PARAMS init = {0};
     init.version = NV_ENC_INITIALIZE_PARAMS_VER;
